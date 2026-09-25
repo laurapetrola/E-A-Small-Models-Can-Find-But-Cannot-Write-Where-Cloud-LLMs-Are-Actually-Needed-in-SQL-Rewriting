@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-08-26T09:20:30.803240",
+  "query_hash": "7ade099a566c",
+  "suggestions": [
+    "materialize CTE to avoid recomputation",
+    "pre-filter store in CTE using subquery",
+    "reorder joins to reduce intermediate rows",
+    "convert IN subquery to semi-join"
+  ],
+  "improvement_pct": 95.8,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 168427.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT sr_customer_sk AS ctr_customer_sk,\n           sr_store_sk AS ctr_store_sk,\n           SUM(SR_FEE) AS ctr_total_return\n    FROM store_returns\n    JOIN date_dim ON sr_returned_date_sk = d_date_sk\n    WHERE d_year = 2000\n      AND sr_store_sk IN (SELECT s_store_sk FROM store WHERE s_state = 'TN')\n    GROUP BY sr_customer_sk, sr_store_sk\n),\nstore_threshold AS (\n    SELECT ctr_store_sk,\n           AVG(ctr_total_return) * 1.2 AS threshold\n    FROM customer_total_return\n    GROUP BY ctr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer c\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN store_threshold st ON ctr1.ctr_store_sk = st.ctr_store_sk\nWHERE ctr1.ctr_total_return > st.threshold\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT sr_customer_sk AS ctr_customer_sk,\n           sr_store_sk AS ctr_store_sk,\n           SUM(SR_FEE) AS ctr_total_return\n    FROM store_returns\n    JOIN date_dim ON sr_returned_date_sk = d_date_sk\n    WHERE d_year = 2000\n      AND sr_store_sk IN (SELECT s_store_sk FROM store WHERE s_state = 'TN')\n    GROUP BY sr_customer_sk, sr_store_sk\n),\nstore_threshold AS (\n    SELECT ctr_store_sk,\n           AVG(ctr_total_return) * 1.2 AS threshold\n    FROM customer_total_return\n    GROUP BY ctr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer c\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN store_threshold st ON ctr1.ctr_store_sk = st.ctr_store_sk\nWHERE ctr1.ctr_total_return > st.threshold\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reasoning_trace": "1. DECORRELATE CORRELATED SUBQUERY \u2014 TARGET: `(select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk)` \u2014 TRANSFORMATION: Precompute `avg(ctr_total_return)*1.2` per `ctr_store_sk` once as a derived `store_threshold` relation, then join `ctr1` to it on `ctr_store_sk` and replace the `>` subquery with `ctr1.ctr_total_return > store_threshold.threshold`.\n\n2. PUSH STATE FILTER INTO CTE \u2014 TARGET: `customer_total_return` CTE over `store_returns` \u2014 TRANSFORMATION: Restrict `sr_store_sk` to TN stores inside the CTE before `GROUP BY` using the same `store.s_state='TN'` predicate, because for TN stores the per-store average used by `ctr2` is unchanged; the outer `store` join then becomes redundant.\n\n3. MATERIALIZE CTE ONCE \u2014 TARGET: CTE `customer_total_return` \u2014 TRANSFORMATION: Force a single materialization of `customer_total_return` (e.g., `MATERIALIZED` / temp table) so the base `store_returns \u2a1d date_dim` scan and `GROUP BY` execute only once and are reused by both the main row source and the per-store threshold aggregate.\n\n4. ADD COVERING INDEX FOR CTE AGGREGATION \u2014 TARGET: `store_returns` columns `sr_store_sk`, `sr_returned_date_sk`, `sr_customer_sk`, `sr_fee` \u2014 TRANSFORMATION: Create a covering index on `store_returns(sr_store_sk, sr_returned_date_sk)` including `sr_customer_sk` and `sr_fee` so the CTE\u2019s TN-store + year-2000 filter and `SUM(sr_fee)` grouping can be answered with an index-only scan.\n\n5. USE ORDERED INDEX FOR FINAL LIMIT \u2014 TARGET: `customer.c_customer_id` and the final `ORDER BY c_customer_id LIMIT 100` \u2014 TRANSFORMATION: Ensure/use an index on `customer(c_customer_id)` so the top-100 result can be read in sorted order and stop early, avoiding a full sort of all matching customer IDs.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 1888.67,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 95.8,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1428540.58,
+      "optimized": 150445.51,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 163553.1,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4874.0,
+    "total_inference_ms": 168427.1,
+    "writer_inference_ms": 223654.6,
+    "writer_tokens_in": 1055,
+    "writer_tokens_out": 23213,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. DECORRELATE CORRELATED SUBQUERY \u2014 TARGET: `(select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk)` \u2014 TRANSFORMATION: Precompute `avg(ctr_total_return)*1.2` per `ctr_store_sk` once as a derived `store_threshold` relation, then join `ctr1` to it on `ctr_store_sk` and replace the `>` subquery with `ctr1.ctr_total_return > store_threshold.threshold`.\n\n2. PUSH STATE FILTER INTO CTE \u2014 TARGET: `customer_total_return` CTE over `store_returns` \u2014 TRANSFORMATION: Restrict `sr_store_sk` to TN stores inside the CTE before `GROUP BY` using the same `store.s_state='TN'` predicate, because for TN stores the per-store average used by `ctr2` is unchanged; the outer `store` join then becomes redundant.\n\n3. MATERIALIZE CTE ONCE \u2014 TARGET: CTE `customer_total_return` \u2014 TRANSFORMATION: Force a single materialization of `customer_total_return` (e.g., `MATERIALIZED` / temp table) so the base `store_returns \u2a1d date_dim` scan and `GROUP BY` execute only once and are reused by both the main row source and the per-store threshold aggregate.\n\n4. ADD COVERING INDEX FOR CTE AGGREGATION \u2014 TARGET: `store_returns` columns `sr_store_sk`, `sr_returned_date_sk`, `sr_customer_sk`, `sr_fee` \u2014 TRANSFORMATION: Create a covering index on `store_returns(sr_store_sk, sr_returned_date_sk)` including `sr_customer_sk` and `sr_fee` so the CTE\u2019s TN-store + year-2000 filter and `SUM(sr_fee)` grouping can be answered with an index-only scan.\n\n5. USE ORDERED INDEX FOR FINAL LIMIT \u2014 TARGET: `customer.c_customer_id` and the final `ORDER BY c_customer_id LIMIT 100` \u2014 TRANSFORMATION: Ensure/use an index on `customer(c_customer_id)` so the top-100 result can be read in sorted order and stop early, avoiding a full sort of all matching customer IDs.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy asked for decorrelation of the subquery (replacing it with a join to a precomputed threshold), and the rewrite applies that technique. It also materializes the CTE (as per stra"
+  },
+  "raw_sql": "with customer_total_return as (select sr_customer_sk as ctr_customer_sk ,sr_store_sk as ctr_store_sk ,sum(SR_FEE) as ctr_total_return from store_returns ,date_dim where sr_returned_date_sk = d_date_sk and d_year =2000 group by sr_customer_sk ,sr_store_sk) select c_customer_id from customer_total_return ctr1 ,store ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk) and s_store_sk = ctr1.ctr_store_sk and s_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id limit 100"
+}

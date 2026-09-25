@@ -1,0 +1,402 @@
+{
+  "timestamp": "2026-09-09T21:11:18.246016",
+  "query_hash": "eb7eda172416",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 255547.4,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify indexes to reduce cost.\n\nThe query is:\n```sql\nselect i_item_id, s_state, grouping(s_state) g_state, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 \nfrom store_sales, customer_demographics, date_dim, store, item \nwhere ss_sold_date_sk = d_date_sk \n  and ss_item_sk = i_item_sk \n  and ss_store_sk = s_store_sk \n  and ss_cdemo_sk = cd_demo_sk \n  and cd_gender = 'M' \n  and cd_marital_status = 'W' \n  and cd_education_status = 'Secondary' \n  and d_year = 1999 \n  and s_state in ('TN','TN', 'TN', 'TN', 'TN', 'TN') \ngroup by rollup (i_item_id, s_state) \norder by i_item_id ,s_state \nlimit 100\n```\n\nThe relevant tables and their existing indexes (none) are:\n- item (28,000 rows)\n- customer_demographics (1,920,800 rows)\n- store (44 rows)\n- store_sales (57,598,932 rows)\n- date_dim (73,049 rows)\n\nWe are to return a JSON structure with indexes or set no_index_possible.\n\nSteps:\n\n1. Identify the main tables and the joins.\n   The query uses four tables: store_sales, customer_demographics, date_dim, store, and item.\n\n   The joins are:\n   - store_sales to date_dim via ss_sold_date_sk = d_date_sk\n   - store_sales to item via ss_item_sk = i_item_sk\n   - store_sales to store via ss_store_sk = s_store_sk\n   - store_sales to customer_demographics via ss_cdemo_sk = cd_demo_sk\n\n   The other tables (date_dim, store, item) are being joined.\n\n2. The query has a filter on:\n   - cd_gender = 'M'\n   - cd_marital_status = 'W'\n   - cd_education_status = 'Secondary'\n   - d_year = 1999\n   - s_state in ('TN','TN', 'TN', 'TN', 'TN', 'TN')   [Note: repeated multiple times, but it's just 'TN']\n\n3. The group by rollup and limit 100 might be using an index to optimize the grouping and limiting.\n\n4. Without the execution plan, we must rely on the query structure.\n\n5. The main table is store_sales (57M rows). The other tables are smaller.\n\n6. The query does a full scan on store_sales because there is no index on the join columns or filter columns.\n\n7. The joins and filters:\n\n   - The filter on store_sales: \n        ss_sold_date_sk = d_date_sk (join with date_dim, which has 73k rows)\n        ss_item_sk = i_item_sk (join with item, 28k rows)\n        ss_store_sk = s_store_sk (join with store, 44 rows)\n        ss_cdemo_sk = cd_demo_sk (join with customer_demographics, 1.9M rows)\n\n   - The filters on customer_demographics: \n        cd_gender = 'M'\n        cd_marital_status = 'W'\n        cd_education_status = 'Secondary'\n\n   - The filter on date_dim: d_year = 1999\n\n   - The filter on store: s_state in ('TN') [but note: the condition is on s_state, and store has only 44 rows]\n\n   - The condition on s_state is in the store table, which is very small.\n\n8. The query is doing a cross join between store_sales and the other tables, then filtering.\n\n   This is a full Cartesian product of the entire store_sales and the other tables, then filtering.\n\n   However, note that the join conditions are on specific columns. We can break down:\n\n   - The store_sales table is being joined with date_dim, store, item, and customer_demographics.\n\n   - The filters on customer_demographics and date_dim and store will reduce the number of rows.\n\n9. The most expensive part is likely the store_sales table. We need to index the columns that are frequently used in joins and filters.\n\n   The columns in store_sales that are used in joins and filters are:\n   - ss_sold_date_sk (join with date_dim, filter on d_year)\n   - ss_item_sk (join with item)\n   - ss_store_sk (join with store, filter on s_state)\n   - ss_cdemo_sk (join with customer_demographics, filter on cd_gender, cd_marital_status, cd_education_status)\n\n10. Since the query is doing a full scan on store_sales, we should index the columns that are used in the joins and filters.\n\n    However, note that the query is using multiple joins and filters. We can consider:\n\n    - Index on store_sales(ss_sold_date_sk) to help join with date_dim and filter by d_year.\n    - Index on store_sales(ss_item_sk) to help join with item.\n    - Index on store_sales(ss_store_sk) to help join with store and filter by s_state.\n    - Index on store_sales(ss_cdemo_sk) to help join with customer_demographics and filter by the three columns.\n\n    But note: the query is filtering on customer_demographics columns. We can also index customer_demographics to avoid a full scan on that table.\n\n11. Let's break down the tables:\n\n    - store_sales: 57M rows. The joins and filters are on four columns. We should index these columns.\n\n    - customer_demographics: 1.9M rows. The filter is on three columns. We should index the columns that are being filtered.\n\n    - date_dim: 73k rows. Filter on d_year=1999. We can index d_year.\n\n    - store: 44 rows. Very small, so no need for index.\n\n    - item: 28k rows. No filter on item, so no need for index.\n\n12. However, note that the query is doing a join with customer_demographics and filtering on three columns. We can create a composite index on customer_demographics for the three columns.\n\n    Also, the join condition is on ss_cdemo_sk = cd_demo_sk. We can index cd_demo_sk in customer_demographics.\n\n13. But note: the query is using a hash join or nested loop? Without the plan, we assume that the optimizer might be doing a nested loop on the small tables and then a full scan on store_sales.\n\n    The store_sales table is the largest, so we should focus on indexing store_sales.\n\n14. The query has a limit 100. This might be using the top 100 rows of the grouped result. However, the grouping is by rollup, so it might be expensive.\n\n    But the main bottleneck is the store_sales table.\n\n15. Proposed indexes:\n\n    a. On store_sales:\n        - Index on ss_sold_date_sk (for join and filter on d_year)\n        - Index on ss_item_sk (for join with item)\n        - Index on ss_store_sk (for join with store and filter on s_state)\n        - Index on ss_cdemo_sk (for join with customer_demographics)\n\n    b. On customer_demographics:\n        - Index on cd_demo_sk (for join with store_sales)\n        - Partial index on the three columns (cd_gender, cd_marital_status, cd_education_status) because the filter is on these.\n\n    c. On date_dim:\n        - Index on d_year (for filter)\n\n    d. On store: no need because it's small.\n\n    e. On item: no filter, so no need.\n\n16. However, note that the query is filtering on customer_demographics columns. We can also create a composite index on customer_demographics for the three columns to help the filter.\n\n    But note: the join condition is on cd_demo_sk, so we need to index that first.\n\n17. Let's consider the order of the tables in the FROM clause. The query uses an old-style join (comma separated). The optimizer might choose the order.\n\n    The store_sales table is the largest, so it might be the base table.\n\n    We can suggest:\n\n    - Index store_sales(ss_sold_date_sk) to help the join with date_dim and the filter on d_year.\n    - Index store_sales(ss_item_sk) to help the join with item.\n    - Index store_sales(ss_store_sk) to help the join with store and the filter on s_state.\n    - Index store_sales(ss_cdemo_sk) to help the join with customer_demographics.\n\n    - Index customer_demographics(cd_demo_sk) to help the join with store_sales.\n    - Index customer_demographics(cd_gender, cd_marital_status, cd_education_status) to help the filter.\n\n    - Index date_dim(d_year) to help the filter.\n\n18. But note: the query is filtering on d_year=1999. We can also index date_dim(d_year) to avoid a full scan.\n\n19. However, the problem says that the query cannot be improved by SQL rewriting. We are to suggest indexes.\n\n20. We must return the JSON structure.\n\n    We are to specify:\n    - target: table name\n    - property: column name\n    - index_type: type of index (e.g., btree, hash, etc. \u2014 but PostgreSQL typically uses btree unless specified)\n    - partial_predicate: if any, else null\n    - estimated_benefit: what the index would eliminate and on how many rows.\n\n21. We are to order the indexes by the number of rows scanned (largest first). But note: the index that reduces the most rows first.\n\n    However, we don't know the exact row counts, so we can estimate:\n\n    - The store_sales table has 57M rows. The index on store_sales(ss_cdemo_sk) might reduce the number of rows by filtering on the three columns in customer_demographics. But note: the join condition is on cd_demo_sk, so we need to index that first.\n\n    Let's break down:\n\n    a. The filter on customer_demographics: \n        cd_gender = 'M', cd_marital_status = 'W', cd_education_status = 'Secondary'\n\n        The customer_demographics table has 1.9M rows. The filter might reduce it to a small number. Let's assume it reduces to 100,000 rows (this is an estimate).\n\n        Then, the join condition on store_sales(ss_cdemo_sk) would then be a join with 100,000 rows. Without an index on ss_cdemo_sk, the join would be a nested loop with 57M rows * 100,000 rows? Actually, no: the nested loop would use the small table (customer_demographics) as the inner table, but the join condition is on store_sales, which is large.\n\n        Actually, the optimizer might do a hash join. Without an index on ss_cdemo_sk, the hash join would require reading all 57M rows of store_sales and building a hash table, then reading the 100,000 rows from customer_demographics and probing the hash table.\n\n        But if we index ss_cdemo_sk, then the hash join might be faster because the build phase would be on the small table (customer_demographics) and the probe phase on store_sales, but the index on store_sales(ss_cdemo_sk) would help if the hash join is not the best.\n\n        Alternatively, the optimizer might do a nested loop join: one row from customer_demographics, then a scan of store_sales for matching ss_cdemo_sk. Then an index on ss_cdemo_sk would be very helpful.\n\n        Since we don't know the plan, we assume that the index on ss_cdemo_sk would help.\n\n    b. Similarly, the filter on date_dim: d_year=1999. The date_dim table has 73k rows. Without an index, it would be a sequential scan. With an index, it would be a fast index scan.\n\n    c. The filter on store: s_state in ('TN') \u2014 store has 44 rows, so no need.\n\n    d. The filter on item: none, so no need.\n\n    e. The filter on customer_demographics: we can index the three columns to avoid a full scan on customer_demographics.\n\n22. We must consider the access pattern:\n\n    - For store_sales, the columns used in the join and filter are:\n        ss_sold_date_sk, ss_item_sk, ss_store_sk, ss_cdemo_sk\n\n    - For customer_demographics, the columns used in the join and filter are:\n        cd_demo_sk (join) and cd_gender, cd_marital_status, cd_education_status (filter)\n\n    - For date_dim, the column used in the join and filter is d_year.\n\n23. We are to return the indexes in order of the number of rows scanned (largest first). The store_sales table is the largest, so we should index the columns that are used to reduce the number of rows in store_sales first.\n\n    The index on store_sales(ss_cdemo_sk) would help reduce the number of rows in store_sales by filtering via the customer_demographics table. But note: the filter is on customer_demographics, so we must index customer_demographics first to reduce the number of rows in customer_demographics.\n\n    Then, the index on store_sales(ss_cdemo_sk) would help the join.\n\n    Similarly, the index on store_sales(ss_sold_date_sk) would help the join with date_dim and the filter on d_year.\n\n    The index on store_sales(ss_item_sk) and ss_store_sk are for joins with item and store, which are small tables.\n\n24. Let's list the indexes:\n\n    a. customer_demographics: \n        - We need to index the columns for the filter: cd_gender, cd_marital_status, cd_education_status. We can create a composite index on (cd_gender, cd_marital_status, cd_education_status). This would help the filter and reduce the number of rows in customer_demographics.\n\n        - Also, we need to index the join column: cd_demo_sk. We can create a separate index on cd_demo_sk.\n\n    b. date_dim: index on d_year.\n\n    c. store_sales: \n        - Index on ss_cdemo_sk (for the join and the filter via customer_demographics)\n        - Index on ss_sold_date_sk (for the join with date_dim and the filter on d_year)\n        - Index on ss_item_sk (for the join with item)\n        - Index on ss_store_sk (for the join with store)\n\n25. But note: the query is grouping by rollup and limiting to 100. The grouping might be done after the joins and filters. The index on store_sales might help the grouping if the grouping columns are included in the index, but they are not.\n\n26. We must consider the estimated_benefit:\n\n    - For customer_demographics: \n        Without index: full scan of 1.9M rows for the filter and then the join.\n        With index on the three columns: the filter would be faster, and the index on cd_demo_sk would help the join.\n\n    - For date_dim: \n        Without index: full scan of 73k rows for the filter.\n        With index: index scan, which is faster.\n\n    - For store_sales: \n        Without index: full scan of 57M rows for the joins and filters.\n        With index on ss_cdemo_sk: the join with customer_demographics would be faster, and the filter via customer_demographics would be faster.\n\n27. We are to return the indexes in order of the number of rows scanned (largest first). The store_sales table has 57M rows, so the index on store_sales(ss_cdemo_sk) would eliminate the need to scan 57M rows for the join and filter? Not exactly, but it would help the join and the filter.\n\n    However, the filter on customer_demographics is done first. So we should index customer_demographics first.\n\n    The customer_demographics table has 1.9M rows, which is less than 57M, so we should index customer_demographics first.\n\n    Then, the date_dim table has 73k rows, then the store_sales table has 57M.\n\n    But note: the store_sales table is the base table and is joined with the other tables. The other tables are small, so the main cost is in store_sales.\n\n28. Let's order the indexes by the table size (largest table first) but note: the index that reduces the most rows first is the one that is used in the join or filter that affects the largest table.\n\n    The store_sales table is the largest, so we should index its columns first.\n\n    However, the filter on customer_demographics is done on a table that is 1.9M rows, which is smaller than 57M, but the join condition is on store_sales, so the index on store_sales(ss_cdemo_sk) is crucial.\n\n    We can think of the index on store_sales(ss_cdemo_sk) as reducing the number of rows in store_sales that need to be considered for the join with customer_demographics.\n\n    Without the index, the join would be a full scan of store_sales for each row of customer_demographics (if nested loop) or a hash join with building a hash table of 1.9M rows and then scanning 57M rows.\n\n    With the index, the nested loop would be fast because the inner table (customer_demographics) is small, and the index on store_sales would allow the nested loop to quickly find the matching rows.\n\n    Similarly, the filter on customer_demographics is done first, so we need to index customer_demographics to reduce the number of rows in customer_demographics.\n\n29. We are to return the indexes in the order of the number of rows scanned (largest first). The store_sales table has 57M rows, so the index that would eliminate the scan of 57M rows is the one on store_sales. But note: the query is not filtering store_sales directly, but via joins and the customer_demographics table.\n\n    The index on store_sales(ss_cdemo_sk) would not eliminate the 57M rows, but it would help the join and the filter.\n\n    The index on customer_demographics would reduce the number of rows in customer_demographics from 1.9M to a smaller number (say 100,000). Then, the join with store_sales would be done on 100,000 rows, which is better than 1.9M.\n\n    The index on date_dim would reduce the scan of date_dim from 73k to a few rows.\n\n30. We must return the indexes in the order of the estimated_benefit (rows scanned). The largest table is store_sales, so we should index store_sales first.\n\n    But note: the query is filtering store_sales via the joins and the customer_demographics table. The index on store_sales(ss_cdemo_sk) would help the join and the filter.\n\n    The index on customer_demographics would help the filter and the join.\n\n    The index on date_dim would help the filter.\n\n31. We are to return the indexes in the order of the number of rows scanned (largest first). The store_sales table has 57M rows, so the index that would eliminate the scan of 57M rows is not possible because the filter is not on store_sales directly. But the index on store_sales(ss_cdemo_sk) would help the join and the filter, reducing the effective rows.\n\n    We can estimate the benefit:\n\n    - For store_sales(ss_cdemo_sk): without index, the join with customer_demographics would require a full scan of store_sales (57M rows) for each row of customer_demographics (if nested loop). With index, the nested loop would be fast.\n\n    - For customer_demographics: without index, the filter would scan 1.9M rows. With index, it would scan a few rows.\n\n    - For date_dim: without index, the filter would scan 73k rows. With index, it would scan a few rows.\n\n32. We are to return the indexes in the order of the number of rows scanned (largest first). The store_sales table has 57M rows, so we should index store_sales first.\n\n    Then, customer_demographics has 1.9M rows, then date_dim has 73k rows.\n\n    But note: the filter on customer_demographics is done first, so it reduces the number of rows in customer_demographics. Then, the join with store_sales is done. So the index on customer_demographics would reduce the number of rows in customer_demographics from 1.9M to a smaller number, say 100,000. Then, the join with store_sales would be done on 100,000 rows, which is better than 1.9M.\n\n    The index on store_sales(ss_cdemo_sk) would then help the join.\n\n    The index on store_sales(ss_sold_date_sk) would help the join with date_dim and the filter on d_year.\n\n33. We are to return the indexes in the order of the estimated_benefit (rows scanned). The store_sales table is the largest, so we should index store_sales first.\n\n    Then, customer_demographics, then date_dim.\n\n34. We are to return the JSON structure.\n\n    We will return:\n\n    [\n      {\n        \"target\": \"store_sales\",\n        \"property\": \"ss_cdemo_sk\",\n        \"index_type\": \"btree\",\n        \"partial_predicate\": null,\n        \"estimated_benefit\": \"Reduces the join with customer_demographics from 57M rows to a smaller number by using an index on the join column.\"\n      },\n      {\n        \"target\": \"store_sales\",\n        \"property\": \"ss_sold_date_sk\",\n        \"index_type\": \"btree\",\n        \"partial_predicate\": null,\n        \"estimated_benefit\": \"Reduces the join with date_dim and the filter on d_year from 57M rows to a smaller number by using an index on the join column.\"\n      },\n      {\n        \"target\": \"customer_demographics\",\n        \"property\": \"cd_demo_sk\",\n        \"index_type\": \"btree\",\n        \"partial_predicate\": null,\n        \"estimated_benefit\": \"Reduces the join with store_sales from 1.9M rows to a smaller number by using an index on the join column.\"\n      },\n      {\n        \"target\": \"customer_demographics\",\n        \"property\": \"cd_gender, cd_marital_status, cd_education_status\",\n        \"index_type\": \"btree\",\n        \"partial_predicate\": null,\n        \"estimated_benefit\": \"Reduces the filter on customer_demographics from 1.9M rows to a smaller number by using a composite index.\"\n      },\n      {\n        \"target\": \"date_dim\",\n        \"property\": \"d_year\",\n        \"index_type\": \"btree\",\n        \"partial_predicate\": null,\n        \"estimated_benefit\": \"Reduces the filter on date_dim from 73k rows to a smaller numbe",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_cdemo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.4,
+      "baseline_exec_ms": 4251.755,
+      "optimized_exec_ms": 4268.728,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961045.69,
+          "cost_with_index": 2961082.05,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951170.02,
+          "cost_with_index": 1951202.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371758.85,
+          "cost_with_index": 1371786.7,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816871.05,
+          "cost_with_index": 816922.92,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117921.26,
+          "cost_with_index": 117921.81,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109670.45,
+          "cost_with_index": 21110097.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29017627.72,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129313.98,
+          "cost_with_index": 129313.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179285.41,
+          "cost_with_index": 179285.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712268.44,
+          "cost_with_index": 3712300.87,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.44,
+          "cost_with_index": 134873.44,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.73,
+          "cost_with_index": 222744.74,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345184.6,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342715.87,
+          "cost_with_index": 1342739.21,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.2,
+      "baseline_exec_ms": 4192.365,
+      "optimized_exec_ms": 4286.664,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961082.05,
+          "cost_with_index": 2961082.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951202.5,
+          "cost_with_index": 1951202.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371786.7,
+          "cost_with_index": 1371786.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816922.92,
+          "cost_with_index": 816922.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117921.81,
+          "cost_with_index": 117921.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110097.62,
+          "cost_with_index": 21110097.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129313.98,
+          "cost_with_index": 129313.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179285.41,
+          "cost_with_index": 179285.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712300.87,
+          "cost_with_index": 3712300.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.44,
+          "cost_with_index": 134873.44,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.74,
+          "cost_with_index": 222744.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342739.21,
+          "cost_with_index": 1342739.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_demo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_gender, cd_marital_status, cd_education_status",
+      "index_type": "btree",
+      "estimated_benefit_pct": 15.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.1,
+      "baseline_exec_ms": 4230.321,
+      "optimized_exec_ms": 4224.19,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.6,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816922.92,
+          "cost_with_index": 816922.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117921.81,
+          "cost_with_index": 105739.88,
+          "benefit_pct": 10.3
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937903.81,
+          "cost_with_index": 937903.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91714.69,
+          "cost_with_index": 91714.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 2.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": -4.4,
+      "baseline_exec_ms": 4175.623,
+      "optimized_exec_ms": 4359.224,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.3,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1436126.19,
+          "cost_with_index": 1434188.6,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961082.05,
+          "cost_with_index": 2961082.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951202.5,
+          "cost_with_index": 1951202.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371786.7,
+          "cost_with_index": 1371786.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816922.92,
+          "cost_with_index": 810466.83,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117921.81,
+          "cost_with_index": 115984.23,
+          "benefit_pct": 1.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129313.98,
+          "cost_with_index": 129313.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.46,
+          "cost_with_index": 1208622.87,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3862540.94,
+          "cost_with_index": 3860603.35,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937903.81,
+          "cost_with_index": 935966.22,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179285.41,
+          "cost_with_index": 177134.02,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906104.99,
+          "cost_with_index": 906104.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712300.87,
+          "cost_with_index": 3712300.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.44,
+          "cost_with_index": 132827.62,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.74,
+          "cost_with_index": 222744.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1343041.3,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91714.69,
+          "cost_with_index": 91714.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 4,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

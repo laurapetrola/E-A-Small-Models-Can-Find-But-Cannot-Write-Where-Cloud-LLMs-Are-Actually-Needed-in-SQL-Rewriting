@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-09-03T14:02:05.397881",
+  "query_hash": "3b41fb20391f",
+  "suggestions": [
+    "materialize intermediate result sets as CTEs",
+    "join materialized CTEs instead of subqueries",
+    "pre-filter a large table as a CTE before the join"
+  ],
+  "improvement_pct": 3.43,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 147173.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH company_movies AS MATERIALIZED (\n    SELECT mc.movie_id\n    FROM company_name AS cn\n    JOIN movie_companies AS mc ON cn.id = mc.company_id\n    WHERE cn.country_code = '[de]'\n),\nkeyword_movies AS MATERIALIZED (\n    SELECT mk.movie_id\n    FROM keyword AS k\n    JOIN movie_keyword AS mk ON mk.keyword_id = k.id\n    WHERE k.keyword = 'character-name-in-title'\n)\nSELECT MIN(t.title) AS movie_title\nFROM company_movies AS cm\nJOIN keyword_movies AS km ON cm.movie_id = km.movie_id\nJOIN title AS t ON t.id = cm.movie_id AND t.id = km.movie_id",
+  "reached_sql": "WITH company_movies AS MATERIALIZED (\n    SELECT mc.movie_id\n    FROM company_name AS cn\n    JOIN movie_companies AS mc ON cn.id = mc.company_id\n    WHERE cn.country_code = '[de]'\n),\nkeyword_movies AS MATERIALIZED (\n    SELECT mk.movie_id\n    FROM keyword AS k\n    JOIN movie_keyword AS mk ON mk.keyword_id = k.id\n    WHERE k.keyword = 'character-name-in-title'\n)\nSELECT MIN(t.title) AS movie_title\nFROM company_movies AS cm\nJOIN keyword_movies AS km ON cm.movie_id = km.movie_id\nJOIN title AS t ON t.id = cm.movie_id AND t.id = km.movie_id",
+  "reasoning_trace": "<think>\nOkay, let's see. The user is asking for another optimization strategy for their SQL query. The original query is trying to find the movie title with the minimum value where certain conditions are met, involving multiple tables.\n\nFirst, I need to understand the existing query and the previous strategies that didn't work. The original query joins several tables: company_name, keyword, movie_companies, movie_keyword, and title. The previous strategies focused on filtering early, reordering joins, using subqueries, and avoiding redundant joins on the title table.\n\nNow, the user wants a different approach. Let me think about other possible optimizations. One thing that comes to mind is the use of indexes. The query has multiple joins and filters, so checking if there are indexes on the columns used in the WHERE clause and JOIN conditions could help. For example, the company_name.country_code is filtered with '[de]', so an index on that column might speed up the filter. Similarly, the keyword.keyword is 'character-name-in-title', so an index on keyword.keyword could help. Also, the JOIN conditions involve columns like mc.company_id, mc.movie_id, mk.movie_id, etc. Indexes on these columns might reduce the join time.\n\nAnother possibility is to materialize subqueries. For instance, the company_name and keyword tables are filtered, so creating a subquery for each and then joining those results might reduce the number of rows processed in subsequent joins. However, the previous strategy already mentioned using subqueries, so maybe that's not the new approach.\n\nWait, maybe the title table is being joined multiple times. The original query joins title with movie_companies and movie_keyword. If there's an index on title.id, which is used in the JOIN conditions, that could help. Also, since the query is selecting MIN(t.title), maybe using an index on t.title could speed up the aggregation. But the previous strategy already mentioned avoiding redundant joins on title, so perhaps that's covered.\n\nAnother angle: the query is using a Cartesian product between the filtered company_name and keyword tables. If those tables are large, even after filtering, the join might be expensive. Maybe using a hash join or a merge join could be more efficient, but PostgreSQL's query planner usually handles that. However, the user is using hypopg and pg_trgm extensions, which might help with certain types of joins or text searches.\n\nWait, the keyword is 'character-name-in-title', which is a text value. Since pg_trgm is enabled, maybe using a trigram index on the keyword.keyword column could speed up the equality check. Similarly, an index on company_name.country_code with the value '[de]' could be more efficient. Also, the JOIN conditions involve multiple tables, so ensuring that the JOIN columns are indexed is crucial.\n\nAnother thought: the query is selecting MIN(t.title), which is an aggregate function. Maybe the query can be optimized by first filtering the rows to only those that meet the conditions and then applying the MIN function. However, the current structure already does that through the joins. Alternatively, using a CTE (Common Table Expression) to pre-filter the data before aggregating might help, but that's similar to subqueries.\n\nWait, the previous strategy mentioned using subqueries for company_name and keyword. Maybe instead of subqueries, using indexes on those tables to speed up the filtering. For example, if there's an index on company_name(country_code), then the filter cn.country_code = '[de]' would be faster. Similarly, an index on keyword(keyword) would speed up the filter k.keyword = 'character-name-in-title'. \n\nAlso, the JOIN between movie_companies and movie_keyword on mc.movie_id = mk.movie_id. If there's an index on movie_companies.movie_id and movie_keyword.movie_id, that could help. Additionally, the title table is joined with both movie_companies and movie_keyword. If there's an index on title.id, that would speed up the joins.\n\nAnother possibility is to restructure the query to use a single join path. For example, joining company_name with movie_companies first, then joining with movie_keyword, and then with title. But the previous strategy already mentioned reordering joins. \n\nWait, maybe the main cost is in the joins between the filtered company_name and keyword with the other tables. If those filtered results are small, the joins would be faster. But if they're still large, maybe using a hash join or a nested loop with appropriate indexes could help. However, the user is looking for a different strategy than the previous ones, so perhaps focusing on index creation or using the existing extensions like hypopg to precompute joins.\n\nAlternatively, considering that the query is selecting MIN(t.title), maybe the query can be optimized by first filtering the title table to only those that have the required keywords and companies, then applying the MIN function. But that would require restructuring the query, which might not be straightforward.\n\nAnother angle: the movie_companies and movie_keyword tables are joined on movie_id. If there's an index on movie_companies.movie_id and movie_keyword.movie_id, that could speed up the join. Also, the title table is joined with both, so ensuring that the title.id is indexed would help.\n\nIn summary, the main optimization opportunities might be:\n\n1. Adding indexes on the filtered columns (country_code, keyword) to speed up the initial filters.\n2. Ensuring that the JOIN columns (like movie_id, company_id, etc.) are indexed to reduce join time.\n3. Using the pg_trgm extension to create trigram indexes on text columns like keyword.keyword for faster equality checks.\n4. Restructuring the query to use a single join path that leverages these indexes effectively.\n\nBut the user wants a different strategy than the previous ones. The previous strategies focused on filtering early, subqueries, and join order. So maybe the new strategy is to use indexes on the filtered columns and JOIN columns to reduce the cost of filtering and joining.\n\n</think>\n\n1. **Add trigram index on keyword.keyword** \u2014 TARGET: keyword.keyword \u2014 TRANSFORMATION: Create a trigram index on the `keyword.keyword` column to accelerate the equality filter `k.keyword = 'character-name-in-title'`.  \n2. **Index company_name.country_code** \u2014 TARGET: company_name.country_code \u2014 TRANSFORMATION: Add an index on `company_name.country_code` to speed up the filter `cn.country_code = '[de]'`.  \n3. **Index movie_companies.movie_id and movie_keyword.movie_id** \u2014 TARGET: movie_companies.movie_id, movie_keyword.movie_id \u2014 TRANSFORMATION: Create indexes on these columns to optimize the join between `movie_companies` and `movie_keyword`.  \n4. **Index title.id** \u2014 TARGET: title.id \u2014 TRANSFORMATION: Ensure an index exists on `title.id` to reduce the cost of joining with `movie_companies` and `movie_keyword`.  \n5. **Use hypopg to precompute join paths** \u2014 TARGET: the join between filtered company_name, keyword, and movie_companies/movie_keyword \u2014 TRANSFORMATION: Leverage hypopg to materialize and optimize the join plan for the filtered subsets of these tables.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 314.708,
+      "optimized_ms": 303.917,
+      "delta_ms": 10.791,
+      "improvement_pct": 3.43,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 3862.74,
+      "optimized": 55846.41,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 142157.8,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 5015.9,
+    "total_inference_ms": 147173.7,
+    "writer_inference_ms": 427070.1,
+    "writer_tokens_in": 1642,
+    "writer_tokens_out": 57780,
+    "writer_calls": 2
+  },
+  "errors": [],
+  "strategy": "1. **Add trigram index on keyword.keyword** \u2014 TARGET: keyword.keyword \u2014 TRANSFORMATION: Create a trigram index on the `keyword.keyword` column to accelerate the equality filter `k.keyword = 'character-name-in-title'`.  \n2. **Index company_name.country_code** \u2014 TARGET: company_name.country_code \u2014 TRANSFORMATION: Add an index on `company_name.country_code` to speed up the filter `cn.country_code = '[de]'`.  \n3. **Index movie_companies.movie_id and movie_keyword.movie_id** \u2014 TARGET: movie_companies.movie_id, movie_keyword.movie_id \u2014 TRANSFORMATION: Create indexes on these columns to optimize the join between `movie_companies` and `movie_keyword`.  \n4. **Index title.id** \u2014 TARGET: title.id \u2014 TRANSFORMATION: Ensure an index exists on `title.id` to reduce the cost of joining with `movie_companies` and `movie_keyword`.  \n5. **Use hypopg to precompute join paths** \u2014 TARGET: the join between filtered company_name, keyword, and movie_companies/movie_keyword \u2014 TRANSFORMATION: Leverage hypopg to materialize and optimize the join plan for the filtered subsets of these tables.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to optimize joins using hypopg to precompute join paths, and the rewrite applied materialization (CTE with MATERIALIZED) to precompute and join the filtere"
+  },
+  "raw_sql": "SELECT MIN(t.title) AS movie_title FROM company_name AS cn, keyword AS k, movie_companies AS mc, movie_keyword AS mk, title AS t WHERE cn.country_code = '[de]' AND k.keyword = 'character-name-in-title' AND cn.id = mc.company_id AND mc.movie_id = t.id AND t.id = mk.movie_id AND mk.keyword_id = k.id AND mc.movie_id = mk.movie_id"
+}

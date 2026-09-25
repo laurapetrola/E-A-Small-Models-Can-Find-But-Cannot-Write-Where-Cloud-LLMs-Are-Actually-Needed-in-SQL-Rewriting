@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-08-24T15:05:53.322700",
+  "query_hash": "2971a965ef2e",
+  "suggestions": [
+    "materialize CTE",
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "materialize CTE to avoid recomputation",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate result"
+  ],
+  "improvement_pct": 93.29,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 114148.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT wr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(wr_return_amt) AS ctr_total_return\n    FROM web_returns\n    JOIN date_dim ON web_returns.wr_returned_date_sk = date_dim.d_date_sk AND date_dim.d_year = 2000\n    JOIN customer_address ON web_returns.wr_returning_addr_sk = customer_address.ca_address_sk\n    GROUP BY wr_returning_customer_sk, ca_state\n),\nstate_avg AS MATERIALIZED (\n    SELECT ctr_state,\n           AVG(ctr_total_return) * 1.2 AS avg_return\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c_customer_id, c_salutation, c_first_name, c_last_name, c_preferred_cust_flag,\n       c_birth_day, c_birth_month, c_birth_year, c_birth_country, c_login, c_email_address,\n       c_last_review_date_sk, ctr1.ctr_total_return\nFROM customer_total_return ctr1\nJOIN customer ON ctr1.ctr_customer_sk = customer.c_customer_sk\nJOIN customer_address ON customer.c_current_addr_sk = customer_address.ca_address_sk AND customer_address.ca_state = 'AR'\nWHERE ctr1.ctr_total_return > (\n    SELECT state_avg.avg_return\n    FROM state_avg\n    WHERE state_avg.ctr_state = ctr1.ctr_state\n)\nORDER BY c_customer_id, c_salutation, c_first_name, c_last_name, c_preferred_cust_flag,\n         c_birth_day, c_birth_month, c_birth_year, c_birth_country, c_login, c_email_address,\n         c_last_review_date_sk, ctr1.ctr_total_return\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT wr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(wr_return_amt) AS ctr_total_return\n    FROM web_returns\n    JOIN date_dim ON web_returns.wr_returned_date_sk = date_dim.d_date_sk AND date_dim.d_year = 2000\n    JOIN customer_address ON web_returns.wr_returning_addr_sk = customer_address.ca_address_sk\n    GROUP BY wr_returning_customer_sk, ca_state\n),\nstate_avg AS MATERIALIZED (\n    SELECT ctr_state,\n           AVG(ctr_total_return) * 1.2 AS avg_return\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c_customer_id, c_salutation, c_first_name, c_last_name, c_preferred_cust_flag,\n       c_birth_day, c_birth_month, c_birth_year, c_birth_country, c_login, c_email_address,\n       c_last_review_date_sk, ctr1.ctr_total_return\nFROM customer_total_return ctr1\nJOIN customer ON ctr1.ctr_customer_sk = customer.c_customer_sk\nJOIN customer_address ON customer.c_current_addr_sk = customer_address.ca_address_sk AND customer_address.ca_state = 'AR'\nWHERE ctr1.ctr_total_return > (\n    SELECT state_avg.avg_return\n    FROM state_avg\n    WHERE state_avg.ctr_state = ctr1.ctr_state\n)\nORDER BY c_customer_id, c_salutation, c_first_name, c_last_name, c_preferred_cust_flag,\n         c_birth_day, c_birth_month, c_birth_year, c_birth_country, c_login, c_email_address,\n         c_last_review_date_sk, ctr1.ctr_total_return\nLIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user has already tried several strategies, and the previous approach didn't yield gains. I need to come up with a different technique. Let me start by understanding the original query and the schema.\n\nThe main query is selecting customer details and their total returns, filtering by state 'AR' and comparing their total return to the average of their state. The CTE customer_total_return aggregates web_returns data joined with date_dim and customer_address. \n\nLooking at the previous strategies, they focused on materializing CTEs, indexing, and filtering early. Maybe there's another angle. Let me think about the joins and data distribution.\n\nThe subquery in the WHERE clause calculates the average ctr_total_return for the same state. If the state 'AR' has very few customers, the subquery might be small. But if there are many, it could be expensive. Wait, the main query filters ca_state = 'AR', so maybe the subquery can leverage that. \n\nWait, the main query's WHERE clause has ctr1.ctr_state = 'AR', and the subquery's WHERE is ctr1.ctr_state = ctr2.ctr_state. Since the main query is already filtering for 'AR', maybe the subquery can be restricted to 'AR' as well. That would reduce the rows in the subquery. \n\nSo, the subquery in the WHERE clause is using the same ctr_state as the main query. Since the main query is already filtering for 'AR', the subquery's condition ctr1.ctr_state = ctr2.ctr_state would effectively be 'AR' for both. Therefore, the subquery can be modified to only consider 'AR' in its aggregation, which would reduce the number of rows it processes. \n\nBut how to implement that? The subquery is part of the main query's WHERE clause. If I can ensure that the subquery only considers 'AR' in its aggregation, that would limit the data it needs to process. However, the original query's main query has ca_state = 'AR', which is part of the join with customer_address. So the ctr1.ctr_state is 'AR' because of that. Therefore, the subquery's condition is automatically 'AR' because of the main query's filter. \n\nWait, maybe the subquery isn't aware of the main query's filter. So, the subquery is calculating the average for all states, but the main query is only considering 'AR'. Therefore, the subquery could be optimized by adding a filter for ctr_state = 'AR' to limit its scope. \n\nBut how does that fit into the query structure? The subquery is in the WHERE clause of the main query. So, if I can add a condition in the subquery to only consider 'AR', that would reduce the number of rows it processes. \n\nSo the idea is to modify the subquery to include a WHERE clause that filters for ctr_state = 'AR'. That way, the subquery only aggregates data for 'AR', which is already the state the main query is interested in. This would reduce the number of rows in the subquery, making the average calculation faster. \n\nBut the original query's main query has ca_state = 'AR', which is part of the join with customer_address. Therefore, the ctr1.ctr_state is 'AR' because of that. So the subquery's condition ctr1.ctr_state = ctr2.ctr_state would automatically be 'AR' for both. However, the subquery is a correlated subquery, so it might not be aware of the main query's filter. Therefore, adding a filter in the subquery for ctr_state = 'AR' would make it more efficient. \n\nSo the optimization would be to add a condition in the subquery to restrict it to 'AR', thereby reducing the data it processes. \n\nAnother possibility is to precompute the average for 'AR' in the subquery. Since the main query is already filtering for 'AR', the subquery can be limited to that state. \n\nTherefore, the transformation would be to modify the subquery in the WHERE clause to include a condition where ctr_state = 'AR'. This would limit the rows processed in the subquery, making it faster. \n\nSo the target is the subquery in the WHERE clause (avg(ctr_total_return)), and the transformation is to add a filter for ctr_state = 'AR' to that subquery. \n\nI need to check if that's allowed. The original query's main query has ca_state = 'AR', which is part of the join with customer_address. Therefore, the ctr1.ctr_state is 'AR' because of that. However, the subquery is a correlated subquery, so it might not be aware of that filter. Therefore, adding the filter in the subquery would make it more efficient. \n\nYes, that makes sense. So the optimization is to add a condition in the subquery to restrict it to 'AR', thereby reducing the number of rows it needs to process.\n\n</think>\n\n1. **Restrict subquery scope to 'AR'**: subquery (avg(ctr_total_return)) \u2014 TRANSFORMATION: Add `ctr_state = 'AR'` filter to the subquery to limit aggregation to the same state as the main query, reducing rows processed  \n2. **Precompute state-specific average**: customer_total_return \u2014 TARGET: subquery (avg(ctr_total_return)) \u2014 TRANSFORMATION: Use a CTE to precompute state-specific averages for 'AR' to avoid correlated subquery overhead  \n3. **Filter customer_address early**: customer_address \u2014 TARGET: customer_address.ca_state \u2014 TRANSFORMATION: Apply `ca_state = 'AR'` filter before joining with customer_total_return to reduce join cardinality  \n4. **Index c_current_addr_sk**: customer \u2014 TARGET: customer.c_current_addr_sk \u2014 TRANSFORMATION: Add index to accelerate join with customer_address (already partially addressed in prior strategies)  \n5. **Materialize state-filtered CTE**: customer_total_return \u2014 TARGET: customer_total_return CTE \u2014 TRANSFORMATION: Restrict CTE to `ca_state = 'AR'` to reduce aggregation scope and join size",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 3018.858,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 93.29,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1204077.02,
+      "optimized": 84792.02,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 99922.5,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 14225.8,
+    "total_inference_ms": 114148.3,
+    "writer_inference_ms": 660711.2,
+    "writer_tokens_in": 3726,
+    "writer_tokens_out": 79913,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. **Restrict subquery scope to 'AR'**: subquery (avg(ctr_total_return)) \u2014 TRANSFORMATION: Add `ctr_state = 'AR'` filter to the subquery to limit aggregation to the same state as the main query, reducing rows processed  \n2. **Precompute state-specific average**: customer_total_return \u2014 TARGET: subquery (avg(ctr_total_return)) \u2014 TRANSFORMATION: Use a CTE to precompute state-specific averages for 'AR' to avoid correlated subquery overhead  \n3. **Filter customer_address early**: customer_address \u2014 TARGET: customer_address.ca_state \u2014 TRANSFORMATION: Apply `ca_state = 'AR'` filter before joining with customer_total_return to reduce join cardinality  \n4. **Index c_current_addr_sk**: customer \u2014 TARGET: customer.c_current_addr_sk \u2014 TRANSFORMATION: Add index to accelerate join with customer_address (already partially addressed in prior strategies)  \n5. **Materialize state-filtered CTE**: customer_total_return \u2014 TARGET: customer_total_return CTE \u2014 TRANSFORMATION: Restrict CTE to `ca_state = 'AR'` to reduce aggregation scope and join size",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy aimed to precompute state-specific averages using a CTE and restrict subquery scope to 'AR'. The rewrite uses a CTE (`state_avg`) to precompute averages and filters `ca_state ="
+  },
+  "raw_sql": "with customer_total_return as (select wr_returning_customer_sk as ctr_customer_sk ,ca_state as ctr_state, sum(wr_return_amt) as ctr_total_return from web_returns ,date_dim ,customer_address where wr_returned_date_sk = d_date_sk and d_year =2000 and wr_returning_addr_sk = ca_address_sk group by wr_returning_customer_sk ,ca_state) select c_customer_id,c_salutation,c_first_name,c_last_name,c_preferred_cust_flag ,c_birth_day,c_birth_month,c_birth_year,c_birth_country,c_login,c_email_address ,c_last_review_date_sk,ctr_total_return from customer_total_return ctr1 ,customer_address ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state) and ca_address_sk = c_current_addr_sk and ca_state = 'AR' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id,c_salutation,c_first_name,c_last_name,c_preferred_cust_flag ,c_birth_day,c_birth_month,c_birth_year,c_birth_country,c_login,c_email_address ,c_last_review_date_sk,ctr_total_return limit 100"
+}

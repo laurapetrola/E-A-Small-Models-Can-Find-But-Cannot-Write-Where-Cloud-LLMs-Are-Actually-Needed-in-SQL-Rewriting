@@ -1,0 +1,206 @@
+{
+  "timestamp": "2026-09-16T10:10:05.978697",
+  "query_hash": "653e84d2cfaf",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: 'mc.note LIKE '%(200%)%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope."
+  ],
+  "workload_aware": false,
+  "inference_ms": 117451.1,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The database is PostgreSQL 15.18 with extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure and the schema of the relevant tables. The query is complex with multiple joins and filters. Let me break it down.\n\nThe main goal is to find the indexes that can eliminate seq scans on large tables. The existing indexes are listed, so I need to check which tables are being scanned without indexes and what columns are involved in the filters or joins.\n\nLooking at the tables involved:\n\n- company_name has no indexes. The query filters on cn.country_code != '[us]'. Since there's no index on country_code, a seq scan is happening here. But the country_code is a string, and the condition is a NOT EQUAL. However, since the table is small (234k rows), maybe the benefit isn't huge. But maybe an index on country_code could help here.\n\n- movie_companies has indexes on company_id, company_type_id, and movie_id. The query has a condition mc.note LIKE '%(200%)%'. The hint says this is non-sargable because of the leading '%', so a B-tree index won't help. The user mentioned a trigram/GIN index is needed here. Since the database has pg_trgm, a GIN index on note could help with the LIKE pattern. But the user's schema says company_name has no indexes, but the query is using mc.note. Wait, the company_name table is mentioned, but the note is in movie_companies. Let me check again.\n\nWait, the tables involved in the query include movie_companies, which has an index on movie_id. The query has a condition mc.note LIKE '%(200%)%'. Since this is a pattern with leading %, a standard B-tree index won't help. The hint says a trigram/GIN index is needed here. So, the movie_companies table's note column would need a GIN index. But the user's schema says that movie_companies has indexes on company_id, company_type_id, and movie_id. So, the note column isn't indexed. Therefore, a GIN index on note would help here. But the user's instructions say not to suggest indexes that already exist. Since there's no index on note, this is a candidate.\n\nAnother part of the query is the condition on k.keyword IN ('murder', ...). The keyword table has an index on keyword_id, but the query is filtering on keyword. Since the keyword column is in the keyword table, and the query is using k.keyword IN (...), an index on keyword would help. But the keyword table's existing indexes are on keyword_id and movie_id. Wait, the schema says keyword has no indexes? Wait, looking back:\n\nThe schema for relevant tables says:\n\n- keyword (134,170 rows) (no indexes)\n\nSo, the keyword table has no indexes. The query filters on k.keyword IN (...), which is a list of values. An index on keyword would help here. So, a B-tree index on keyword would allow quick lookups for those values.\n\nAnother part is the movie_info table's mi.info IN ('Germany', ...). The movie_info table has indexes on info_type_id and movie_id. The query is filtering on mi.info, which is a string. Since there's no index on info, a seq scan is happening here. So, a B-tree index on info would help.\n\nSimilarly, the movie_info_idx table's mi_idx.info < '7.0' \u2014 the info column is being filtered. Since there's no index on info for movie_info_idx, a B-tree index on info would help.\n\nAlso, the title table has an index on kind_id. The query joins on kt.id = t.kind_id, which is already covered by the existing index. So, no need for an index here.\n\nLooking at the joins, the main tables involved are movie_companies, movie_info, movie_info_idx, movie_keyword, and company_name. The seq scans are likely on movie_companies (due to mc.note LIKE ...), keyword (due to k.keyword IN ...), and movie_info (mi.info IN ...), and possibly movie_info_idx (mi_idx.info < '7.0').\n\nBut the user's hint says that mc.note LIKE '%(200%)%' is non-sargable and requires a trigram/GIN index. So, that's a priority. Also, the keyword table's keyword column is being filtered, so an index on keyword would help. Similarly, the movie_info and movie_info_idx tables have info columns being filtered, so indexes on those.\n\nBut the user's instructions say to not suggest indexes that already exist. The existing indexes are on movie_companies (company_id, company_type_id, movie_id), movie_info (info_type_id, movie_id), movie_info_idx (info_type_id, movie_id), movie_keyword (keyword_id, movie_id), and title (kind_id). \n\nSo, the missing indexes would be:\n\n1. On movie_companies(note) for the LIKE '%(200%)%' condition. Since the existing indexes don't cover note, a GIN index on note would help. But the user's hint says that a trigram/GIN index is needed here. So, this is a candidate.\n\n2. On keyword(keyword) for the IN condition. Since there's no index on keyword, a B-tree index would help.\n\n3. On movie_info(info) for the IN condition. Since there's no index on info, a B-tree index would help.\n\n4. On movie_info_idx(info) for the < '7.0' condition. Again, no index on info, so a B-tree index would help.\n\nBut the user's query has multiple conditions. The main seq scans are on movie_companies (due to the note condition), keyword (due to keyword IN), and movie_info (due to info IN). The movie_info_idx's info < '7.0' is another condition. \n\nThe user's hint says that the mc.note LIKE ... is non-sargable and requires a GIN index. So, that's a high priority. Then, the keyword's keyword column and movie_info's info column are also candidates.\n\nBut the user's schema says that the keyword table has no indexes. So, adding an index on keyword would help. Similarly for movie_info and movie_info_idx.\n\nBut the user's instructions say to order the indexes by the number of rows scanned, largest first. The movie_companies table has 2.6 million rows, which is larger than the keyword (134k) and movie_info (14.8 million). Wait, movie_info has 14.8 million rows, which is larger than movie_companies (2.6 million). So, the seq scan on movie_info would be more expensive than movie_companies. But the query has multiple conditions. Let me check the query's conditions again.\n\nThe query has:\n\n- mc.note LIKE '%(200%)%' \u2014 this is on movie_companies, which has 2.6 million rows. The condition is a pattern with leading %, so a GIN index on note would help.\n\n- k.keyword IN ... \u2014 on keyword table (134k rows), so a B-tree index on keyword would help.\n\n- mi.info IN ... \u2014 on movie_info (14.8 million rows), so a B-tree index on info would help.\n\n- mi_idx.info < '7.0' \u2014 on movie_info_idx (1.38 million rows), so a B,tree index on info would help.\n\nSo, the largest tables with seq scans are movie_info (14.8M) and movie_companies (2.6M). The movie_info's info IN condition would scan 14.8M rows. The movie_companies' note condition would scan 2.6M rows. The keyword's keyword IN would scan 134k rows. So, the priority is to index movie_info's info, then movie_companies' note, then keyword's keyword.\n\nBut the user's hint says that the mc.note condition is non-sargable and requires a GIN index. So, that's a must. Then, the movie_info's info IN would be next. Then, the keyword's keyword.\n\nSo, the indexes to suggest would be:\n\n1. GIN index on movie_companies(note) for the LIKE '%(200%)%' condition.\n\n2. B-tree index on movie_info(info) for the IN condition.\n\n3. B-tree index on keyword(keyword) for the IN condition.\n\n4. B-tree index on movie_info_idx(info) for the < '7.0' condition.\n\nBut the user's instructions say to order by the number of rows scanned, largest first. So, the first index should be on movie_info (14.8M rows), then movie_companies (2.6M), then keyword (134k), then movie_info_idx (1.38M). Wait, movie_info_idx has 1.38M rows, which is larger than keyword's 134k. So, the order would be:\n\n1. movie_info (14.8M) \u2014 info IN\n\n2. movie_companies (2.6M) \u2014 note LIKE\n\n3. movie_info_idx (1.38M) \u2014 info < '7.0'\n\n4. keyword (134k) \u2014 keyword IN\n\nBut the user's query has multiple conditions. However, the main seq scans are on movie_info (due to the IN on info), movie_companies (due to the LIKE on note), and keyword (due to IN on keyword). The movie_info_idx's info < '7.0' is another condition, but the table is smaller.\n\nSo, the indexes to suggest would be:\n\n- movie_info(info) B-tree\n\n- movie_companies(note) GIN\n\n- keyword(keyword) B-tree\n\n- movie_info_idx(info) B-tree\n\nBut the user's schema says that movie_info has an index on info_type_id and movie_id. The info column is not indexed. So, adding a B-tree index on info would help for the IN condition. Similarly for movie_info_idx.\n\nBut the user's instructions say to not suggest indexes that already exist. Since none of these columns are indexed, they are all candidates.\n\nSo, the JSON should list these indexes. However, the user's hint says that the mc.note condition requires a GIN index, which is a DDL operation outside the current scope. But the user is asking for indexes that can be added. So, the answer should include those.\n\nBut the user's instructions say to return the indexes in order of the number of rows scanned, largest first. So, the first index would be on movie_info (14.8M rows), then movie_companies (2.6M), then movie_info_idx (1.38M), then keyword (134k).\n\nBut the query has multiple conditions. Let me check the query again:\n\nThe query has:\n\n- mc.note LIKE '%(200%)%' \u2014 this is on movie_companies (2.6M rows)\n\n- mi.info IN ... \u2014 on movie_info (14.8M rows)\n\n- mi_idx.info < '7.0' \u2014 on movie_info_idx (1.38M rows)\n\n- k.keyword IN ... \u2014 on keyword (134k rows)\n\nSo, the order of indexes should be:\n\n1. movie_info(info) B-tree (14.8M rows)\n\n2. movie_companies(note) GIN (2.6M rows)\n\n3. movie_info_idx(info) B-tree (1.38M rows)\n\n4. keyword(keyword) B-tree (134k rows)\n\nBut the user's hint says that the mc.note condition is non-sargable and requires a GIN index. So, that's a must. The other conditions are B-tree indexes.\n\nSo, the indexes to suggest are:\n\n- movie_info(info) B-tree\n\n- movie_companies(note) GIN\n\n- movie_info_idx(info) B-tree\n\n- keyword(keyword) B-tree\n\nBut the user's instructions say to return the indexes in order of the number of rows scanned, largest first. So, the first index is on movie_info (14.8M), then movie_companies (2.6M), then movie_info_idx (1.38M), then keyword (134k).\n\nBut the user's query may have multiple joins. However, the main seq scans are on these tables. So, the indexes would be:\n\n1. movie_info(info) B-tree\n\n2. movie_companies(note) GIN\n\n3. movie_info_idx(info) B-tree\n\n4. keyword(keyword) B-tree\n\nBut the user's schema says that movie_info has an index on info_type_id and movie_id. The info column is not indexed. So, adding a B-tree index on info would help for the IN condition. Similarly for movie_info_idx.\n\nSo, the JSON should list these four indexes. However, the user's hint says that the mc.note condition requires a GIN index, which is a DDL operation. But the user is asking for indexes that can be added. So, the answer should include these.\n\nBut the user's instructions say to not suggest indexes that already exist. Since none of these columns are indexed, they are all candidates.\n\nSo, the final answer would include these four indexes. However, the user's query may have other seq scans. Let me check again.\n\nThe query also has a condition on t.production_year > 2008. The title table has an index on kind_id, but not on production_year. However, the title table has 2.5 million rows. If the production_year is not indexed, a seq scan on title could be happening. But the query joins title with other tables via t.id, so maybe the join conditions are using the existing indexes. The title table's index on kind_id is used for kt.id = t.kind_id. So, the production_year filter may not be using an index. However, the user's schema says that the title table has an index on kind_id, but not on production_year. So, adding an index on production_year could help. But the user's query has t.production_year > 2008. However, the user's instructions say to focus on the seq scans on large tables. The title table has 2.5 million rows, which is a large table. So, if the query is scanning title without an index on production_year, that's another candidate. But the user's query may not have a seq scan on title because it's joined with other tables. Let me check the query's joins.\n\nThe query joins title with movie_info, movie_info_idx, movie_keyword, and movie_companies. The title's id is used in joins, which are covered by the existing index on kind_id? No, the title's id is the primary key. Wait, the title table's primary key is id. So, the joins on t.id would use the primary key, which is indexed. So, the title table's id is the primary key, so the joins are efficient. The production_year filter on title would require an index on production_year. But the user's schema says that the title table has no indexes except kind_id. So, adding an index on production_year would help. However, the user's query has t.production_year > 2008. But the user's instructions say to focus on the seq scans on large tables. The title table has 2.5 million rows, which is a large table. So, if the query is filtering on production_year, an index on that column would help. But the user's query may not have a seq scan on title because the joins are using the primary key. However, the filter on production_year would require a scan unless there's an index. So, this is another candidate. But the user's instructions say to focus on the seq scans on large tables. The title table is large, so adding an index on production_year could help. But the user's query may not have a seq scan on title because the joins are using the primary key. However, the filter on production_year would still require a scan unless there's an index. So, this is another index candidate. But the user's schema says that the title table has an index on kind_id. So, the production_year is not indexed. \n\nBut the user's query has a condition on t.production_year > 2008. If there's no index on production_year, a seq scan on title would occur. However, the title table has 2.5 million rows. So, adding an index on production_year would help. But the user's instructions say to focus on the seq scans on large tables. So, this is another candidate. However, the user's query may not have a seq scan on title because the joins are using the primary key. But the filter on production_year would still require a scan. \n\nBut the user's query is complex, and the main seq scans are on movie_info, movie_companies, keyword, and possibly title. However, the user's hint says that the mc.note condition is the main issue. So, the main indexes to suggest are:\n\n1. movie_info(info) B-tree\n\n2. movie_companies(note) GIN\n\n3. movie_info_idx(info) B-tree\n\n4. keyword(keyword) B-tree\n\n5. title(production_year) B-tree\n\nBut the user's instructions say to prioritize the largest tables first. The movie_info has 14.8M rows, which is larger than title's 2.5M. So, the order would be movie_info, then movie_companies, then movie_info_idx, then keyword, then title.\n\nBut the user's query may not have a seq scan on title because the joins are using the primary key. However, the filter on production_year would require a scan. So, adding an index on production_year would help. But the user's instructions say to focus on the seq scans on large tables. So, this is another candidate.\n\nBut the user's query may not have a seq scan on title because the joins are using the primary key. The filter on production_year would require a scan, but the join conditions are using the primary key. So, the title table's scan is limited by the join conditions. However, the filter on production_year would still require a scan. \n\nBut given the user's instructions, the main indexes to suggest are the ones on movie_info, movie_companies, movie_info_idx, and keyword. The title's production_year may be a lower priority. \n\nSo, the final answer would include the indexes on movie_info(info), movie_companies(note), movie_info_idx(info), and keyword(keyword). The title's production_year is a possible candidate but may be lower priority. However, the user's query may not have a seq scan on title because the joins are using the primary key. \n\nTherefore, the indexes to suggest are:\n\n1. movie_info(info) B-tree\n\n2. movie_companies(note) GIN\n\n3. movie_info_idx(info) B-tree\n\n4. keyword(keyword) B-tree\n\nThese four indexes would address the seq scans on the largest tables first.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"info\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on 14.8M rows for mi.info IN\"\n    },\n    {\n      \"target\": \"movie_companies\",\n      \"property\": \"note\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on 2.6M rows for mc.note LIKE\"\n    },\n    {\n      \"target\": \"movie_info_idx\",\n      \"property\": \"info\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on 1.38M rows for mi_idx.info < '7.0'\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on 134K rows for k.keyword IN\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the largest tables with seq scans in the query. The GIN index on movie_companies.note handles the non-sargable LIKE pattern, while B-tree indexes on movie_info.info, movie_info_idx.info, and keyword.keyword optimize the IN filters. These columns are critical for filtering large datasets and lack existing indexes.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "movie_companies",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 6.1,
+      "baseline_exec_ms": 408.662,
+      "optimized_exec_ms": 383.805,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 9.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20794.8,
+          "cost_with_index": 20794.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4796.13,
+          "cost_with_index": 4796.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.92,
+          "cost_with_index": 55684.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19510.42,
+          "cost_with_index": 19510.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67160.34,
+          "cost_with_index": 67160.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 1260.08,
+          "benefit_pct": 86.8
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46664.39,
+          "cost_with_index": 46664.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.48,
+          "cost_with_index": 3814.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 3856.57,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "movie_info_idx",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.3,
+      "baseline_exec_ms": 386.55,
+      "optimized_exec_ms": 377.77,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20794.8,
+          "cost_with_index": 20794.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19510.42,
+          "cost_with_index": 19510.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10246.41,
+          "cost_with_index": 10246.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 9522.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 39.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.4,
+      "baseline_exec_ms": 383.559,
+      "optimized_exec_ms": 374.341,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 38.9,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4796.13,
+          "cost_with_index": 2178.44,
+          "benefit_pct": 54.6
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67160.34,
+          "cost_with_index": 67160.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10246.41,
+          "cost_with_index": 10606.58,
+          "benefit_pct": -3.5
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 8006.11,
+          "benefit_pct": 15.9
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3821.91,
+          "cost_with_index": 1204.23,
+          "benefit_pct": 68.5
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.48,
+          "cost_with_index": 1196.79,
+          "benefit_pct": 68.6
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 1238.88,
+          "benefit_pct": 67.9
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 1,
+      "status": null
+    }
+  ]
+}

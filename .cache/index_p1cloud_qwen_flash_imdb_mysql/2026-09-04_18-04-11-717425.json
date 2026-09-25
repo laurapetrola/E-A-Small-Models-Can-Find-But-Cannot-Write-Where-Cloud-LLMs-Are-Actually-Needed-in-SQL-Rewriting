@@ -1,0 +1,203 @@
+{
+  "timestamp": "2026-09-04T18:04:11.717403",
+  "query_hash": "653e84d2cfaf",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 59817.6,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The database is MySQL 8.0.46, and the existing indexes are provided for some tables. \n\nFirst, I need to understand the query structure and the tables involved. Let me break down the query step by step. \n\nThe query is selecting MIN values from several tables, joining them with various conditions. The main tables involved are info_type, movie_info, title, kind_type, movie_keyword, keyword, movie_info_idx, info_type again, movie_companies, company_type, and company_name. \n\nLooking at the schema for the relevant tables, I notice that some tables have existing indexes, while others don't. The user mentioned that the physical execution plan is withheld, so I have to rely on the schema and the query structure to determine where full table scans are happening.\n\nThe key is to find tables that are being scanned entirely (access_type \"ALL\") because those are the primary candidates for adding indexes. Since the existing indexes are already in place for some tables, I need to check which tables don't have indexes and are being scanned.\n\nLet me look at each table involved in the query:\n\n1. **info_type (it1 and it2)**: These tables have no indexes. The query joins them with conditions on info. Since they have few rows (113 and 113), maybe they aren't the main issue, but if they're being scanned, an index on the info column could help.\n\n2. **movie_info**: Has indexes on info_type_id, movie_id, and info. The query filters on info IN ('Germany', 'German', 'USA', 'American'), which is covered by the existing _athena_sim_movie_info_info index. However, since it's a MIN operation, maybe the index isn't sufficient, but the existing index might help.\n\n3. **title**: Has an index on kind_id. The query filters on production_year > 2008 and joins with kind_type. The production_year isn't indexed, so a full table scan might be happening here. \n\n4. **movie_keyword**: Has indexes on movie_id and keyword_id. The query joins on movie_id and filters keyword_id via the keyword table. Since movie_keyword has an index on movie_id, maybe that's okay.\n\n5. **keyword**: No indexes. The query filters on keyword IN ('murder', ...), so an index on keyword would help here.\n\n6. **movie_info_idx**: Has indexes on info_type_id and movie_id. The query filters on info < '7.0', which is on the info column. The existing index on info_type_id and movie_id might not cover the info condition, leading to a full scan.\n\n7. **movie_companies**: Has indexes on company_id, company_type_id, and movie_id. The query has conditions on mc.note NOT LIKE '%(USA)%' and LIKE '%(200%)%'. Since note is a TEXT field and there's no index on note, this could be causing a full scan.\n\n8. **company_name**: No indexes. The query filters on cn.country_code != '[us]'. Since country_code is in company_name and there's no index, this might be a full scan.\n\n9. **company_type**: No indexes. The query joins with company_type, but since it's a small table (4 rows), maybe not a big issue.\n\nNow, the main tables that are likely causing full table scans are:\n\n- **title**: Because the query filters on production_year > 2008, which isn't indexed. The existing index is on kind_id, which isn't part of the filter. So, a full scan on title is happening here.\n\n- **keyword**: The filter is on keyword IN ('murder', ...), and since there's no index on keyword, this would cause a full scan.\n\n- **movie_info_idx**: The filter is on info < '7.0', which is on the info column. The existing indexes are on info_type_id and movie_id, but not on info. So, a full scan here.\n\n- **movie_companies**: The conditions on mc.note are using LIKE with wildcards, which can't be efficiently indexed. Since note is a TEXT field and there's no index, this would cause a full scan.\n\n- **company_name**: The filter is on country_code != '[us]', which is a TEXT field. No index on country_code, leading to a full scan.\n\nSo, the indexes that would help are:\n\n1. **title**: Add an index on production_year to filter the rows where production_year > 2008. Since production_year is an integer, the index would be on (production_year).\n\n2. **keyword**: Add an index on keyword to speed up the IN clause. Since keyword is a TEXT field, maybe a prefix index, but the exact value is known, so a full index on keyword.\n\n3. **movie_info_idx**: Add an index on info to cover the condition info < '7.0'. Since info is TEXT, maybe a prefix index, but the exact value is a string, so a full index on info.\n\n4. **movie_companies**: Add an index on note to handle the LIKE conditions. However, since LIKE with leading wildcards (e.g., '%(USA)%') can't be efficiently indexed, maybe a full-text index on note. But MySQL's full-text search might not be suitable here. Alternatively, if the note is a TEXT field, an index on note might not help with the LIKE conditions. So, this might not be helpful. Wait, the query has mc.note NOT LIKE '%(USA)%' and LIKE '%(200%)%'. These are pattern matching with wildcards on both ends, which can't be efficiently indexed. So, maybe no index here, but the existing indexes on movie_id and company_id might not help. So, perhaps this is a full scan, but the existing indexes on movie_id and company_id might be used for joins, but the WHERE conditions on note are causing the scan.\n\n5. **company_name**: Add an index on country_code to filter cn.country_code != '[us]'. Since country_code is a VARCHAR, an index on country_code would help.\n\nSo, the main candidates are title, keyword, movie_info_idx, company_name, and possibly movie_companies. But the user's schema says that movie_companies has indexes on company_id, company_type_id, and movie_id. The query joins on movie_id, so the existing index on movie_id might be used. However, the conditions on note are causing a full scan. Since note is TEXT and there's no index, that's a problem. But adding an index on note might not help with the LIKE conditions. So, maybe that's not a good candidate.\n\nSo, focusing on the tables that are being scanned:\n\n- **title**: Add index on production_year.\n\n- **keyword**: Add index on keyword.\n\n- **movie_info_idx**: Add index on info.\n\n- **company_name**: Add index on country_code.\n\nLet me check the existing indexes again. The user mentioned that company_name has no indexes. So, adding an index on country_code would help. Similarly, keyword has no indexes, so adding an index on keyword. For movie_info_idx, the existing indexes are on info_type_id and movie_id. The query filters on info < '7.0', which is on the info column. So, adding an index on info would help. For title, the existing index is on kind_id, but the filter is on production_year. So, adding an index on production_year would help.\n\nSo, the indexes to suggest are:\n\n1. title (production_year)\n2. keyword (keyword)\n3. movie_info_idx (info)\n4. company_name (country_code)\n\nEach of these would eliminate a full table scan on those tables, thus reducing the execution cost. The estimated benefit would be the number of rows in each table that are being scanned. For example, title has 2.5 million rows, so scanning all of them would be expensive. Adding an index on production_year would allow the query to quickly find rows where production_year > 2008.\n\nTherefore, the JSON should list these indexes with their respective columns and index types.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title (2,528,312 rows) by filtering production_year > 2008\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on keyword (134,170 rows) by filtering keyword IN ('murder', 'murder-in-title', 'blood', 'violence')\"\n    },\n    {\n      \"target\": \"movie_info_idx\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on movie_info_idx (1,380,035 rows) by filtering info < '7.0'\"\n    },\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_name (234,997 rows) by filtering country_code != '[us]'\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target full table scans on tables with large row counts and critical filter conditions in the query. The title table's production_year filter, keyword table's keyword IN clause, movie_info_idx's info < '7.0' condition, and company_name's country_code filter all benefit from dedicated indexes to reduce scan costs.\"\n}",
+  "recommendations": [
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": -92.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.0,
+      "baseline_exec_ms": 3644.286,
+      "optimized_exec_ms": 3644.84,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -11.3,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 683617.92,
+          "cost_with_index": 796483.33,
+          "benefit_pct": -16.5
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 21380956.9,
+          "cost_with_index": 21729050.54,
+          "benefit_pct": -1.6
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7141.06,
+          "cost_with_index": 7155.78,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 992895.46,
+          "cost_with_index": 2038732.1,
+          "benefit_pct": -105.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 51249.52,
+          "cost_with_index": 59745.14,
+          "benefit_pct": -16.6
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17105.38,
+          "cost_with_index": 18321.99,
+          "benefit_pct": -7.1
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 300627.73,
+          "cost_with_index": 329298.77,
+          "benefit_pct": -9.5
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 643050.79,
+          "cost_with_index": 664218.39,
+          "benefit_pct": -3.3
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 18262.86,
+          "cost_with_index": 12936.39,
+          "benefit_pct": 29.2
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6716.09,
+          "cost_with_index": 6807.45,
+          "benefit_pct": -1.4
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 1938135.98,
+          "cost_with_index": 1965342.84,
+          "benefit_pct": -1.4
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 4059817.17,
+          "cost_with_index": 4152446.63,
+          "benefit_pct": -2.3
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 10,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "movie_info_idx",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": -87.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": 5.6,
+      "baseline_exec_ms": 3761.913,
+      "optimized_exec_ms": 3551.164,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -47.3,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 659223.59,
+          "cost_with_index": 2209664.47,
+          "benefit_pct": -235.2
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 21357265.92,
+          "cost_with_index": 21623430.09,
+          "benefit_pct": -1.2
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7162.82,
+          "cost_with_index": 7174.04,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 51738.93,
+          "cost_with_index": 54434.99,
+          "benefit_pct": -5.2
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 298898.25,
+          "cost_with_index": 312153.68,
+          "benefit_pct": -4.4
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6718.49,
+          "cost_with_index": 6659.7,
+          "benefit_pct": 0.9
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 1943465.4,
+          "cost_with_index": 5464195.16,
+          "benefit_pct": -181.2
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 4063040.89,
+          "cost_with_index": 2096707.6,
+          "benefit_pct": 48.4
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 5,
+      "status": null
+    }
+  ]
+}

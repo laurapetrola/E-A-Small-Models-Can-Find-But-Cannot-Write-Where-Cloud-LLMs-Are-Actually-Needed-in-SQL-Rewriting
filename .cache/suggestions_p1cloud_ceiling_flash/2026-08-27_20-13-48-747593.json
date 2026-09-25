@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-08-27T20:13:48.747568",
+  "query_hash": "a5945ebaf8f0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split aggregate logic into pre-aggregation CTE"
+  ],
+  "improvement_pct": 5.57,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 231559.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH date_range AS (\n    SELECT d_date_sk, d_date\n    FROM date_dim\n    WHERE d_date BETWEEN DATE '2001-04-02' AND DATE '2001-06-01'\n),\nprice_items AS (\n    SELECT i_item_sk, i_item_id\n    FROM item\n    WHERE i_current_price BETWEEN 0.99 AND 1.49\n),\nfiltered_sales AS (\n    SELECT cs.cs_item_sk, cs.cs_warehouse_sk, cs.cs_order_number, cs.cs_sales_price, dr.d_date\n    FROM date_range dr\n    JOIN catalog_sales cs ON cs.cs_sold_date_sk = dr.d_date_sk\n    JOIN price_items pi ON cs.cs_item_sk = pi.i_item_sk\n),\nsales_with_returns AS (\n    SELECT fs.cs_item_sk, fs.cs_warehouse_sk, fs.d_date,\n           fs.cs_sales_price - COALESCE(cr.cr_refunded_cash, 0) AS net_sales\n    FROM filtered_sales fs\n    LEFT JOIN (\n        SELECT cr_order_number, cr_item_sk, cr_refunded_cash\n        FROM catalog_returns\n    ) cr ON fs.cs_order_number = cr.cr_order_number AND fs.cs_item_sk = cr.cr_item_sk\n),\npreagg AS (\n    SELECT cs_item_sk, cs_warehouse_sk,\n           SUM(CASE WHEN d_date < DATE '2001-05-02' THEN net_sales ELSE 0 END) AS sales_before,\n           SUM(CASE WHEN d_date >= DATE '2001-05-02' THEN net_sales ELSE 0 END) AS sales_after\n    FROM sales_with_returns\n    GROUP BY cs_item_sk, cs_warehouse_sk\n)\nSELECT w.w_state, i.i_item_id,\n       SUM(p.sales_before) AS sales_before,\n       SUM(p.sales_after) AS sales_after\nFROM preagg p\nJOIN warehouse w ON p.cs_warehouse_sk = w.w_warehouse_sk\nJOIN price_items i ON p.cs_item_sk = i.i_item_sk\nGROUP BY w.w_state, i.i_item_id\nORDER BY w.w_state, i.i_item_id\nLIMIT 100",
+  "reached_sql": "WITH date_range AS (\n    SELECT d_date_sk, d_date\n    FROM date_dim\n    WHERE d_date BETWEEN DATE '2001-04-02' AND DATE '2001-06-01'\n),\nprice_items AS (\n    SELECT i_item_sk, i_item_id\n    FROM item\n    WHERE i_current_price BETWEEN 0.99 AND 1.49\n),\nfiltered_sales AS (\n    SELECT cs.cs_item_sk, cs.cs_warehouse_sk, cs.cs_order_number, cs.cs_sales_price, dr.d_date\n    FROM date_range dr\n    JOIN catalog_sales cs ON cs.cs_sold_date_sk = dr.d_date_sk\n    JOIN price_items pi ON cs.cs_item_sk = pi.i_item_sk\n),\nsales_with_returns AS (\n    SELECT fs.cs_item_sk, fs.cs_warehouse_sk, fs.d_date,\n           fs.cs_sales_price - COALESCE(cr.cr_refunded_cash, 0) AS net_sales\n    FROM filtered_sales fs\n    LEFT JOIN (\n        SELECT cr_order_number, cr_item_sk, cr_refunded_cash\n        FROM catalog_returns\n    ) cr ON fs.cs_order_number = cr.cr_order_number AND fs.cs_item_sk = cr.cr_item_sk\n),\npreagg AS (\n    SELECT cs_item_sk, cs_warehouse_sk,\n           SUM(CASE WHEN d_date < DATE '2001-05-02' THEN net_sales ELSE 0 END) AS sales_before,\n           SUM(CASE WHEN d_date >= DATE '2001-05-02' THEN net_sales ELSE 0 END) AS sales_after\n    FROM sales_with_returns\n    GROUP BY cs_item_sk, cs_warehouse_sk\n)\nSELECT w.w_state, i.i_item_id,\n       SUM(p.sales_before) AS sales_before,\n       SUM(p.sales_after) AS sales_after\nFROM preagg p\nJOIN warehouse w ON p.cs_warehouse_sk = w.w_warehouse_sk\nJOIN price_items i ON p.cs_item_sk = i.i_item_sk\nGROUP BY w.w_state, i.i_item_id\nORDER BY w.w_state, i.i_item_id\nLIMIT 100",
+  "reasoning_trace": "1. PUSHDOWN INNER PREDICATES BEFORE LEFT JOIN \u2014 TARGET: the `catalog_sales LEFT JOIN catalog_returns` followed by `item`/`date_dim` comma joins \u2014 TRANSFORMATION: Apply the `d_date` range and `i_current_price` predicates to `catalog_sales` first (via `date_dim` and the price-filtered `item`), defer `warehouse` to the final grouping step, and only then LEFT JOIN `catalog_returns`; this avoids materializing a full 28.8M-row outer join before filtering.\n\n2. DATE-DRIVEN INDEX ACCESS \u2014 TARGET: `catalog_sales.cs_sold_date_sk` joined to `date_dim.d_date_sk` \u2014 TRANSFORMATION: Start from the `date_dim` rows with `d_date BETWEEN '2001-04-02' AND '2001-06-01'` and use that small set to probe `catalog_sales` on `cs_sold_date_sk`, turning the date filter into an index range lookup instead of a post-join filter on the huge fact table.\n\n3. COVERING INDEX \u2014 TARGET: `catalog_sales` columns `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)` with payload `cs_order_number` and `cs_sales_price` \u2014 TRANSFORMATION: Add a covering index on those columns so the date-driven probe of `catalog_sales` is an index-only scan, avoiding heap fetches for the columns needed by the return join and the sum.\n\n4. ITEM SEMI-JOIN PUSHDOWN \u2014 TARGET: `item.i_current_price BETWEEN 0.99 AND 1.49` and `catalog_sales.cs_item_sk` \u2014 TRANSFORMATION: Pre-filter `item` to the qualifying `i_item_sk`/`i_item_id` rows and semi-join `catalog_sales` to that set before the `catalog_returns` LEFT JOIN, so only price-qualifying sales rows reach the aggregation.\n\n5. NARROW RETURNS SOURCE \u2014 TARGET: `catalog_returns(cr_order_number, cr_item_sk, cr_refunded_cash)` \u2014 TRANSFORMATION: In the LEFT JOIN, use only a pre-projected set of those three return columns (or a covering index with them) instead of reading the full 2.88M-row `catalog_returns` table; the join needs no other return column.\n\n6. PRE-AGGREGATE BY FACT KEYS \u2014 TARGET: filtered `catalog_sales`/`catalog_returns` rows grouped by `cs_item_sk, cs_warehouse_sk` \u2014 TRANSFORMATION: Aggregate the reduced fact/return rows on the surrogate keys with the two conditional sums first, then join to `item` and `warehouse` to map to `i_item_id`/`w_state` and perform the final group/order/limit; this shrinks the input to the final sort.\n\n7. EXPRESSION SIMPLIFICATION \u2014 TARGET: `cast(d_date as date)` in both CASE branches \u2014 TRANSFORMATION: Remove the redundant casts (`d_date` is already a DATE) and use conditional aggregates so `cs_sales_price - coalesce(cr_refunded_cash,0)` is not recomputed for both before/after branches; minor CPU reduction after the structural changes.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 1654.746,
+      "optimized_ms": 1562.542,
+      "delta_ms": 92.204,
+      "improvement_pct": 5.57,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 906083.03,
+      "optimized": 914654.3,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 212097.5,
+    "index_advisor_inference_ms": 17759.7,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 1702.4,
+    "total_inference_ms": 231559.6,
+    "writer_inference_ms": 403777.5,
+    "writer_tokens_in": 1317,
+    "writer_tokens_out": 45948,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. PUSHDOWN INNER PREDICATES BEFORE LEFT JOIN \u2014 TARGET: the `catalog_sales LEFT JOIN catalog_returns` followed by `item`/`date_dim` comma joins \u2014 TRANSFORMATION: Apply the `d_date` range and `i_current_price` predicates to `catalog_sales` first (via `date_dim` and the price-filtered `item`), defer `warehouse` to the final grouping step, and only then LEFT JOIN `catalog_returns`; this avoids materializing a full 28.8M-row outer join before filtering.\n\n2. DATE-DRIVEN INDEX ACCESS \u2014 TARGET: `catalog_sales.cs_sold_date_sk` joined to `date_dim.d_date_sk` \u2014 TRANSFORMATION: Start from the `date_dim` rows with `d_date BETWEEN '2001-04-02' AND '2001-06-01'` and use that small set to probe `catalog_sales` on `cs_sold_date_sk`, turning the date filter into an index range lookup instead of a post-join filter on the huge fact table.\n\n3. COVERING INDEX \u2014 TARGET: `catalog_sales` columns `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)` with payload `cs_order_number` and `cs_sales_price` \u2014 TRANSFORMATION: Add a covering index on those columns so the date-driven probe of `catalog_sales` is an index-only scan, avoiding heap fetches for the columns needed by the return join and the sum.\n\n4. ITEM SEMI-JOIN PUSHDOWN \u2014 TARGET: `item.i_current_price BETWEEN 0.99 AND 1.49` and `catalog_sales.cs_item_sk` \u2014 TRANSFORMATION: Pre-filter `item` to the qualifying `i_item_sk`/`i_item_id` rows and semi-join `catalog_sales` to that set before the `catalog_returns` LEFT JOIN, so only price-qualifying sales rows reach the aggregation.\n\n5. NARROW RETURNS SOURCE \u2014 TARGET: `catalog_returns(cr_order_number, cr_item_sk, cr_refunded_cash)` \u2014 TRANSFORMATION: In the LEFT JOIN, use only a pre-projected set of those three return columns (or a covering index with them) instead of reading the full 2.88M-row `catalog_returns` table; the join needs no other return column.\n\n6. PRE-AGGREGATE BY FACT KEYS \u2014 TARGET: filtered `catalog_sales`/`catalog_returns` rows grouped by `cs_item_sk, cs_warehouse_sk` \u2014 TRANSFORMATION: Aggregate the reduced fact/return rows on the surrogate keys with the two conditional sums first, then join to `item` and `warehouse` to map to `i_item_id`/`w_state` and perform the final group/order/limit; this shrinks the input to the final sort.\n\n7. EXPRESSION SIMPLIFICATION \u2014 TARGET: `cast(d_date as date)` in both CASE branches \u2014 TRANSFORMATION: Remove the redundant casts (`d_date` is already a DATE) and use conditional aggregates so `cs_sales_price - coalesce(cr_refunded_cash,0)` is not recomputed for both before/after branches; minor CPU reduction after the structural changes.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe rewrite applies the strategy's main technique of PUSHDOWN INNER PREDICATES BEFORE LEFT JOIN by filtering `date_dim` and `item` early, and using those to probe `catalog_sales` before joi"
+  },
+  "raw_sql": "select w_state ,i_item_id ,sum(case when (cast(d_date as date) < cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_before ,sum(case when (cast(d_date as date) >= cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_after from catalog_sales left outer join catalog_returns on (cs_order_number = cr_order_number and cs_item_sk = cr_item_sk) ,warehouse ,item ,date_dim where i_current_price between 0.99 and 1.49 and i_item_sk = cs_item_sk and cs_warehouse_sk = w_warehouse_sk and cs_sold_date_sk = d_date_sk and d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date) group by w_state,i_item_id order by w_state,i_item_id limit 100"
+}

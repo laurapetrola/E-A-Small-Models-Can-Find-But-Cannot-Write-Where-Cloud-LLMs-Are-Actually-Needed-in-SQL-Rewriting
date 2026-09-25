@@ -1,0 +1,223 @@
+{
+  "timestamp": "2026-08-31T06:42:02.887810",
+  "query_hash": "8ebe2727407b",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 54105.3,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants to know which indexes would most reduce the execution cost for their specific SQL query. The query involves several tables, and the main goal is to identify full table scans that can be eliminated with new indexes.\n\nFirst, I'll look at the query structure. The query is joining catalog_sales with customer, customer_demographics, customer_address, date_dim, and item. The WHERE clause has conditions on d_year = 2001, ca_state in a list, c_birth_month in a list, and some demographics filters. The GROUP BY is on i_item_id, ca_country, ca_state, ca_county with rollup.\n\nLooking at the relevant tables and their existing indexes:\n\n- catalog_sales has several indexes, but the ones related to the join conditions might not be optimal. The query joins on cs_bill_cdemo_sk (which has an index), cs_bill_customer_sk (also indexed), and cs_sold_date_sk (indexed). However, the query also filters on d_year = 2001, which is in date_dim. Since date_dim has no indexes, that's a potential full table scan.\n\n- customer table has an index on c_current_cdemo_sk, c_current_addr_sk, and c_birth_month. The query filters on c_birth_month in (1,3,7,11,10,4), which is covered by the existing index idx_customer_c_current_cdemo_sk_c_current_addr_sk_c_birth_month_. However, the customer_address table has no indexes, and the query joins on c_current_addr_sk, which is part of the customer table's index. But since customer_address is being joined, and it has no indexes, that could be a full table scan.\n\n- customer_demographics (cd1 and cd2) have no indexes. The query filters on cd1.cd_gender = 'F' and cd1.cd_education_status = 'Primary'. Since there's no index on these columns, that's a full table scan.\n\n- date_dim has no indexes, and the query filters on d_year = 2001. Since date_dim is used in the WHERE clause with d_year, and there's no index, that's another full table scan.\n\n- item has no indexes, but the query joins on cs_item_sk, which is part of the primary key. Since item's primary key is i_item_sk, which is used in the join, maybe that's already covered. But the query might be scanning item if there's no index on other columns, but since the join is on the primary key, maybe it's not a problem.\n\nWait, the query's main joins are between catalog_sales and customer, customer_demographics, customer_address, and date_dim. The customer_address table is joined via c_current_addr_sk, which is indexed in the customer table. But customer_address itself has no indexes. So when joining customer_address, if there's no index on ca_state or other columns, that could lead to a full table scan.\n\nThe query also has a GROUP BY with rollup, which might require aggregating data, but the main issue is the full table scans on tables without indexes.\n\nSo, the tables that are likely causing full table scans are:\n\n1. date_dim: filtered by d_year = 2001. Since there's no index on d_year, this would scan the entire table.\n\n2. customer_demographics (cd1 and cd2): filtered by cd_gender and cd_education_status. No indexes on these columns.\n\n3. customer_address: joined via ca_address_sk (which is in customer's index), but customer_address has no indexes. The query filters on ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA'), which would require a full scan if there's no index on ca_state.\n\n4. customer: the query filters on c_birth_month in (1,3,7,11,10,4), which is covered by the existing index idx_customer_c_current_cdemo_sk_c_current_addr_sk_c_birth_month_. However, the join with customer_address is via c_current_addr_sk, which is also part of that index. So maybe customer isn't causing a full scan.\n\nSo, the main candidates for indexes are date_dim (on d_year), customer_demographics (on cd_gender and cd_education_status), and customer_address (on ca_state).\n\nBut wait, the query also has a join between customer and customer_address via c_current_addr_sk. Since customer_address has no indexes, joining on that might require a full scan. However, the customer table's index includes c_current_addr_sk, so the join might be efficient, but the customer_address table itself would need an index on ca_state to filter the rows.\n\nSo, the indexes needed would be:\n\n- On date_dim (d_year) to filter d_year = 2001.\n\n- On customer_demographics (cd_gender, cd_education_status) to filter those conditions.\n\n- On customer_address (ca_state) to filter the ca_state in the list.\n\nAdditionally, the query uses c_birth_month in the WHERE clause, which is already covered by the existing index on customer. So that's already handled.\n\nTherefore, the indexes to suggest are:\n\n1. date_dim (d_year) - to eliminate the full scan on date_dim.\n\n2. customer_demographics (cd_gender, cd_education_status) - to filter the demographics.\n\n3. customer_address (ca_state) - to filter the states.\n\nBut wait, the query also has a GROUP BY with rollup, which might involve aggregating data. However, the main issue is the full table scans on the mentioned tables.\n\nSo, the JSON should list these three indexes. Let me check the existing indexes again to make sure they aren't already present. The customer_demographics table has no indexes, so adding an index on cd_gender and cd_education_status would help. The customer_address has no indexes, so adding an index on ca_state. The date_dim has no indexes, so adding an index on d_year.\n\nEach of these would eliminate a full table scan on their respective tables, thus improving the query's performance.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on date_dim for d_year = 2001 filter\"\n    },\n    {\n      \"target\": \"customer_demographics\",\n      \"property\": \"cd_gender, cd_education_status\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on customer_demographics for cd_gender='F' and cd_education_status='Primary' filter\"\n    },\n    {\n      \"target\": \"customer_address\",\n      \"property\": \"ca_state\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on customer_address for ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA') filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target full table scans on date_dim, customer_demographics, and customer_address tables which are caused by filter conditions in the query. The date_dim scan is eliminated by indexing d_year, customer_demographics scan by indexing the gender/education status filter columns, and customer_address scan by indexing the ca_state filter column.\"\n}",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 44.3,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 40.9,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 7553483.79,
+          "cost_with_index": 1316441.41,
+          "benefit_pct": 82.6
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 16127943.58,
+          "cost_with_index": 16127460.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": null,
+          "cost_with_index": null,
+          "benefit_pct": null
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 537639.89,
+          "cost_with_index": 413118.59,
+          "benefit_pct": 23.2
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 19475985.79,
+          "cost_with_index": 103532.41,
+          "benefit_pct": 99.5
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 194899.56,
+          "cost_with_index": 94280.95,
+          "benefit_pct": 51.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 3.3328752543187e+19,
+          "cost_with_index": 4.1111697487143e+19,
+          "benefit_pct": -23.4
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 405896.1,
+          "cost_with_index": 161106.38,
+          "benefit_pct": 60.3
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 2065649.09,
+          "cost_with_index": 626916.63,
+          "benefit_pct": 69.7
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3768680.51,
+          "cost_with_index": 1033038.28,
+          "benefit_pct": 72.6
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 547695.42,
+          "cost_with_index": 89592.12,
+          "benefit_pct": 83.6
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 278353.07,
+          "cost_with_index": 134615.93,
+          "benefit_pct": 51.6
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": null,
+          "cost_with_index": null,
+          "benefit_pct": null
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 102394051.48,
+          "cost_with_index": 82360020.5,
+          "benefit_pct": 19.6
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 576720.01,
+          "cost_with_index": 277308.98,
+          "benefit_pct": 51.9
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 377870.96,
+          "cost_with_index": 486779.5,
+          "benefit_pct": -28.8
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 157402.83,
+          "cost_with_index": 104469.33,
+          "benefit_pct": 33.6
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 291179.6,
+          "cost_with_index": 272542.61,
+          "benefit_pct": 6.4
+        }
+      ],
+      "workload_queries_improved": 13,
+      "workload_queries_regressed": 2,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_gender, cd_education_status",
+      "index_type": "btree",
+      "estimated_benefit_pct": -223.1,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -17.3,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 18928110.13,
+          "cost_with_index": 19494840.82,
+          "benefit_pct": -3.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 151381.65,
+          "cost_with_index": 197087.91,
+          "benefit_pct": -30.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 216092.43,
+          "cost_with_index": 281483.92,
+          "benefit_pct": -30.3
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 276060.07,
+          "cost_with_index": 291631.04,
+          "benefit_pct": -5.6
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 4,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.9,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 17.7,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 19494840.82,
+          "cost_with_index": 6830446.2,
+          "benefit_pct": 65.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 2101681.96,
+          "cost_with_index": 2040974.69,
+          "benefit_pct": 2.9
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3834501.55,
+          "cost_with_index": 3723607.93,
+          "benefit_pct": 2.9
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 291631.04,
+          "cost_with_index": 291592.75,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 3,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

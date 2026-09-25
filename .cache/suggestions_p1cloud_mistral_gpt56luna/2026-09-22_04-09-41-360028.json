@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-09-22T04:09:41.359999",
+  "query_hash": "7b1907e24d00",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "materialize a subquery",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches",
+    "avoid correlated subqueries"
+  ],
+  "improvement_pct": -26.5,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 115050.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_dim_window AS MATERIALIZED (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_date BETWEEN cast('2000-08-19' AS date)\n        AND cast('2000-09-02' AS date)\n),\nstore_rows AS (\n    SELECT\n        s_store_id,\n        ss_ext_sales_price AS sales_price,\n        ss_net_profit AS profit,\n        cast(0 AS decimal(7,2)) AS return_amt,\n        cast(0 AS decimal(7,2)) AS net_loss\n    FROM store_sales\n    JOIN date_dim_window\n        ON ss_sold_date_sk = d_date_sk\n    JOIN store\n        ON ss_store_sk = s_store_sk\n    UNION ALL\n    SELECT\n        s_store_id,\n        cast(0 AS decimal(7,2)) AS sales_price,\n        cast(0 AS decimal(7,2)) AS profit,\n        sr_return_amt AS return_amt,\n        sr_net_loss AS net_loss\n    FROM store_returns\n    JOIN date_dim_window\n        ON sr_returned_date_sk = d_date_sk\n    JOIN store\n        ON sr_store_sk = s_store_sk\n),\nssr AS (\n    SELECT\n        s_store_id,\n        sum(sales_price) AS sales,\n        sum(profit) AS profit,\n        sum(return_amt) AS returns,\n        sum(net_loss) AS profit_loss\n    FROM store_rows\n    GROUP BY s_store_id\n),\ncatalog_rows AS (\n    SELECT\n        cp_catalog_page_id,\n        cs_ext_sales_price AS sales_price,\n        cs_net_profit AS profit,\n        cast(0 AS decimal(7,2)) AS return_amt,\n        cast(0 AS decimal(7,2)) AS net_loss\n    FROM catalog_sales\n    JOIN date_dim_window\n        ON cs_sold_date_sk = d_date_sk\n    JOIN catalog_page\n        ON cs_catalog_page_sk = cp_catalog_page_sk\n    UNION ALL\n    SELECT\n        cp_catalog_page_id,\n        cast(0 AS decimal(7,2)) AS sales_price,\n        cast(0 AS decimal(7,2)) AS profit,\n        cr_return_amount AS return_amt,\n        cr_net_loss AS net_loss\n    FROM catalog_returns\n    JOIN date_dim_window\n        ON cr_returned_date_sk = d_date_sk\n    JOIN catalog_page\n        ON cr_catalog_page_sk = cp_catalog_page_sk\n),\ncsr AS (\n    SELECT\n        cp_catalog_page_id,\n        sum(sales_price) AS sales,\n        sum(profit) AS profit,\n        sum(return_amt) AS returns,\n        sum(net_loss) AS profit_loss\n    FROM catalog_rows\n    GROUP BY cp_catalog_page_id\n),\nweb_rows AS (\n    SELECT\n        web_site_id,\n        ws_ext_sales_price AS sales_price,\n        ws_net_profit AS profit,\n        cast(0 AS decimal(7,2)) AS return_amt,\n        cast(0 AS decimal(7,2)) AS net_loss\n    FROM web_sales\n    JOIN date_dim_window\n        ON ws_sold_date_sk = d_date_sk\n    JOIN web_site\n        ON ws_web_site_sk = web_site_sk\n    UNION ALL\n    SELECT\n        web_site_id,\n        cast(0 AS decimal(7,2)) AS sales_price,\n        cast(0 AS decimal(7,2)) AS profit,\n        wr_return_amt AS return_amt,\n        wr_net_loss AS net_loss\n    FROM web_returns\n    LEFT OUTER JOIN web_sales\n        ON wr_item_sk = ws_item_sk\n        AND wr_order_number = ws_order_number\n    JOIN date_dim_window\n        ON wr_returned_date_sk = d_date_sk\n    JOIN web_site\n        ON ws_web_site_sk = web_site_sk\n),\nwsr AS (\n    SELECT\n        web_site_id,\n        sum(sales_price) AS sales,\n        sum(profit) AS profit,\n        sum(return_amt) AS returns,\n        sum(net_loss) AS profit_loss\n    FROM web_rows\n    GROUP BY web_site_id\n),\nx AS (\n    SELECT\n        'store channel' AS channel,\n        'store' || s_store_id AS id,\n        sales,\n        returns,\n        (profit - profit_loss) AS profit\n    FROM ssr\n    UNION ALL\n    SELECT\n        'catalog channel' AS channel,\n        'catalog_page' || cp_catalog_page_id AS id,\n        sales,\n        returns,\n        (profit - profit_loss) AS profit\n    FROM csr\n    UNION ALL\n    SELECT\n        'web channel' AS channel,\n        'web_site' || web_site_id AS id,\n        sales,\n        returns,\n        (profit - profit_loss) AS profit\n    FROM wsr\n)\nSELECT\n    channel,\n    id,\n    sum(sales) AS sales,\n    sum(returns) AS returns,\n    sum(profit) AS profit\nFROM x\nGROUP BY rollup (channel, id)\nORDER BY channel, id\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized Views \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Create a materialized view for the date dimension to reduce repeated scans and improve query performance.\n\n2. N. Filter Early \u2014 TARGET: `store`, `catalog_page`, `web_site` \u2014 TRANSFORMATION: Add a WHERE clause to filter the specific store, catalog page, or web site before joining with other tables to reduce unnecessary rows.\n\n3. N. Indexes \u2014 TARGET: `salesreturns`, `csr`, `wsr` and relevant foreign keys \u2014 TRANSFORMATION: Create indexes on the columns used in the WHERE clause and relevant foreign keys for faster lookups.\n\n4. N. Reduce Joins \u2014 TARGET: Main Query \u2014 TRANSFORMATION: Instead of joining all three temporary tables at once, join them sequentially to reduce the number of joins and intermediate results.\n\n5. N. Partitioning \u2014 TARGET: `store`, `catalog_page`, `web_site` \u2014 TRANSFORMATION: If possible, partition these tables based on store ID, catalog page ID, or web site ID to improve query performance for specific values.\n\n6. N. Sorting \u2014 TARGET: Main Query \u2014 TRANSFORMATION: Order the tables in the FROM clause based on the expected join order to minimize the number of temporary sort operations.\n\n7. N. Limit Optimization \u2014 TARGET: Main Query \u2014 TRANSFORMATION: If possible, move the LIMIT 100 clause to the end of the query to reduce the amount of data processed before applying the limit.\n\n8. N. Caching \u2014 TARGET: Specific store, catalog page, or web site \u2014 TRANSFORMATION: If applicable, cache frequently accessed rows for these entities in memory for faster access during queries.\n\n9. N. Query Rewrite \u2014 TARGET: Main Query \u2014 TRANSFORMATION: If possible, rewrite the main query using more efficient SQL constructs or techniques to further optimize its performance.\n\n10. N. Denormalization \u2014 TARGET: Relevant tables \u2014 TRANSFORMATION: Consider denormalizing the schema by storing some data redundantly to reduce the number of joins and improve query performance, focusing on the most frequently accessed relationships.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 10252.169,
+      "optimized_ms": 12968.789,
+      "delta_ms": -2716.62,
+      "improvement_pct": -26.5,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 3712225.09,
+      "optimized": 3923266.9,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 66290.1,
+    "index_advisor_inference_ms": 16647.0,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 32113.8,
+    "total_inference_ms": 115050.9,
+    "writer_inference_ms": 169545.2,
+    "writer_tokens_in": 18050,
+    "writer_tokens_out": 16622,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=3712225.09 \u2192 optimized=3923266.90 (+5.7%)",
+    "Execution time regression: 10252.169ms \u2192 12968.789ms"
+  ],
+  "strategy": "1. N. Materialized Views \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Create a materialized view for the date dimension to reduce repeated scans and improve query performance.\n\n2. N. Filter Early \u2014 TARGET: `store`, `catalog_page`, `web_site` \u2014 TRANSFORMATION: Add a WHERE clause to filter the specific store, catalog page, or web site before joining with other tables to reduce unnecessary rows.\n\n3. N. Indexes \u2014 TARGET: `salesreturns`, `csr`, `wsr` and relevant foreign keys \u2014 TRANSFORMATION: Create indexes on the columns used in the WHERE clause and relevant foreign keys for faster lookups.\n\n4. N. Reduce Joins \u2014 TARGET: Main Query \u2014 TRANSFORMATION: Instead of joining all three temporary tables at once, join them sequentially to reduce the number of joins and intermediate results.\n\n5. N. Partitioning \u2014 TARGET: `store`, `catalog_page`, `web_site` \u2014 TRANSFORMATION: If possible, partition these tables based on store ID, catalog page ID, or web site ID to improve query performance for specific values.\n\n6. N. Sorting \u2014 TARGET: Main Query \u2014 TRANSFORMATION: Order the tables in the FROM clause based on the expected join order to minimize the number of temporary sort operations.\n\n7. N. Limit Optimization \u2014 TARGET: Main Query \u2014 TRANSFORMATION: If possible, move the LIMIT 100 clause to the end of the query to reduce the amount of data processed before applying the limit.\n\n8. N. Caching \u2014 TARGET: Specific store, catalog page, or web site \u2014 TRANSFORMATION: If applicable, cache frequently accessed rows for these entities in memory for faster access during queries.\n\n9. N. Query Rewrite \u2014 TARGET: Main Query \u2014 TRANSFORMATION: If possible, rewrite the main query using more efficient SQL constructs or techniques to further optimize its performance.\n\n10. N. Denormalization \u2014 TARGET: Relevant tables \u2014 TRANSFORMATION: Consider denormalizing the schema by storing some data redundantly to reduce the number of joins and improve query performance, focusing on the most frequently accessed relationships.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\n- The rewrite creates a materialized view for the date dimension as per strategy 1."
+  },
+  "raw_sql": "with ssr as (select s_store_id, sum(sales_price) as sales, sum(profit) as profit, sum(return_amt) as returns, sum(net_loss) as profit_loss from ( select ss_store_sk as store_sk, ss_sold_date_sk as date_sk, ss_ext_sales_price as sales_price, ss_net_profit as profit, cast(0 as decimal(7,2)) as return_amt, cast(0 as decimal(7,2)) as net_loss from store_sales union all select sr_store_sk as store_sk, sr_returned_date_sk as date_sk, cast(0 as decimal(7,2)) as sales_price, cast(0 as decimal(7,2)) as profit, sr_return_amt as return_amt, sr_net_loss as net_loss from store_returns ) salesreturns, date_dim, store where date_sk = d_date_sk and d_date between cast('2000-08-19' as date) and cast('2000-09-02' as date) and store_sk = s_store_sk group by s_store_id) , csr as (select cp_catalog_page_id, sum(sales_price) as sales, sum(profit) as profit, sum(return_amt) as returns, sum(net_loss) as profit_loss from ( select cs_catalog_page_sk as page_sk, cs_sold_date_sk as date_sk, cs_ext_sales_price as sales_price, cs_net_profit as profit, cast(0 as decimal(7,2)) as return_amt, cast(0 as decimal(7,2)) as net_loss from catalog_sales union all select cr_catalog_page_sk as page_sk, cr_returned_date_sk as date_sk, cast(0 as decimal(7,2)) as sales_price, cast(0 as decimal(7,2)) as profit, cr_return_amount as return_amt, cr_net_loss as net_loss from catalog_returns ) salesreturns, date_dim, catalog_page where date_sk = d_date_sk and d_date between cast('2000-08-19' as date) and cast('2000-09-02' as date) and page_sk = cp_catalog_page_sk group by cp_catalog_page_id) , wsr as (select web_site_id, sum(sales_price) as sales, sum(profit) as profit, sum(return_amt) as returns, sum(net_loss) as profit_loss from ( select ws_web_site_sk as wsr_web_site_sk, ws_sold_date_sk as date_sk, ws_ext_sales_price as sales_price, ws_net_profit as profit, cast(0 as decimal(7,2)) as return_amt, cast(0 as decimal(7,2)) as net_loss from web_sales union all select ws_web_site_sk as wsr_web_site_sk, wr_returned_date_sk as date_sk, cast(0 as decimal(7,2)) as sales_price, cast(0 as decimal(7,2)) as profit, wr_return_amt as return_amt, wr_net_loss as net_loss from web_returns left outer join web_sales on ( wr_item_sk = ws_item_sk and wr_order_number = ws_order_number) ) salesreturns, date_dim, web_site where date_sk = d_date_sk and d_date between cast('2000-08-19' as date) and cast('2000-09-02' as date) and wsr_web_site_sk = web_site_sk group by web_site_id) select channel , id , sum(sales) as sales , sum(returns) as returns , sum(profit) as profit from (select 'store channel' as channel , 'store' || s_store_id as id , sales , returns , (profit - profit_loss) as profit from ssr union all select 'catalog channel' as channel , 'catalog_page' || cp_catalog_page_id as id , sales , returns , (profit - profit_loss) as profit from csr union all select 'web channel' as channel , 'web_site' || web_site_id as id , sales , returns , (profit - profit_loss) as profit from wsr ) x group by rollup (channel, id) order by channel ,id limit 100"
+}

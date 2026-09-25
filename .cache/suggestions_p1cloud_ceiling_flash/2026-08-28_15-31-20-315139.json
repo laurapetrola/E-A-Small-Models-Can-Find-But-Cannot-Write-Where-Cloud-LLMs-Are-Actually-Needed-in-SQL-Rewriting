@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-08-28T15:31:20.315109",
+  "query_hash": "a614cd11c21c",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "use a values table for multiple filter conditions"
+  ],
+  "improvement_pct": -636.64,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "equivalence_failed_structural",
+  "used_fallback": true,
+  "inference_ms": 769320.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH scenario(marital_status, education_status, ca_states, sales_price_min, sales_price_max, net_profit_min, net_profit_max) AS (\n    VALUES\n    ('D'::character(1), 'Primary'::character(20), ARRAY['NC','TX','IA']::character(2)[], 100.00, 150.00, 100, 200),\n    ('D'::character(1), 'Primary'::character(20), ARRAY['WI','WV','GA']::character(2)[], 100.00, 150.00, 150, 300),\n    ('D'::character(1), 'Primary'::character(20), ARRAY['OK','VA','KY']::character(2)[], 100.00, 150.00, 50, 250),\n    ('S'::character(1), 'College'::character(20), ARRAY['NC','TX','IA']::character(2)[], 50.00, 100.00, 100, 200),\n    ('S'::character(1), 'College'::character(20), ARRAY['WI','WV','GA']::character(2)[], 50.00, 100.00, 150, 300),\n    ('S'::character(1), 'College'::character(20), ARRAY['OK','VA','KY']::character(2)[], 50.00, 100.00, 50, 250),\n    ('U'::character(1), 'Advanced Degree'::character(20), ARRAY['NC','TX','IA']::character(2)[], 150.00, 200.00, 100, 200),\n    ('U'::character(1), 'Advanced Degree'::character(20), ARRAY['WI','WV','GA']::character(2)[], 150.00, 200.00, 150, 300),\n    ('U'::character(1), 'Advanced Degree'::character(20), ARRAY['OK','VA','KY']::character(2)[], 150.00, 200.00, 50, 250)\n),\ndemo_pref AS (\n    SELECT cd_demo_sk, cd_marital_status, cd_education_status\n    FROM customer_demographics\n    WHERE (cd_marital_status = 'D' AND cd_education_status = 'Primary')\n       OR (cd_marital_status = 'S' AND cd_education_status = 'College')\n       OR (cd_marital_status = 'U' AND cd_education_status = 'Advanced Degree')\n),\naddr_pref AS (\n    SELECT ca_address_sk, ca_state\n    FROM customer_address\n    WHERE ca_country = 'United States'\n      AND ca_state IN ('NC','TX','IA','WI','WV','GA','OK','VA','KY')\n),\ndate_pref AS (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 1998\n),\nreturn_side AS (\n    SELECT wr.wr_item_sk,\n           wr.wr_order_number,\n           wr.wr_refunded_cash,\n           wr.wr_fee,\n           r.r_reason_desc,\n           s.sales_price_min,\n           s.sales_price_max,\n           s.net_profit_min,\n           s.net_profit_max\n    FROM web_returns wr\n    JOIN reason r ON wr.wr_reason_sk = r.r_reason_sk\n    JOIN demo_pref cd1 ON wr.wr_refunded_cdemo_sk = cd1.cd_demo_sk\n    JOIN demo_pref cd2 ON wr.wr_returning_cdemo_sk = cd2.cd_demo_sk\n    JOIN addr_pref ca ON wr.wr_refunded_addr_sk = ca.ca_address_sk\n    JOIN scenario s ON cd1.cd_marital_status = s.marital_status\n                   AND cd1.cd_education_status = s.education_status\n                   AND cd2.cd_marital_status = s.marital_status\n                   AND cd2.cd_education_status = s.education_status\n                   AND ca.ca_state = ANY(s.ca_states)\n)\nSELECT substr(rs.r_reason_desc, 1, 20),\n       avg(ws.ws_quantity),\n       avg(rs.wr_refunded_cash),\n       avg(rs.wr_fee)\nFROM return_side rs\nJOIN web_sales ws ON ws.ws_item_sk = rs.wr_item_sk\n                  AND ws.ws_order_number = rs.wr_order_number\nJOIN date_pref d ON ws.ws_sold_date_sk = d.d_date_sk\nWHERE ws.ws_sales_price BETWEEN rs.sales_price_min AND rs.sales_price_max\n  AND ws.ws_net_profit BETWEEN rs.net_profit_min AND rs.net_profit_max\n  AND ws.ws_web_page_sk IS NOT NULL\nGROUP BY rs.r_reason_desc\nORDER BY substr(rs.r_reason_desc, 1, 20),\n         avg(ws.ws_quantity),\n         avg(rs.wr_refunded_cash),\n         avg(rs.wr_fee)\nLIMIT 100",
+  "reasoning_trace": "1. OR-ELIMINATION VIA PREDICATE MATRIX \u2014 TARGET: the composite OR over `cd1`/`cd2` demographics, `customer_address.ca_state`, `ws_sales_price`, and `ws_net_profit` \u2014 TRANSFORMATION: rewrite the 3 demographic-price branches \u00d7 3 state-profit branches as a tiny 9-row derived \u201cscenario\u201d relation joined by exact demographic-pair/state equality and `BETWEEN` on the price/profit columns; because the 9 tuples are disjoint, each qualifying row matches exactly one scenario row, so no duplication occurs.\n\n2. DEMOGRAPHIC KEY-SET PREFILTER \u2014 TARGET: `customer_demographics cd1` and `customer_demographics cd2` \u2014 TRANSFORMATION: reduce both 1.92M-row demographic aliases to only the `cd_demo_sk` values whose `(cd_marital_status, cd_education_status)` is one of the allowed pairs before joining them to `web_returns`, so the large dimension scans do not feed the OR evaluation.\n\n3. ADDRESS KEY-SET PREFILTER \u2014 TARGET: `customer_address` via `wr_refunded_addr_sk` \u2014 TRANSFORMATION: precompute the `ca_address_sk` set for `ca_country = 'United States'` and the nine listed `ca_state` values, and join only those address rows to the return side before the fact-to-fact join.\n\n4. RETURN-KEY PROBE OF WEB_SALES \u2014 TARGET: `web_sales` primary-key join to `web_returns` on `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number` \u2014 TRANSFORMATION: after the return-side reductions, use the surviving `(wr_item_sk, wr_order_number)` pairs to probe `web_sales` by its PK, applying `d_year = 1998` and the price/profit ranges only to the probed sales row; this avoids a full 14.4M-row scan/hash of `web_sales`.\n\n5. DATE_DIM YEAR SET SEMIJOIN \u2014 TARGET: `date_dim` join via `ws_sold_date_sk = d_date_sk` \u2014 TRANSFORMATION: precompute only the `d_date_sk` values for `d_year = 1998` and use them as a semi-join filter on `web_sales`, instead of carrying the whole 73k-row `date_dim` through the main join.\n\n6. REDUNDANT WEB_PAGE JOIN REMOVAL \u2014 TARGET: `web_page` join via `ws_web_page_sk = wp_web_page_sk` \u2014 TRANSFORMATION: drop the `web_page` join (retaining `ws_web_page_sk IS NOT NULL` only if nulls are possible) because `web_page` contributes no output column, no grouping column, and no non-key predicate, while `wp_web_page_sk` is unique.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 411.22,
+      "optimized_ms": 3029.227,
+      "delta_ms": -2618.007,
+      "improvement_pct": -636.64,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 91808.57,
+      "optimized": 120483.86,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 711312.2,
+    "index_advisor_inference_ms": 51564.2,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 6444.3,
+    "total_inference_ms": 769320.7,
+    "writer_inference_ms": 1782908.6,
+    "writer_tokens_in": 11654,
+    "writer_tokens_out": 208335,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=91808.57 \u2192 optimized=120483.86 (+31.2%)",
+    "Execution time regression: 411.22ms \u2192 3029.227ms",
+    "Data_Loss_Detected: table 'web_page' was removed from FROM/JOIN"
+  ],
+  "strategy": "1. OR-ELIMINATION VIA PREDICATE MATRIX \u2014 TARGET: the composite OR over `cd1`/`cd2` demographics, `customer_address.ca_state`, `ws_sales_price`, and `ws_net_profit` \u2014 TRANSFORMATION: rewrite the 3 demographic-price branches \u00d7 3 state-profit branches as a tiny 9-row derived \u201cscenario\u201d relation joined by exact demographic-pair/state equality and `BETWEEN` on the price/profit columns; because the 9 tuples are disjoint, each qualifying row matches exactly one scenario row, so no duplication occurs.\n\n2. DEMOGRAPHIC KEY-SET PREFILTER \u2014 TARGET: `customer_demographics cd1` and `customer_demographics cd2` \u2014 TRANSFORMATION: reduce both 1.92M-row demographic aliases to only the `cd_demo_sk` values whose `(cd_marital_status, cd_education_status)` is one of the allowed pairs before joining them to `web_returns`, so the large dimension scans do not feed the OR evaluation.\n\n3. ADDRESS KEY-SET PREFILTER \u2014 TARGET: `customer_address` via `wr_refunded_addr_sk` \u2014 TRANSFORMATION: precompute the `ca_address_sk` set for `ca_country = 'United States'` and the nine listed `ca_state` values, and join only those address rows to the return side before the fact-to-fact join.\n\n4. RETURN-KEY PROBE OF WEB_SALES \u2014 TARGET: `web_sales` primary-key join to `web_returns` on `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number` \u2014 TRANSFORMATION: after the return-side reductions, use the surviving `(wr_item_sk, wr_order_number)` pairs to probe `web_sales` by its PK, applying `d_year = 1998` and the price/profit ranges only to the probed sales row; this avoids a full 14.4M-row scan/hash of `web_sales`.\n\n5. DATE_DIM YEAR SET SEMIJOIN \u2014 TARGET: `date_dim` join via `ws_sold_date_sk = d_date_sk` \u2014 TRANSFORMATION: precompute only the `d_date_sk` values for `d_year = 1998` and use them as a semi-join filter on `web_sales`, instead of carrying the whole 73k-row `date_dim` through the main join.\n\n6. REDUNDANT WEB_PAGE JOIN REMOVAL \u2014 TARGET: `web_page` join via `ws_web_page_sk = wp_web_page_sk` \u2014 TRANSFORMATION: drop the `web_page` join (retaining `ws_web_page_sk IS NOT NULL` only if nulls are possible) because `web_page` contributes no output column, no grouping column, and no non-key predicate, while `wp_web_page_sk` is unique.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe rewrite applies OR-ELIMINATION VIA PREDICATE MATRIX by creating a \"scenario\" CTE with 9 rows representing the OR branches, and then joining it to filter the data, matching the strategy'"
+  },
+  "raw_sql": "select substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) from web_sales, web_returns, web_page, customer_demographics cd1, customer_demographics cd2, customer_address, date_dim, reason where ws_web_page_sk = wp_web_page_sk and ws_item_sk = wr_item_sk and ws_order_number = wr_order_number and ws_sold_date_sk = d_date_sk and d_year = 1998 and cd1.cd_demo_sk = wr_refunded_cdemo_sk and cd2.cd_demo_sk = wr_returning_cdemo_sk and ca_address_sk = wr_refunded_addr_sk and r_reason_sk = wr_reason_sk and ( ( cd1.cd_marital_status = 'D' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Primary' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 100.00 and 150.00 ) or ( cd1.cd_marital_status = 'S' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'College' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 50.00 and 100.00 ) or ( cd1.cd_marital_status = 'U' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Advanced Degree' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 150.00 and 200.00 ) ) and ( ( ca_country = 'United States' and ca_state in ('NC', 'TX', 'IA') and ws_net_profit between 100 and 200 ) or ( ca_country = 'United States' and ca_state in ('WI', 'WV', 'GA') and ws_net_profit between 150 and 300 ) or ( ca_country = 'United States' and ca_state in ('OK', 'VA', 'KY') and ws_net_profit between 50 and 250 ) ) group by r_reason_desc order by substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) limit 100"
+}

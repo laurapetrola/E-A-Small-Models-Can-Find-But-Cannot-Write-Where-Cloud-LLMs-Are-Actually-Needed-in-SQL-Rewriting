@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-08-27T10:24:36.443469",
+  "query_hash": "1aaf0913f8ef",
+  "suggestions": [
+    "decorrelate scalar aggregate subquery into CTE plus join",
+    "reorder joins to reduce intermediate rows",
+    "pre-filter a large table as a CTE before the join"
+  ],
+  "improvement_pct": 97.23,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 128834.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS (\n    SELECT cr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(cr_return_amt_inc_tax) AS ctr_total_return\n    FROM catalog_returns\n    JOIN date_dim ON cr_returned_date_sk = d_date_sk\n    JOIN customer_address ON cr_returning_addr_sk = ca_address_sk\n    WHERE d_year = 2001\n    GROUP BY cr_returning_customer_sk, ca_state\n),\nstate_threshold AS (\n    SELECT ctr_state,\n           AVG(ctr_total_return) * 1.2 AS ctr_threshold\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c_customer_id,\n       c_salutation,\n       c_first_name,\n       c_last_name,\n       ca_street_number,\n       ca_street_name,\n       ca_street_type,\n       ca_suite_number,\n       ca_city,\n       ca_county,\n       ca_state,\n       ca_zip,\n       ca_country,\n       ca_gmt_offset,\n       ca_location_type,\n       ctr1.ctr_total_return\nFROM customer_address\nJOIN customer ON ca_address_sk = c_current_addr_sk\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c_customer_sk\nJOIN state_threshold st ON ctr1.ctr_state = st.ctr_state\nWHERE ca_state = 'TN'\n  AND ctr1.ctr_total_return > st.ctr_threshold\nORDER BY c_customer_id,\n         c_salutation,\n         c_first_name,\n         c_last_name,\n         ca_street_number,\n         ca_street_name,\n         ca_street_type,\n         ca_suite_number,\n         ca_city,\n         ca_county,\n         ca_state,\n         ca_zip,\n         ca_country,\n         ca_gmt_offset,\n         ca_location_type,\n         ctr1.ctr_total_return\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS (\n    SELECT cr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(cr_return_amt_inc_tax) AS ctr_total_return\n    FROM catalog_returns\n    JOIN date_dim ON cr_returned_date_sk = d_date_sk\n    JOIN customer_address ON cr_returning_addr_sk = ca_address_sk\n    WHERE d_year = 2001\n    GROUP BY cr_returning_customer_sk, ca_state\n),\nstate_threshold AS (\n    SELECT ctr_state,\n           AVG(ctr_total_return) * 1.2 AS ctr_threshold\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c_customer_id,\n       c_salutation,\n       c_first_name,\n       c_last_name,\n       ca_street_number,\n       ca_street_name,\n       ca_street_type,\n       ca_suite_number,\n       ca_city,\n       ca_county,\n       ca_state,\n       ca_zip,\n       ca_country,\n       ca_gmt_offset,\n       ca_location_type,\n       ctr1.ctr_total_return\nFROM customer_address\nJOIN customer ON ca_address_sk = c_current_addr_sk\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c_customer_sk\nJOIN state_threshold st ON ctr1.ctr_state = st.ctr_state\nWHERE ca_state = 'TN'\n  AND ctr1.ctr_total_return > st.ctr_threshold\nORDER BY c_customer_id,\n         c_salutation,\n         c_first_name,\n         c_last_name,\n         ca_street_number,\n         ca_street_name,\n         ca_street_type,\n         ca_suite_number,\n         ca_city,\n         ca_county,\n         ca_state,\n         ca_zip,\n         ca_country,\n         ca_gmt_offset,\n         ca_location_type,\n         ctr1.ctr_total_return\nLIMIT 100",
+  "reasoning_trace": "1. De-correlate the subquery \u2014 TARGET: the correlated scalar subquery on `customer_total_return ctr2` (`WHERE ctr1.ctr_state = ctr2.ctr_state`) \u2014 TRANSFORMATION: precompute the state-level threshold `avg(ctr_total_return) * 1.2` grouped by `ctr_state` once, and join `ctr1` to that precomputed state-threshold relation on `ctr_state`, eliminating the repeated per-row rescans of the CTE.\n\n2. Add a covering index for the CTE aggregation \u2014 TARGET: the `catalog_returns` scan filtered by `cr_returned_date_sk` and aggregated by `cr_returning_customer_sk`, `ca_state` \u2014 TRANSFORMATION: add a covering index on `catalog_returns(cr_returned_date_sk, cr_returning_addr_sk, cr_returning_customer_sk, cr_return_amt_inc_tax)` so the year-2001 returns can be read as an index-only scan and the grouping/aggregation avoids heap lookups.\n\n3. Push the state filter and reorder the outer joins \u2014 TARGET: the outer join between `customer_total_return ctr1`, `customer_address`, and `customer` with `ca_state = 'TN'` \u2014 TRANSFORMATION: drive from `customer_address` filtered to `ca_state = 'TN'`, join to `customer` on `ca_address_sk = c_current_addr_sk`, then join to `ctr1` on `ctr_customer_sk = c_customer_sk` so only Tennessee-current customers reach the threshold comparison and sort.\n\n4. Add an index for the address-to-customer lookup \u2014 TARGET: `customer.c_current_addr_sk` \u2014 TRANSFORMATION: add an index on `customer(c_current_addr_sk)` to make the join from the filtered `customer_address` rows to `customer` fast instead of scanning the large customer table.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 1247.619,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 97.23,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 4028800.76,
+      "optimized": 95001.02,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 124451.7,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4382.9,
+    "total_inference_ms": 128834.6,
+    "writer_inference_ms": 130885.6,
+    "writer_tokens_in": 1094,
+    "writer_tokens_out": 16178,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. De-correlate the subquery \u2014 TARGET: the correlated scalar subquery on `customer_total_return ctr2` (`WHERE ctr1.ctr_state = ctr2.ctr_state`) \u2014 TRANSFORMATION: precompute the state-level threshold `avg(ctr_total_return) * 1.2` grouped by `ctr_state` once, and join `ctr1` to that precomputed state-threshold relation on `ctr_state`, eliminating the repeated per-row rescans of the CTE.\n\n2. Add a covering index for the CTE aggregation \u2014 TARGET: the `catalog_returns` scan filtered by `cr_returned_date_sk` and aggregated by `cr_returning_customer_sk`, `ca_state` \u2014 TRANSFORMATION: add a covering index on `catalog_returns(cr_returned_date_sk, cr_returning_addr_sk, cr_returning_customer_sk, cr_return_amt_inc_tax)` so the year-2001 returns can be read as an index-only scan and the grouping/aggregation avoids heap lookups.\n\n3. Push the state filter and reorder the outer joins \u2014 TARGET: the outer join between `customer_total_return ctr1`, `customer_address`, and `customer` with `ca_state = 'TN'` \u2014 TRANSFORMATION: drive from `customer_address` filtered to `ca_state = 'TN'`, join to `customer` on `ca_address_sk = c_current_addr_sk`, then join to `ctr1` on `ctr_customer_sk = c_customer_sk` so only Tennessee-current customers reach the threshold comparison and sort.\n\n4. Add an index for the address-to-customer lookup \u2014 TARGET: `customer.c_current_addr_sk` \u2014 TRANSFORMATION: add an index on `customer(c_current_addr_sk)` to make the join from the filtered `customer_address` rows to `customer` fast instead of scanning the large customer table.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was decorrelation of the subquery via precomputing the state threshold and joining, which the rewrite achieved by introducing `state_threshold` and joining it "
+  },
+  "raw_sql": "with customer_total_return as (select cr_returning_customer_sk as ctr_customer_sk ,ca_state as ctr_state, sum(cr_return_amt_inc_tax) as ctr_total_return from catalog_returns ,date_dim ,customer_address where cr_returned_date_sk = d_date_sk and d_year =2001 and cr_returning_addr_sk = ca_address_sk group by cr_returning_customer_sk ,ca_state ) select c_customer_id,c_salutation,c_first_name,c_last_name,ca_street_number,ca_street_name ,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset ,ca_location_type,ctr_total_return from customer_total_return ctr1 ,customer_address ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state) and ca_address_sk = c_current_addr_sk and ca_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id,c_salutation,c_first_name,c_last_name,ca_street_number,ca_street_name ,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset ,ca_location_type,ctr_total_return limit 100"
+}

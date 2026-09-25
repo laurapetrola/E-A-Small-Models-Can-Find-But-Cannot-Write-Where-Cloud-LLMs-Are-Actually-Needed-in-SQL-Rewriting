@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-08-29T14:28:05.375501",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "remove redundant grouping and aggregate functions",
+    "convert full outer join to left join with explicit filtering",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "replace full outer join with left join",
+    "remove redundant subquery in select list",
+    "change window frame clause to ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+    "use COALESCE instead of CASE for NULL handling",
+    "expand date range to 1212-1223 in CTEs",
+    "replace full outer join with left join and handle nulls in outer query"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 1157845.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_dim_filtered AS ( SELECT * FROM date_dim WHERE d_month_seq BETWEEN 1212 AND 1223 ), web_v1 AS ( SELECT ws_item_sk item_sk, sum(sum(ws_sales_price)) OVER (PARTITION BY ws_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) cume_sales FROM web_sales JOIN date_dim_filtered ON ws_sold_date_sk = d_date_sk WHERE ws_item_sk IS NOT NULL ), store_v1 AS ( SELECT ss_item_sk item_sk, sum(sum(ss_sales_price)) OVER (PARTITION BY ss_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) cume_sales FROM store_sales JOIN date_dim_filtered ON ss_sold_date_sk = d_date_sk WHERE ss_item_sk IS NOT NULL ) SELECT * FROM ( SELECT item_sk, web_v1.cume_sales AS web_cumulative, store_v1.cume_sales AS store_cumulative FROM web_v1 LEFT JOIN store_v1 ON web_v1.item_sk = store_v1.item_sk ) x WHERE web_cumulative > store_cumulative ORDER BY item_sk LIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization. First, I need to understand what the original query is doing. It seems to be comparing cumulative sales between web and store channels for different items over specific months. The main goal is to find items where the web cumulative sales exceed the store's, ordered by item and date.\n\nLooking at the query structure, there are two CTEs: web_v1 and store_v1. Each of these is aggregating data from web_sales and store_sales respectively, using window functions to calculate cumulative sales over time. Then, they are joined using a full outer join on item_sk and d_date. After that, they compute max() over partitions to get the cumulative values again, which feels redundant because the CTEs already have those.\n\nFirst thought: The web_v1 and store_v1 CTEs are using window functions to calculate cumulative sums. But then, in the final select, they're using max() over partitions again. That's probably unnecessary. The CTEs already have the cumulative sales, so using max() again might be causing extra computation. Maybe that's a place to optimize by simplifying the final select.\n\nNext, the full outer join between web_v1 and store_v1. Full outer joins can be expensive, especially if there are many rows. Maybe there's a way to avoid the full outer join by handling nulls differently. For example, if we can use a LEFT JOIN and handle cases where one side is missing, that might reduce the join cost.\n\nAlso, the date filtering is done in both CTEs with d_month_seq between 1212 and 1212+11. Since this is the same range for both, maybe we can filter the date_dim table once and reuse it, instead of joining it twice. That could reduce the number of rows processed in each CTE.\n\nAnother thing is the use of subqueries in the final select. The CASE statements for item_sk and d_date might be causing unnecessary checks. If we can ensure that the join between web_v1 and store_v1 is on the same d_date, maybe we can avoid some of these conditions.\n\nAlso, the final WHERE clause filters web_cumulative > store_cumulative. Since the CTEs already have the cumulative sums, maybe we can compute this comparison earlier, reducing the data processed in the final steps.\n\nLooking at the tables involved, web_sales and store_sales are likely large. Joining them with date_dim twice might be costly. If we can pre-filter the date_dim to only include the required months, that could reduce the number of rows joined.\n\nAnother point is the use of SUM(sum(...)) in the window functions. That's a nested aggregate, which might be inefficient. Maybe using a subquery to calculate the sum first and then applying the window function would be better.\n\nAlso, the final limit of 100 might suggest that we can optimize the sorting and filtering to stop early, but that's more about execution plans than query structure.\n\nPutting this all together, the main optimization opportunities are:\n\n1. Avoid redundant window functions in the final select by using the precomputed values from the CTEs.\n2. Replace the full outer join with a LEFT JOIN and handle nulls appropriately to reduce join cost.\n3. Pre-filter the date_dim table once for the required month range to avoid joining it twice.\n4. Simplify the CASE statements in the final select by ensuring the join conditions are met, thus avoiding unnecessary checks.\n5. Consider materializing the intermediate results of the CTEs if they are reused multiple times, but since they are only used once, maybe not necessary here.\n\nEach of these steps would reduce the number of rows processed, the complexity of joins, and the number of computations, leading to a more efficient query.\n\n</think>\n\n1. **Avoid Redundant Window Functions** \u2014 TARGET: `web_v1.cume_sales`, `store_v1.cume_sales` \u2014 TRANSFORMATION: Replace the final `MAX()` window functions with direct column references since the CTEs already precompute cumulative sums  \n2. **Replace Full Outer Join with LEFT JOIN** \u2014 TARGET: `web_v1 FULL OUTER JOIN store_v1` \u2014 TRANSFORMATION: Use `LEFT JOIN` with `COALESCE` for missing keys, reducing join complexity and avoiding full outer join overhead  \n3. **Pre-filter Date Dimension** \u2014 TARGET: `date_dim` in `web_v1` and `store_v1` \u2014 TRANSFORMATION: Filter `date_dim` once for `d_month_seq BETWEEN 1212 AND 1223` and reuse it in both CTEs to avoid redundant scans  \n4. **Simplify CASE Logic** \u2014 TARGET: `CASE WHEN web.item_sk IS NOT NULL THEN web.item_sk ELSE store.item_sk END` \u2014 TRANSFORMATION: Ensure join conditions guarantee matching keys, eliminating need for conditional logic in final select  \n5. **Early Filtering of Cumulative Comparison** \u2014 TARGET: `web_cumulative > store_cumulative` \u2014 TRANSFORMATION: Compute this comparison in the final `WHERE` clause instead of post-aggregation to prune rows earlier  \n6. **Materialize Intermediate Results** \u2014 TARGET: `web_v1`, `store_v1` \u2014 TRANSFORMATION: Use `CTE` materialization (via `SET LOCAL statement_timeout`) to avoid re-scanning large tables in final join  \n7. **Optimize Date Filtering** \u2014 TARGET: `d_month_seq BETWEEN 1212 AND 1223` \u2014 TRANSFORMATION: Convert to `d_date BETWEEN '2000-01-01' AND '2000-12-31'` for index-friendly range scans if date_dim has a date-based index  \n8. **Reduce Join Columns** \u2014 TARGET: `web_v1` and `store_v1` \u2014 TRANSFORMATION: Remove redundant columns (e.g., `d_date`) from CTEs if they are already filtered to a single month range  \n9. **Index-Only Scan for Date Filtering** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Ensure `date_dim` has an index on `d_month_seq` to accelerate the month range filter  \n10. **Limit Early in Final Query** \u2014 TARGET: `LIMIT 100` \u2014 TRANSFORMATION: Apply `ORDER BY` and `LIMIT` earlier in the query plan to reduce data processed in final steps",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 16625.323,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1917826.28,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 1038428.8,
+    "index_advisor_inference_ms": 111003.5,
+    "reflection_iterations": 3,
+    "labeler_inference_ms": 8413.6,
+    "total_inference_ms": 1157845.9,
+    "writer_inference_ms": 114499.1,
+    "writer_tokens_in": 20848,
+    "writer_tokens_out": 3150,
+    "writer_calls": 10
+  },
+  "errors": [
+    "Optimized query execution error: (psycopg2.errors.GroupingError) column \"web_sales.ws_item_sk\" must appear in the GROUP BY clause or be used in an aggregate function\nLINE 1: ...h_seq BETWEEN 1212 AND 1223 ), web_v1 AS ( SELECT ws_item_sk...\n                                                             ^\n\n[SQL: SELECT * FROM (WITH date_dim_filtered AS ( SELECT * FROM date_dim WHERE d_month_seq BETWEEN 1212 AND 1223 ), web_v1 AS ( SELECT ws_item_sk item_sk, sum(sum(ws_sales_price)) OVER (PARTITION BY ws_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) cume_sales FROM web_sales JOIN date_dim_filtered ON ws_sold_date_sk = d_date_sk WHERE ws_item_sk IS NOT NULL ), store_v1 AS ( SELECT ss_item_sk item_sk, sum(sum(ss_sales_price)) OVER (PARTITION BY ss_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) cume_sales FROM store_sales JOIN date_dim_filtered ON ss_sold_date_sk = d_date_sk WHERE ss_item_sk IS NOT NULL ) SELECT * FROM ( SELECT item_sk, web_v1.cume_sales AS web_cumulative, store_v1.cume_sales AS store_cumulative FROM web_v1 LEFT JOIN store_v1 ON web_v1.item_sk = store_v1.item_sk ) x WHERE web_cumulative > store_cumulative ORDER BY item_sk LIMIT 100) AS _s LIMIT 0]\n(Background on this error at: https://sqlalche.me/e/20/f405)"
+  ],
+  "strategy": "1. **Avoid Redundant Window Functions** \u2014 TARGET: `web_v1.cume_sales`, `store_v1.cume_sales` \u2014 TRANSFORMATION: Replace the final `MAX()` window functions with direct column references since the CTEs already precompute cumulative sums  \n2. **Replace Full Outer Join with LEFT JOIN** \u2014 TARGET: `web_v1 FULL OUTER JOIN store_v1` \u2014 TRANSFORMATION: Use `LEFT JOIN` with `COALESCE` for missing keys, reducing join complexity and avoiding full outer join overhead  \n3. **Pre-filter Date Dimension** \u2014 TARGET: `date_dim` in `web_v1` and `store_v1` \u2014 TRANSFORMATION: Filter `date_dim` once for `d_month_seq BETWEEN 1212 AND 1223` and reuse it in both CTEs to avoid redundant scans  \n4. **Simplify CASE Logic** \u2014 TARGET: `CASE WHEN web.item_sk IS NOT NULL THEN web.item_sk ELSE store.item_sk END` \u2014 TRANSFORMATION: Ensure join conditions guarantee matching keys, eliminating need for conditional logic in final select  \n5. **Early Filtering of Cumulative Comparison** \u2014 TARGET: `web_cumulative > store_cumulative` \u2014 TRANSFORMATION: Compute this comparison in the final `WHERE` clause instead of post-aggregation to prune rows earlier  \n6. **Materialize Intermediate Results** \u2014 TARGET: `web_v1`, `store_v1` \u2014 TRANSFORMATION: Use `CTE` materialization (via `SET LOCAL statement_timeout`) to avoid re-scanning large tables in final join  \n7. **Optimize Date Filtering** \u2014 TARGET: `d_month_seq BETWEEN 1212 AND 1223` \u2014 TRANSFORMATION: Convert to `d_date BETWEEN '2000-01-01' AND '2000-12-31'` for index-friendly range scans if date_dim has a date-based index  \n8. **Reduce Join Columns** \u2014 TARGET: `web_v1` and `store_v1` \u2014 TRANSFORMATION: Remove redundant columns (e.g., `d_date`) from CTEs if they are already filtered to a single month range  \n9. **Index-Only Scan for Date Filtering** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Ensure `date_dim` has an index on `d_month_seq` to accelerate the month range filter  \n10. **Limit Early in Final Query** \u2014 TARGET: `LIMIT 100` \u2014 TRANSFORMATION: Apply `ORDER BY` and `LIMIT` earlier in the query plan to reduce data processed in final steps",
+  "writer": "local:qwen2.5-coder:7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy asked for replacing full outer join with LEFT JOIN using COALESCE, and the rewrite uses LEFT JOIN without COALESCE but still aligns with the main technique of reducing join com"
+  },
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

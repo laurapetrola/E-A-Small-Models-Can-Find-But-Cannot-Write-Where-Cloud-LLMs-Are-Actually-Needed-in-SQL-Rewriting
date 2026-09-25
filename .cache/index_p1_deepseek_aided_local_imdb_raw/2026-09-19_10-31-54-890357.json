@@ -1,0 +1,297 @@
+{
+  "timestamp": "2026-09-19T10:31:54.890327",
+  "query_hash": "7f35567e583c",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 1627353.3,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables. We are to identify index(es) that would most reduce the execution cost.\n\nFirst, let's break down the query:\n\nSELECT MIN(an.name) AS cool_actor_pseudonym, MIN(t.title) AS series_named_after_char \nFROM aka_name AS an, \n   cast_info AS ci, \n   company_name AS cn, \n   keyword AS k, \n   movie_companies AS mc, \n   movie_keyword AS mk, \n   name AS n, \n   title AS t \nWHERE cn.country_code = '[us]' \n  AND k.keyword = 'character-name-in-title' \n  AND t.episode_nr >= 50 \n  AND t.episode_nr < 100 \n  AND an.person_id = n.id \n  AND n.id = ci.person_id \n  AND ci.movie_id = t.id \n  AND t.id = mk.movie_id \n  AND mk.keyword_id = k.id \n  AND t.id = mc.movie_id \n  AND mc.company_id = cn.id \n  AND an.person_id = ci.person_id \n  AND ci.movie_id = mc.movie_id \n  AND ci.movie_id = mk.movie_id \n  AND mc.movie_id = mk.movie_id\n\nThe query is joining several tables and filtering on several conditions.\n\nWe are told that the physical execution plan is not provided, but we can analyze the query structure.\n\nLet's look for potential bottlenecks:\n\n1. The tables involved in the join are: \n   - aka_name (901,343 rows)\n   - cast_info (36,244,344 rows)\n   - company_name (234,997 rows)\n   - keyword (134,170 rows)\n   - movie_companies (2,609,129 rows)\n   - movie_keyword (4,523,930 rows)\n   - name (4,167,491 rows)\n   - title (2,528,312 rows)\n\n2. The conditions that might be used for filtering or joining are:\n   - cn.country_code = '[us]' (on company_name)\n   - k.keyword = 'character-name-in-title' (on keyword)\n   - t.episode_nr >= 50 AND t.episode_nr < 100 (on title)\n   - an.person_id = n.id (join between aka_name and name)\n   - n.id = ci.person_id (join between name and cast_info)\n   - ci.movie_id = t.id (join between cast_info and title)\n   - t.id = mk.movie_id (join between title and movie_keyword)\n   - mk.keyword_id = k.id (join between movie_keyword and keyword)\n   - t.id = mc.movie_id (join between title and movie_companies)\n   - mc.company_id = cn.id (join between movie_companies and company_name)\n   - an.person_id = ci.person_id (already mentioned, but note that an.person_id is from aka_name and ci.person_id is from cast_info)\n   - ci.movie_id = mc.movie_id (already mentioned, but note that ci.movie_id and mc.movie_id are from cast_info and movie_companies)\n\nGiven the large size of some tables, we should look for indexes on columns that are frequently used in joins or filters.\n\nLet's analyze the joins and filters:\n\n- The condition `cn.country_code = '[us]'` is a filter on company_name. Since company_name has no index, this might lead to a sequential scan of company_name. However, note that the condition is on country_code, which is a string. We might consider an index on country_code for company_name.\n\n- The condition `k.keyword = 'character-name-in-title'` is a filter on keyword. Since keyword has no index, this might lead to a sequential scan of keyword. We might consider an index on keyword for the keyword table.\n\n- The condition `t.episode_nr >= 50 AND t.episode_nr < 100` is a filter on title. Since title has an index on kind_id, but not on episode_nr, this might lead to a sequential scan of title. We might consider an index on episode_nr for the title table.\n\nNow, let's look at the joins:\n\n- `an.person_id = n.id`: This is a join between aka_name and name on person_id (aka_name) and id (name). Since both columns are from different tables, we need to check if there are indexes that can help. \n   - On the side of aka_name, there is an index on person_id (person_id_aka_name). \n   - On the side of name, there is no index on id. We might consider an index on name.id.\n\n- `n.id = ci.person_id`: This is a join between name and cast_info on id (name) and person_id (cast_info). \n   - On the side of name, we just suggested an index on id.\n   - On the side of cast_info, there is an index on person_id (person_id_cast_info).\n\n- `ci.movie_id = t.id`: This is a join between cast_info and title on movie_id (cast_info) and id (title). \n   - On the side of cast_info, there is an index on movie_id (movie_id_cast_info).\n   - On the side of title, there is no index on id. We might consider an index on title.id.\n\n- `t.id = mk.movie_id`: This is a join between title and movie_keyword on id (title) and movie_id (movie_keyword). \n   - On the side of title, we just suggested an index on id.\n   - On the side of movie_keyword, there is an index on movie_id (movie_id_movie_keyword).\n\n- `mk.keyword_id = k.id`: This is a join between movie_keyword and keyword on keyword_id (movie_keyword) and id (keyword). \n   - On the side of movie_keyword, there is an index on keyword_id (keyword_id_movie_keyword).\n   - On the side of keyword, there is no index on id. We might consider an index on keyword.id.\n\n- `t.id = mc.movie_id`: This is a join between title and movie_companies on id (title) and movie_id (movie_companies). \n   - On the side of title, we just suggested an index on id.\n   - On the side of movie_companies, there is an index on movie_id (movie_id_movie_companies).\n\n- `mc.company_id = cn.id`: This is a join between movie_companies and company_name on company_id (movie_companies) and id (company_name). \n   - On the side of movie_companies, there is an index on company_id (company_id_movie_companies).\n   - On the side of company_name, there is no index on id. We might consider an index on company_name.id.\n\nAdditionally, note that the condition `an.person_id = ci.person_id` is a join condition that is already covered by the index on cast_info.person_id and the index on aka_name.person_id. However, we are also joining via `n.id = ci.person_id` and `an.person_id = n.id`. So the entire chain is:\n\n   an.person_id = n.id = ci.person_id\n\nWe have an index on cast_info.person_id, and an index on aka_name.person_id, but no index on name.id. This might cause a performance issue because the join between name and cast_info is on name.id and cast_info.person_id, and we don't have an index on name.id.\n\nSimilarly, we have:\n\n   t.id = mc.movie_id = ci.movie_id = ... etc.\n\nWe have an index on cast_info.movie_id, but no index on title.id and movie_companies.movie_id (but we have an index on movie_companies.movie_id? Actually, movie_companies has an index on movie_id, but note that the condition is `t.id = mc.movie_id` and `ci.movie_id = mc.movie_id` and `ci.movie_id = t.id`. So we have:\n\n   t.id = mc.movie_id and t.id = ci.movie_id\n\nWe have an index on cast_info.movie_id and movie_companies.movie_id, but no index on title.id.\n\nAlso, note that the condition `k.keyword = 'character-name-in-title'` is a filter on the keyword table. We don't have an index on keyword.keyword, so that might be a bottleneck.\n\nNow, let's consider the partial predicates:\n\n- For the condition `cn.country_code = '[us]'`, we can create a partial index on company_name.country_code for rows where country_code is '[us]'? But note that the condition is an equality and the value is fixed. However, the problem says that the partial_predicate must reference ONLY columns of the indexed table. We cannot use a partial index for this because the condition is on company_name and the value is fixed. But note: the condition is a filter, so we can index the entire column or use a btree index. However, the condition is a fixed string, so a btree index on country_code would help.\n\nBut note: the condition is `cn.country_code = '[us]'`. The brackets might be a placeholder for a pattern? Actually, in the condition it is written as '[us]', which is a string. So it's a fixed string. We can index the entire country_code column.\n\nSimilarly, for the keyword condition, we can index the entire keyword column.\n\nNow, let's list the potential index improvements:\n\n1. On company_name: index on country_code to speed up the filter `cn.country_code = '[us]'`.\n2. On keyword: index on keyword to speed up the filter `k.keyword = 'character-name-in-title'`.\n3. On title: index on episode_nr to speed up the filter `t.episode_nr >= 50 AND t.episode_nr < 100`.\n4. On name: index on id to speed up the join `n.id = ci.person_id`.\n5. On title: index on id to speed up the joins `t.id = ...` (multiple joins on title.id).\n6. On keyword: index on id to speed up the join `mk.keyword_id = k.id`.\n7. On company_name: index on id to speed up the join `mc.company_id = cn.id`.\n\nBut note: the condition `mc.company_id = cn.id` is a join condition. We have an index on movie_companies.company_id, but not on company_name.id. So we can index company_name.id.\n\nAlso, note that the condition `an.person_id = n.id` is a join condition. We have an index on aka_name.person_id, but not on name.id. So we can index name.id.\n\nSimilarly, the condition `n.id = ci.person_id` is a join condition. We have an index on cast_info.person_id, but not on name.id. So we can index name.id.\n\nWait, note that the condition `n.id = ci.person_id` is the same as the condition `an.person_id = n.id` and `n.id = ci.person_id`. So we are joining three tables on the same id. We have an index on cast_info.person_id and on aka_name.person_id, but not on name.id. So we should index name.id.\n\nAlso, note that the condition `t.id = ...` appears multiple times. We have an index on cast_info.movie_id and movie_companies.movie_id, but not on title.id. So we should index title.id.\n\nNow, let's consider the order of impact:\n\nThe tables with the most rows are:\n   cast_info: 36 million rows\n   movie_keyword: 4.5 million rows\n   name: 4.1 million rows\n   title: 2.5 million rows\n   movie_companies: 2.6 million rows\n   keyword: 134k rows\n   company_name: 235k rows\n   aka_name: 901k rows\n\nThe query is filtering on:\n   - company_name: 235k rows, filter on country_code (fixed string)\n   - keyword: 134k rows, filter on keyword (fixed string)\n   - title: 2.5 million rows, filter on episode_nr (range)\n\nThe joins are:\n\n   - Between title and cast_info (on movie_id and id) \u2014 title has 2.5 million rows, cast_info has 36 million rows.\n   - Between title and movie_keyword (on id and movie_id) \u2014 title has 2.5 million rows, movie_keyword has 4.5 million rows.\n   - Between title and movie_companies (on id and movie_id) \u2014 title has 2.5 million rows, movie_companies has 2.6 million rows.\n   - Between name and cast_info (on id and person_id) \u2014 name has 4.1 million rows, cast_info has 36 million rows.\n   - Between name and aka_name (on id and person_id) \u2014 name has 4.1 million rows, aka_name has 901k rows.\n   - Between movie_keyword and keyword (on movie_id and id) \u2014 movie_keyword has 4.5 million rows, keyword has 134k rows.\n   - Between movie_companies and company_name (on movie_id and id) \u2014 movie_companies has 2.6 million rows, company_name has 235k rows.\n\nThe most expensive joins are likely the ones with the largest tables and the most rows to join.\n\nThe condition `t.episode_nr >= 50 AND t.episode_nr < 100` might be the most selective because it is a range on title.episode_nr. We can index title.episode_nr to avoid a sequential scan on title.\n\nBut note: the condition on title.episode_nr is a range condition. We can create a btree index on episode_nr.\n\nSimilarly, the condition on keyword.keyword is an equality condition. We can create a btree index on keyword.keyword.\n\nThe condition on company_name.country_code is an equality condition. We can create a btree index on company_name.country_code.\n\nNow, let's consider the joins:\n\nThe join between title and cast_info is on t.id and ci.movie_id. We have an index on cast_info.movie_id, but not on title.id. So if we index title.id, then the join condition `t.id = ci.movie_id` might be faster because we can look up the movie_id in cast_info and then find the corresponding title.id in the title table.\n\nBut note: the join condition is `ci.movie_id = t.id`. We have an index on cast_info.movie_id, so we can use that to find the movie_id in cast_info and then look up the title with that id. However, without an index on title.id, the lookup by id in title might be a sequential scan.\n\nAlternatively, we can index title.id to allow the join to be done via a nested loop if the number of matching rows is small.\n\nSimilarly, the join between title and movie_keyword is on t.id and mk.movie_id. We have an index on movie_keyword.movie_id, so we can use that to find the movie_ids in movie_keyword and then look up the title.id. But without an index on title.id, the lookup might be slow.\n\nThe same applies to the join between title and movie_companies.\n\nNow, the join between name and cast_info is on n.id and ci.person_id. We have an index on cast_info.person_id, so we can use that to find the person_ids in cast_info and then look up the name.id. But without an index on name.id, the lookup might be slow.\n\nSimilarly, the join between name and aka_name is on n.id and an.person_id. We have an index on aka_name.person_id, so we can use that to find the person_ids in aka_name and then look up the name.id. But without an index on name.id, the lookup might be slow.\n\nAlso, the join between movie_keyword and keyword is on mk.keyword_id and k.id. We have an index on movie_keyword.keyword_id, so we can use that to find the keyword_ids in movie_keyword and then look up the keyword.id. But without an index on keyword.id, the lookup might be slow.\n\nThe join between movie_companies and company_name is on mc.company_id and cn.id. We have an index on movie_companies.company_id, so we can use that to find the company_ids in movie_companies and then look up the company_name.id. But without an index on company_name.id, the lookup might be slow.\n\nSo, the potential index improvements are:\n\n1. On title: index on episode_nr (btree) to speed up the filter.\n2. On company_name: index on country_code (btree) to speed up the filter.\n3. On keyword: index on keyword (btree) to speed up the filter.\n4. On name: index on id (btree) to speed up the joins with cast_info and aka_name.\n5. On title: index on id (btree) to speed up the joins with cast_info, movie_keyword, and movie_companies.\n6. On keyword: index on id (btree) to speed up the join with movie_keyword.\n7. On company_name: index on id (btree) to speed up the join with movie_companies.\n\nBut note: the condition `cn.country_code = '[us]'` is a filter, so we can index the entire country_code column. We don't need a partial index because the condition is fixed and the index will help for any country_code.\n\nSimilarly, the condition `k.keyword = 'character-name-in-title'` is a filter, so we can index the entire keyword column.\n\nNow, let's order by the number of rows that might be scanned:\n\n1. The title table has 2.5 million rows. The condition on episode_nr might reduce the number of rows, but without an index, it might be a sequential scan. The index on episode_nr would help.\n\n2. The company_name table has 235k rows. The condition on country_code is fixed, so without an index, it might be a sequential scan. The index on country_code would help.\n\n3. The keyword table has 134k rows. The condition on keyword is fixed, so without an index, it might be a sequential scan. The index on keyword would help.\n\n4. The name table has 4.1 million rows. The joins on name.id might be expensive without an index. The index on name.id would help.\n\n5. The title table again: the joins on title.id might be expensive without an index. The index on title.id would help.\n\n6. The keyword table again: the join on keyword.id might be expensive without an index. The index on keyword.id would help.\n\n7. The company_name table again: the join on company_name.id might be expensive without an index. The index on company_name.id would help.\n\nBut note: the condition `cn.country_code = '[us]'` is a filter, so we can index the entire country_code column. We don't need a partial index because the condition is fixed and the index will help for any country_code.\n\nHowever, the problem says: \"partial_predicate must reference ONLY columns of the indexed `target` table.\" So we cannot use a partial index for the filter on company_name.country_code because the condition is fixed and the index would be a btree index on the entire column.\n\nSimilarly, for the keyword condition, we cannot use a partial index.\n\nNow, let's consider the impact:\n\nThe most expensive part might be the joins on the large tables (cast_info, movie_keyword, title) without indexes. So we should prioritize indexes that can reduce the cost of these joins.\n\nBut note: the query is using MIN(an.name) and MIN(t.title). This might be a aggregation, so the optimizer might use a different strategy.\n\nHowever, the problem says that the query cannot be improved by SQL rewriting, so we focus on indexes.\n\nGiven the above, we propose the following indexes:\n\n1. On title: index on episode_nr (btree) to speed up the filter.\n2. On company_name: index on country_code (btree) to speed up the filter.\n3. On keyword: index on keyword (btree) to speed up the filter.\n4. On name: index on id (btree) to speed up the joins with cast_info and aka_name.\n5. On title: index on id (btree) to speed up the joins with cast_info, movie_keyword, and movie_companies.\n6. On keyword: index on id (btree) to speed up the join with movie_keyword.\n7. On company_name: index on id (btree) to speed up the join with movie_companies.\n\nBut note: the condition `t.id = mc.movie_id` and `ci.movie_id = mc.movie_id` and `ci.movie_id = t.id` might be optimized by having an index on title.id and movie_id in cast_info and movie_companies. We already have an index on cast_info.movie_id and movie_companies.movie_id, so the joins might be done by nested loops if the number of matching rows is small.\n\nHowever, without an index on title.id, the join condition `t.id = ...` might require a sequential scan of title for each matching row in the other tables.\n\nSimilarly, without an index on name.id, the join condition `n.id = ...` might require a sequential scan of name for each matching row in the other tables.\n\nNow, let's write the JSON structure.\n\nWe must not suggest indexes that already exist. The existing indexes are:\n\n- For cast_info: movie_id, person_id, person_role_id, role_id\n- For movie_companies: company_id, company_type_id, movie_id\n- For movie_keyword: keyword_id, movie_id\n- For title: kind_id\n\nWe are not suggesting any index on these columns because they already exist.\n\nWe are suggesting:\n\n- For title: episode_nr and id\n- For company_name: country_code and id\n- For keyword: keyword and id\n- For name: id\n\nBut note: the condition `cn.country_code = '[us]'` is a filter, so we can index the entire country_code column. We don't need a partial index.\n\nSimilarly, the condition `k.keyword = 'character-name-in-title'` is a filter, so we can index the entire keyword column.\n\nNow, let's write the JSON.\n\nWe'll list the indexes in the order of the number of rows they might help (largest table first) but note that the condition on title.episode_nr might be very selective, so it might help a lot even if the table is large.\n\nBut the problem says: \"order the indexes by the number of rows scanned \u2014 largest first.\"\n\nWe are not given the exact number of rows that would be scanned, but we can order by the table size:\n\n1. title (2.5 million rows) \u2014 index on episode_nr and id\n2. name (4.1 million rows) \u2014 index on id\n3. movie_keyword (4.5 million rows) \u2014 index on id (but note: we are already indexing keyword.id, which is part of the join condition for movie_keyword and keyword)\n4. cast_info (36 million rows) \u2014 index on id? But note: we are not indexing cast_info.id because the condition on cast_info is via movie_id and person_id, which are already indexed.\n5. movie_companies (2.6 million rows) \u2014 index on id (but note: we are indexing company_name.id, which is part of the join condition for movie_companies and company_name)\n6. keyword (134k rows) \u2014 index on keyword and id\n7. company_name (235k rows) \u2014 index on country_code and id\n\nBut note: the condition on title.episode_nr is a filter, so it might reduce the number of rows from 2.5 million to a smaller number. Similarly, the condition on company_name.coun",
+  "recommendations": [
+    {
+      "table": "title",
+      "column": "episode_nr",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.4,
+      "baseline_exec_ms": 183.334,
+      "optimized_exec_ms": 179.025,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.66,
+          "cost_with_index": 20815.65,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.53,
+          "cost_with_index": 4717.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55683.97,
+          "cost_with_index": 55684.22,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19503.62,
+          "cost_with_index": 19503.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66990.98,
+          "cost_with_index": 66991.17,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 3832.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.14,
+          "cost_with_index": 9395.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.68,
+          "cost_with_index": 45696.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "id",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "name",
+      "column": "id",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 10.5,
+      "baseline_exec_ms": 195.398,
+      "optimized_exec_ms": 174.878,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.65,
+          "cost_with_index": 20815.65,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.53,
+          "cost_with_index": 4717.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.68,
+          "cost_with_index": 43389.47,
+          "benefit_pct": 5.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "id",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 68.6,
+      "validation": "executed",
+      "measured_read_benefit_pct": 17.1,
+      "baseline_exec_ms": 219.068,
+      "optimized_exec_ms": 181.693,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 35.1,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.53,
+          "cost_with_index": 2099.84,
+          "benefit_pct": 55.5
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 4580.95,
+          "benefit_pct": 39.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 8046.93,
+          "benefit_pct": 15.6
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 1214.81,
+          "benefit_pct": 68.3
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 1252.2,
+          "benefit_pct": 67.6
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "id",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,319 @@
+{
+  "timestamp": "2026-08-30T18:53:36.280148",
+  "query_hash": "9756dc2bf6d5",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 78989.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of their SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting several cases based on subqueries that count and average certain columns from the store_sales table, filtered by ss_quantity ranges. The main table involved here is store_sales, and the reason table is just used for a condition (r_reason_sk = 1), which is a small table with no indexes.\n\nFirst, looking at the query structure. The main query is a SELECT from the reason table where r_reason_sk = 1. The reason table has no indexes, but since it's a small table (36 rows), a sequential scan is probably fast enough. The real issue is the subqueries in the SELECT list.\n\nEach subquery in the CASE statements is querying store_sales with a condition on ss_quantity between two numbers. For example, the first subquery checks count(*) where ss_quantity between 1 and 20. Then, depending on whether that count is greater than 1071, it calculates either avg(ss_ext_tax) or avg(ss_net_paid_inc_tax) for the same range.\n\nSince these subqueries are repeated for different quantity ranges, the main bottleneck is the store_sales table. The store_sales table has 57 million rows and no indexes. So, each of these subqueries is doing a sequential scan on store_sales, which is expensive.\n\nThe user mentioned that the query can't be improved by SQL rewriting, so we need to look into indexing. The task is to find indexes on store_sales that would speed up these subqueries.\n\nLooking at the subqueries, they all filter on ss_quantity. The ranges are 1-20, 21-40, 41-60, 61-80, 81-100. Each of these ranges is a different interval. However, creating an index on ss_quantity alone might not be sufficient because the query is checking for ranges. But since the ranges are fixed and known, maybe a B-tree index on ss_quantity would help. However, since the query is using BETWEEN, which is a range condition, a B-tree index on ss_quantity would allow the database to quickly find the rows in those ranges.\n\nBut wait, the subqueries are using COUNT(*) and AVG on specific columns. For COUNT(*), an index on ss_quantity might not help because COUNT(*) is just the number of rows, but the index can help find the rows quickly. For AVG, the database would need to scan the rows in the range to compute the average. However, if there's an index that includes ss_quantity and the columns used in the AVG (like ss_ext_tax and ss_net_paid_inc_tax), that could help. But creating a composite index on ss_quantity and those columns might be too large. Alternatively, since the query is using BETWEEN, maybe a B-tree index on ss_quantity is sufficient to speed up the range scans.\n\nBut the problem is that each subquery is a separate scan. If we can create an index on ss_quantity, then each of these subqueries would use that index to quickly find the rows in the specified ranges. However, since the ranges are different for each subquery, the index would still need to cover each range. But the index would allow the database to quickly locate the rows in each range, reducing the number of rows scanned.\n\nWait, but the query is using BETWEEN, which is a range condition. A B-tree index on ss_quantity would allow the database to find the rows where ss_quantity is between the two values. So, creating an index on ss_quantity would help each of these subqueries. However, since the subqueries are separate, each would have their own range. But the index would still be useful for each of them.\n\nAnother thing to consider: the subqueries are using COUNT(*) and AVG. For COUNT(*), the index might not help much because it's just counting rows, but the index can help find the rows quickly. For AVG, the database would need to access the actual data, so if the index includes the ss_ext_tax and ss_net_paid_inc_tax columns, that would allow the database to compute the average without scanning all the rows. However, creating a composite index on ss_quantity, ss_ext_tax, and ss_net_paid_inc_tax might be too large. Alternatively, maybe a covering index that includes ss_quantity and the columns needed for the AVG.\n\nBut the user's schema shows that store_sales has no indexes. So, the current execution plan is doing sequential scans on store_sales for each subquery. Each of these subqueries is scanning the entire table, which is expensive. So, the main goal is to create indexes on store_sales that can speed up these range-based queries.\n\nThe key columns involved are ss_quantity, ss_ext_tax, and ss_net_paid_inc_tax. Since the subqueries are filtering on ss_quantity ranges and then aggregating on ss_ext_tax and ss_net_paid_inc_tax, an index that includes these columns would be beneficial.\n\nA B-tree index on ss_quantity would help with the range conditions. However, for the AVG calculations, the database would still need to access the actual data. If the index includes the ss_ext_tax and ss_net_paid_inc_tax columns, then the database can retrieve those values without hitting the heap, which would speed up the AVG calculations.\n\nSo, creating a composite index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax) might be the way to go. However, considering the size of the table (57 million rows), a composite index on these three columns could be large. Alternatively, maybe a B-tree index on ss_quantity alone would suffice for the range scans, and then the database would have to access the heap for the AVG calculations. But that might not be as efficient.\n\nAlternatively, since the subqueries are using BETWEEN, which is a range condition, a B-tree index on ss_quantity would allow the database to quickly find the rows in each range. For the AVG, the database would need to scan those rows, but with the index, the number of rows scanned would be reduced. However, if the index doesn't include the columns needed for the AVG, the database would still have to do a heap scan for those columns.\n\nWait, but in PostgreSQL, if you have an index on ss_quantity, and you query for rows where ss_quantity is between 1 and 20, the database can use the index to find those rows quickly. However, to compute the average of ss_ext_tax and ss_net_paid_inc_tax, it would need to access the actual data rows. So, unless the index includes those columns, the database can't avoid a heap scan for those columns.\n\nTherefore, to make the AVG calculations efficient, the index should include the columns used in the aggregate functions. So, a composite index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax) would allow the database to retrieve those columns directly from the index, avoiding a heap scan. However, this might be a large index, but given the query's need to compute averages over ranges, it's worth considering.\n\nAlternatively, since the query is using BETWEEN, which is a range condition, maybe a B-tree index on ss_quantity is sufficient. But without including the columns for the AVG, the database would still have to scan the heap for those columns. So, the benefit of the index would be in reducing the number of rows scanned for the range condition, but the actual computation of the average would still require accessing the data.\n\nAnother approach: since the subqueries are repeated for different ranges, maybe creating a covering index that includes ss_quantity, ss_ext_tax, and ss_net_paid_inc_tax would allow the database to compute the averages without hitting the heap. This would be a covering index, which can significantly speed up the queries.\n\nBut given that the query is using multiple subqueries, each with different ranges, the index would need to cover all possible ranges. However, the index on ss_quantity would allow the database to quickly find the rows in each range, and if the index includes the necessary columns, the AVG can be computed from the index.\n\nSo, the best approach is to create a B-tree index on ss_quantity, and then include the columns ss_ext_tax and ss_net_paid_inc_tax in the index. However, in PostgreSQL, a B-tree index can include multiple columns. So, creating an index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax) would allow the database to use the index for the range condition and retrieve the necessary columns for the AVG calculations.\n\nBut wait, the query is using BETWEEN, which is a range condition on ss_quantity. The index on ss_quantity would allow the database to find the rows in that range quickly. However, the AVG requires the ss_ext_tax and ss_net_paid_inc_tax values. If those columns are included in the index, then the database can compute the average without accessing the heap. This would make the subqueries much faster.\n\nTherefore, the optimal index would be a B-tree index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax). This index would cover the range condition and the columns needed for the AVG calculations, making each subquery efficient.\n\nBut considering the size of the table, creating such an index might be resource-intensive. However, given that the query is the main bottleneck, this index would significantly reduce the execution cost.\n\nAnother possibility is that the query is using multiple subqueries, each with their own range. If the index is on ss_quantity, then each subquery would use the index to find the rows in their respective ranges. However, without the columns in the index, the database would still need to access the heap for the AVG calculations. So, the index on ss_quantity alone would help with the range scan but not the AVG computation.\n\nTherefore, the best index is a composite index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax). This would allow the database to quickly find the rows in the specified ranges and retrieve the necessary columns for the AVG calculations without hitting the heap.\n\nSo, the index should be on store_sales with columns ss_quantity, ss_ext_tax, and ss_net_paid_inc_tax. The index type would be a B-tree, which is suitable for range conditions and equality checks. Since the query is using BETWEEN, which is a range condition, a B-tree index is appropriate.\n\nThe estimated benefit would be eliminating the sequential scan on store_sales for each subquery, as the index would allow the database to quickly find the rows in the specified ranges and compute the averages efficiently.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_quantity\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for 5 range-based subqueries (1-20, 21-40, 41-60, 61-80, 81-100) across 57.6M rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_ext_tax\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Accelerates avg(ss_ext_tax) calculations for quantity ranges in subqueries\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_net_paid_inc_tax\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Accelerates avg(ss_net_paid_inc_tax) calculations for quantity ranges in subqueries\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs 5 range-based subqueries on store_sales with BETWEEN conditions on ss_quantity. A B-tree index on ss_quantity would enable efficient range scans. Additional B-tree indexes on ss_ext_tax and ss_net_paid_inc_tax would allow direct access to these columns for AVG calculations, eliminating heap scans. These indexes target the sequential scans in the subqueries which are the primary cost drivers.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_quantity",
+      "index_type": "btree",
+      "estimated_benefit_pct": 28.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": 36.2,
+      "baseline_exec_ms": 15839.599,
+      "optimized_exec_ms": 10104.129,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960730.24,
+          "cost_with_index": 2960805.35,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1926308.22,
+          "cost_with_index": 1926388.0,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368505.23,
+          "cost_with_index": 1368565.68,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817688.51,
+          "cost_with_index": 817818.8,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117660.08,
+          "cost_with_index": 117661.39,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29015706.04,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129367.2,
+          "cost_with_index": 129420.69,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179494.55,
+          "cost_with_index": 179494.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81490.33,
+          "cost_with_index": 81486.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712098.74,
+          "cost_with_index": 3712175.0,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135223.37,
+          "cost_with_index": 135223.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222840.26,
+          "cost_with_index": 222935.83,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345201.47,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342634.82,
+          "cost_with_index": 1342689.7,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_ext_tax",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.2,
+      "baseline_exec_ms": 15875.327,
+      "optimized_exec_ms": 15840.734,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960805.35,
+          "cost_with_index": 2960805.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1926388.0,
+          "cost_with_index": 1926388.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368565.68,
+          "cost_with_index": 1368565.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817818.8,
+          "cost_with_index": 817818.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117661.39,
+          "cost_with_index": 117661.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129420.69,
+          "cost_with_index": 129420.69,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179494.55,
+          "cost_with_index": 179494.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81486.91,
+          "cost_with_index": 81486.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712175.0,
+          "cost_with_index": 3712175.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135223.37,
+          "cost_with_index": 135223.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222935.83,
+          "cost_with_index": 222935.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342689.7,
+          "cost_with_index": 1342689.7,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_net_paid_inc_tax",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.0,
+      "baseline_exec_ms": 15849.239,
+      "optimized_exec_ms": 15857.008,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960805.35,
+          "cost_with_index": 2960805.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1926388.0,
+          "cost_with_index": 1926388.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368565.68,
+          "cost_with_index": 1368565.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817818.8,
+          "cost_with_index": 817818.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117661.39,
+          "cost_with_index": 117661.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129420.69,
+          "cost_with_index": 129420.69,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179494.55,
+          "cost_with_index": 179494.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81486.91,
+          "cost_with_index": 81486.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712175.0,
+          "cost_with_index": 3712175.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135223.37,
+          "cost_with_index": 135223.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222935.83,
+          "cost_with_index": 222935.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342689.7,
+          "cost_with_index": 1342689.7,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

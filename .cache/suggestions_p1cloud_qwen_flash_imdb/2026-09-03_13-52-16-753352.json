@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-03T13:52:16.753328",
+  "query_hash": "3b41fb20391f",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join"
+  ],
+  "improvement_pct": -77.76,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 201332.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT MIN(t.title) AS movie_title\nFROM title AS t\nWHERE EXISTS (\n    SELECT 1\n    FROM movie_companies AS mc\n    WHERE mc.movie_id = t.id\n      AND mc.company_id IN (\n          SELECT cn.id\n          FROM company_name AS cn\n          WHERE cn.country_code = '[de]'\n      )\n)\nAND EXISTS (\n    SELECT 1\n    FROM movie_keyword AS mk\n    WHERE mk.movie_id = t.id\n      AND mk.keyword_id IN (\n          SELECT k.id\n          FROM keyword AS k\n          WHERE k.keyword = 'character-name-in-title'\n      )\n)",
+  "reasoning_trace": "<think>\nOkay, let's see. The user is asking for a different optimization strategy for their SQL query. The original query is trying to find the movie title with the minimum value where certain conditions are met, involving multiple tables.\n\nFirst, I need to understand why the previous strategies didn't work. They suggested indexes on various columns and using hypopg. But maybe the problem isn't just about indexing. Let me look at the query structure again.\n\nThe query joins company_name (cn), keyword (k), movie_companies (mc), movie_keyword (mk), and title (t). The WHERE clause has several conditions: cn.country_code is '[de]', k.keyword is 'character-name-in-title', and several joins on movie_id and company_id. \n\nThe main goal is to get the minimum title. Since MIN(t.title) is the target, maybe the query is scanning a lot of rows and not efficiently filtering early. \n\nLooking at the tables involved, the movie_companies and movie_keyword tables are joined with title. The keyword table is filtered by 'character-name-in-title'. Maybe the keyword table is large, and the join with movie_keyword is causing a lot of rows to be processed. \n\nWait, the previous strategies included indexes on keyword.keyword, company_name.country_code, and movie_id in movie_companies and movie_keyword. But perhaps the join between movie_companies and movie_keyword is causing a lot of rows. Since both tables have movie_id as a key, maybe there's a way to reduce the number of rows early.\n\nAnother thought: the title table is joined with movie_companies and movie_keyword. If we can filter the title table earlier, that might help. But the title's id is used in joins, so maybe an index on title.id isn't the issue. \n\nWait, the query is selecting MIN(t.title), which is a aggregate function. Maybe the query is scanning too many rows and not using indexes effectively. Perhaps the joins are causing a lot of data to be processed. \n\nWhat if we can restructure the query to filter the keyword first? Since the keyword is a specific value, maybe we can get the keyword's id first and then use that to filter the movie_keyword table. But the original query already has mk.keyword_id = k.id, so that's already part of the join. \n\nAlternatively, maybe the movie_companies table has a lot of entries, and the country_code filter is not selective enough. But the previous strategy suggested an index on company_name.country_code. \n\nWait, maybe the problem is that the joins between movie_companies and movie_keyword are causing a lot of rows. Since both tables have movie_id, perhaps we can find a way to join them more efficiently. \n\nAnother angle: the title table's id is used in multiple joins. If we can get the movie_ids that meet the conditions first, then join with title to get the titles. But how?\n\nAlternatively, maybe the query can be rephrased to use subqueries that filter the data earlier. For example, first find all movie_ids that have the keyword 'character-name-in-title' in movie_keyword, then check if those movies have companies from Germany in movie_companies. Then get the minimum title from those movies. \n\nBut the user wants a different strategy than the previous ones. The previous strategies focused on indexes and hypopg. Maybe the issue is that the joins are not optimized. For example, the join between movie_companies and movie_keyword on movie_id might be causing a lot of rows. If we can find a way to reduce the number of rows in these tables before joining, that could help. \n\nWait, the movie_companies table is joined with company_name on company_id, and the country_code is filtered. Maybe if we can get the company_ids from company_name where country_code is '[de]' first, then use those to filter movie_companies. That way, we reduce the number of rows in movie_companies early. \n\nSimilarly, the keyword is fixed, so maybe we can get the keyword_id first, then use that to filter movie_keyword. \n\nSo, the idea is to break down the joins into subqueries that filter the data as early as possible. For example:\n\n1. Get the keyword_id for 'character-name-in-title' from keyword.\n2. Get the company_ids from company_name where country_code is '[de]'.\n3. Then, join these filtered company_ids with movie_companies to get the movie_ids.\n4. Also, join the keyword_id with movie_keyword to get the movie_ids.\n5. Find the intersection of these movie_ids and then get the minimum title from title.\n\nBut the user's query is a single SELECT with joins. Maybe the optimizer isn't able to push the filters down into the joins effectively. So, restructuring the query into subqueries that filter the data first could help. \n\nAnother possibility is that the join between movie_companies and movie_keyword is causing a lot of rows. If we can find a way to reduce the number of rows in these tables before joining, that would help. For example, using EXISTS or IN clauses instead of joins. \n\nAlternatively, maybe the query can be rewritten to use a CTE (Common Table Expression) to pre-filter the data. \n\nBut the user wants a different strategy than the previous ones. The previous strategies were about indexes and hypopg. So, perhaps the next step is to restructure the query to use subqueries that filter the data earlier, reducing the number of rows processed in the joins. \n\nSo, the optimization strategy would involve breaking down the joins into subqueries that filter the data first, thereby reducing the number of rows processed in subsequent joins. This would make the joins more efficient and reduce the overall cost.\n\n</think>\n\n1. **Reorder joins to filter earlier** \u2014 TARGET: the join between `movie_companies` and `movie_keyword` \u2014 TRANSFORMATION: Restructure the query to first filter `movie_companies` with `company_name.country_code = '[de]'` and `movie_keyword` with `keyword.keyword = 'character-name-in-title'` using subqueries, then join these filtered result sets to reduce the row count before joining with `title`.  \n2. **Materialize keyword filter** \u2014 TARGET: `keyword.keyword` \u2014 TRANSFORMATION: Precompute the `keyword.id` for `'character-name-in-title'` in a subquery to avoid scanning the entire `keyword` table during the join with `movie_keyword`.  \n3. **Filter `movie_companies` first** \u2014 TARGET: `movie_companies` join with `company_name` \u2014 TRANSFORMATION: Use a subquery to isolate `movie_companies` entries where `company_name.country_code = '[de]'` before joining with other tables to minimize the dataset early.  \n4. **Index `movie_companies.company_id` and `movie_companies.movie_id`** \u2014 TARGET: `movie_companies.company_id`, `movie_companies.movie_id` \u2014 TRANSFORMATION: Add composite indexes on `(company_id, movie_id)` to accelerate the join with `company_name` and `movie_keyword`.  \n5. **Use `EXISTS` instead of `JOIN` for subqueries** \u2014 TARGET: `movie_companies` and `movie_keyword` joins \u2014 TRANSFORMATION: Replace inner joins with `EXISTS` clauses for filtered subqueries to avoid Cartesian products and reduce row processing.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 303.938,
+      "optimized_ms": 540.271,
+      "delta_ms": -236.333,
+      "improvement_pct": -77.76,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 3862.74,
+      "optimized": 3934.09,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 180092.7,
+    "index_advisor_inference_ms": 18363.4,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 2875.9,
+    "total_inference_ms": 201332.0,
+    "writer_inference_ms": 869101.4,
+    "writer_tokens_in": 3803,
+    "writer_tokens_out": 123864,
+    "writer_calls": 4
+  },
+  "errors": [
+    "Significant cost increase: original=3862.74 \u2192 optimized=3934.09 (+1.8%)",
+    "Execution time regression: 303.938ms \u2192 540.271ms"
+  ],
+  "strategy": "1. **Reorder joins to filter earlier** \u2014 TARGET: the join between `movie_companies` and `movie_keyword` \u2014 TRANSFORMATION: Restructure the query to first filter `movie_companies` with `company_name.country_code = '[de]'` and `movie_keyword` with `keyword.keyword = 'character-name-in-title'` using subqueries, then join these filtered result sets to reduce the row count before joining with `title`.  \n2. **Materialize keyword filter** \u2014 TARGET: `keyword.keyword` \u2014 TRANSFORMATION: Precompute the `keyword.id` for `'character-name-in-title'` in a subquery to avoid scanning the entire `keyword` table during the join with `movie_keyword`.  \n3. **Filter `movie_companies` first** \u2014 TARGET: `movie_companies` join with `company_name` \u2014 TRANSFORMATION: Use a subquery to isolate `movie_companies` entries where `company_name.country_code = '[de]'` before joining with other tables to minimize the dataset early.  \n4. **Index `movie_companies.company_id` and `movie_companies.movie_id`** \u2014 TARGET: `movie_companies.company_id`, `movie_companies.movie_id` \u2014 TRANSFORMATION: Add composite indexes on `(company_id, movie_id)` to accelerate the join with `company_name` and `movie_keyword`.  \n5. **Use `EXISTS` instead of `JOIN` for subqueries** \u2014 TARGET: `movie_companies` and `movie_keyword` joins \u2014 TRANSFORMATION: Replace inner joins with `EXISTS` clauses for filtered subqueries to avoid Cartesian products and reduce row processing.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy used EXISTS with subqueries for filtering, and the rewrite applies the same technique by replacing joins with EXISTS clauses for the movie_companies and movie_keyword filters."
+  },
+  "raw_sql": "SELECT MIN(t.title) AS movie_title FROM company_name AS cn, keyword AS k, movie_companies AS mc, movie_keyword AS mk, title AS t WHERE cn.country_code = '[de]' AND k.keyword = 'character-name-in-title' AND cn.id = mc.company_id AND mc.movie_id = t.id AND t.id = mk.movie_id AND mk.keyword_id = k.id AND mc.movie_id = mk.movie_id"
+}

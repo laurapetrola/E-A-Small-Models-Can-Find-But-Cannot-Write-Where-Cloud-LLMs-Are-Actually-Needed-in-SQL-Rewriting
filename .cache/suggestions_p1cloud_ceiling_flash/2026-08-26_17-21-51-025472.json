@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-08-26T17:21:51.025443",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "use CTE for materialized subquery",
+    "convert an IN subquery to a semi-join",
+    "use grouping sets for rollup-like aggregation"
+  ],
+  "improvement_pct": -309.38,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 593362.4,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_range AS MATERIALIZED (\n    SELECT d_date_sk, d_year, d_qoy, d_moy\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1217 AND 1217 + 11\n),\nfact_agg AS MATERIALIZED (\n    SELECT ss_sold_date_sk, ss_item_sk, ss_store_sk,\n           SUM(COALESCE(ss_sales_price * ss_quantity, 0)) AS sumsales\n    FROM store_sales\n    WHERE ss_sold_date_sk IN (SELECT d_date_sk FROM date_range)\n    GROUP BY ss_sold_date_sk, ss_item_sk, ss_store_sk\n),\nrolled AS MATERIALIZED (\n    SELECT i_category, i_class, i_brand, i_product_name,\n           d_year, d_qoy, d_moy, s_store_id,\n           SUM(fa.sumsales) AS sumsales\n    FROM fact_agg fa\n    JOIN date_range dr ON fa.ss_sold_date_sk = dr.d_date_sk\n    JOIN store s ON fa.ss_store_sk = s.s_store_sk\n    JOIN item i ON fa.ss_item_sk = i.i_item_sk\n    GROUP BY ROLLUP(i_category, i_class, i_brand, i_product_name,\n                    d_year, d_qoy, d_moy, s_store_id)\n),\ncats AS (\n    SELECT DISTINCT i_category\n    FROM rolled\n    ORDER BY i_category NULLS LAST\n),\nranked AS (\n    SELECT r.i_category, r.i_class, r.i_brand, r.i_product_name,\n           r.d_year, r.d_qoy, r.d_moy, r.s_store_id, r.sumsales, r.rk\n    FROM cats c\n    JOIN LATERAL (\n        SELECT rr.i_category, rr.i_class, rr.i_brand, rr.i_product_name,\n               rr.d_year, rr.d_qoy, rr.d_moy, rr.s_store_id, rr.sumsales,\n               RANK() OVER (PARTITION BY rr.i_category ORDER BY rr.sumsales DESC) AS rk\n        FROM rolled rr\n        WHERE rr.i_category IS NOT DISTINCT FROM c.i_category\n    ) r ON TRUE\n    WHERE r.rk <= 100\n)\nSELECT i_category, i_class, i_brand, i_product_name,\n       d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nFROM ranked\nORDER BY i_category, i_class, i_brand, i_product_name,\n         d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nLIMIT 100",
+  "reasoning_trace": "1. FACT-DATE REDUCTION WITH COVERING INDEX \u2014 TARGET: `store_sales.ss_sold_date_sk` and the 12-month `date_dim.d_month_seq` set \u2014 TRANSFORMATION: Filter `store_sales` to the exact `d_date_sk` values for `d_month_seq BETWEEN 1217 AND 1228` before any join/aggregation, and support that scan with a covering index on `store_sales(ss_sold_date_sk, ss_item_sk, ss_store_sk)` including `ss_quantity` and `ss_sales_price`.\n\n2. FACT-GRAIN PRE-AGGREGATION \u2014 TARGET: the `store_sales \u22c8 date_dim \u22c8 store \u22c8 item` row stream feeding `ROLLUP` in `dw1` \u2014 TRANSFORMATION: Aggregate the date-filtered `store_sales` by `(ss_sold_date_sk, ss_item_sk, ss_store_sk)` to `SUM(coalesce(ss_sales_price*ss_quantity,0))` first, then join the dimensions and run `ROLLUP` on this compressed aggregate.\n\n3. ROLLUP MATERIALIZATION + ORDERED INDEX \u2014 TARGET: the output of `dw1` (the `ROLLUP` rows with `i_category`, `sumsales`, and all final group/order columns) \u2014 TRANSFORMATION: Materialize the rollup result into a temporary table and index it on `(i_category, sumsales DESC)` so per-category top-N access does not require a full window sort over every rollup row.\n\n4. PER-CATEGORY TOP-N WITH TIES \u2014 TARGET: `rank() over (partition by i_category order by sumsales desc)` in `dw2` \u2014 TRANSFORMATION: Replace the global window with per-`i_category` top-100-with-ties fetches in ascending `i_category` order (exactly preserving `rk <= 100`), accumulate those rows, apply the final `ORDER BY`/`LIMIT 100`, and stop once 100 final rows are produced.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 29450.738,
+      "optimized_ms": 120565.525,
+      "delta_ms": -91114.787,
+      "improvement_pct": -309.38,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1368937.52,
+      "optimized": 49832961.22,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 559375.2,
+    "index_advisor_inference_ms": 26072.5,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 7914.7,
+    "total_inference_ms": 593362.4,
+    "writer_inference_ms": 2911922.3,
+    "writer_tokens_in": 10512,
+    "writer_tokens_out": 317110,
+    "writer_calls": 6
+  },
+  "errors": [
+    "duplicate_attempt \u2014 identical SQL was already rejected this session"
+  ],
+  "strategy": "1. FACT-DATE REDUCTION WITH COVERING INDEX \u2014 TARGET: `store_sales.ss_sold_date_sk` and the 12-month `date_dim.d_month_seq` set \u2014 TRANSFORMATION: Filter `store_sales` to the exact `d_date_sk` values for `d_month_seq BETWEEN 1217 AND 1228` before any join/aggregation, and support that scan with a covering index on `store_sales(ss_sold_date_sk, ss_item_sk, ss_store_sk)` including `ss_quantity` and `ss_sales_price`.\n\n2. FACT-GRAIN PRE-AGGREGATION \u2014 TARGET: the `store_sales \u22c8 date_dim \u22c8 store \u22c8 item` row stream feeding `ROLLUP` in `dw1` \u2014 TRANSFORMATION: Aggregate the date-filtered `store_sales` by `(ss_sold_date_sk, ss_item_sk, ss_store_sk)` to `SUM(coalesce(ss_sales_price*ss_quantity,0))` first, then join the dimensions and run `ROLLUP` on this compressed aggregate.\n\n3. ROLLUP MATERIALIZATION + ORDERED INDEX \u2014 TARGET: the output of `dw1` (the `ROLLUP` rows with `i_category`, `sumsales`, and all final group/order columns) \u2014 TRANSFORMATION: Materialize the rollup result into a temporary table and index it on `(i_category, sumsales DESC)` so per-category top-N access does not require a full window sort over every rollup row.\n\n4. PER-CATEGORY TOP-N WITH TIES \u2014 TARGET: `rank() over (partition by i_category order by sumsales desc)` in `dw2` \u2014 TRANSFORMATION: Replace the global window with per-`i_category` top-100-with-ties fetches in ascending `i_category` order (exactly preserving `rk <= 100`), accumulate those rows, apply the final `ORDER BY`/`LIMIT 100`, and stop once 100 final rows are produced.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was PER-CATEGORY TOP-N WITH TIES, and the rewrite implements this by using `JOIN LATERAL` with `RANK() OVER (PARTITION BY ...)` for each `i_category`, matching"
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

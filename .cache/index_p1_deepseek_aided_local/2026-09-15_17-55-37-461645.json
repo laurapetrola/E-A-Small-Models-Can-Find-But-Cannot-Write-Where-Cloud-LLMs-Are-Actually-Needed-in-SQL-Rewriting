@@ -1,0 +1,222 @@
+{
+  "timestamp": "2026-09-15T17:55:37.461603",
+  "query_hash": "5346a55b96e8",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 2104752.5,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes to reduce the cost.\n\nThe query is:\n```sql\nselect count(*) from store_sales ,household_demographics ,time_dim, store \nwhere ss_sold_time_sk = time_dim.t_time_sk \n  and ss_hdemo_sk = household_demographics.hd_demo_sk \n  and ss_store_sk = s_store_sk \n  and time_dim.t_hour = 8 \n  and time_dim.t_minute >= 30 \n  and household_demographics.hd_dep_count = 0 \n  and store.s_store_name = 'ese' \norder by count(*) limit 100\n```\n\nWe are told that the tables store_sales, household_demographics, time_dim, and store have no indexes.\n\nThe physical execution plan is not provided, but we can analyze the query structure.\n\nThe query is joining four tables: store_sales, household_demographics, time_dim, and store.\n\nThe conditions are:\n1. `ss_sold_time_sk = time_dim.t_time_sk`\n2. `ss_hdemo_sk = household_demographics.hd_demo_sk`\n3. `ss_store_sk = s_store_sk`\n4. `time_dim.t_hour = 8`\n5. `time_dim.t_minute >= 30`\n6. `household_demographics.hd_dep_count = 0`\n7. `store.s_store_name = 'ese'`\n\nWe are counting the number of rows from store_sales that satisfy these conditions.\n\nWithout indexes, the planner will likely perform a sequential scan on each table and then join them. Since store_sales has 57 million rows, a sequential scan on that table would be very expensive.\n\nWe are to suggest indexes that would help. We note that the query has several conditions that can be used to filter rows.\n\nLet's break down the tables and the conditions:\n\n1. **store_sales**: This is the main table with 57 million rows. The conditions that filter store_sales are:\n   - `ss_sold_time_sk = time_dim.t_time_sk` (join condition with time_dim)\n   - `ss_hdemo_sk = household_demographics.hd_demo_sk` (join condition with household_demographics)\n   - `ss_store_sk = s_store_sk` (join condition with store)\n\n   Additionally, the conditions on time_dim and household_demographics and store are used to filter the joined tables.\n\n2. **time_dim**: 86,400 rows. Condition: `time_dim.t_hour = 8` and `time_dim.t_minute >= 30`. This table is small enough that a sequential scan might be acceptable, but an index on (t_hour, t_minute) could help if we are filtering by these columns.\n\n3. **household_demographics**: 7,200 rows. Condition: `household_demographics.hd_dep_count = 0`. This table is also small, but an index on hd_dep_count might help if we are filtering by that column.\n\n4. **store**: 44 rows. Condition: `store.s_store_name = 'ese'`. This table is very small, so a sequential scan is fine, but an index on s_store_name might help.\n\nHowever, note that the query is joining store_sales with these tables. The main cost is likely the join and filtering of store_sales.\n\nWe can consider creating indexes on store_sales to speed up the joins and filters.\n\nBut note: the conditions on store_sales are:\n- `ss_sold_time_sk = time_dim.t_time_sk`: This is a join condition. We can index `ss_sold_time_sk` or `time_dim.t_time_sk`. Since time_dim is small, it might be better to index store_sales on `ss_sold_time_sk` and then use the condition on time_dim to filter the time_dim table.\n\nAlternatively, we can index the time_dim table on (t_hour, t_minute) to quickly find the rows with t_hour=8 and t_minute>=30.\n\nSimilarly, for household_demographics, we can index hd_demo_sk (which is used in the join) and hd_dep_count (which is used in the filter). But note that the join condition is on hd_demo_sk, so an index on hd_demo_sk would help the join. The condition hd_dep_count=0 is a filter, so we can also index hd_dep_count.\n\nBut note: the query is filtering by hd_dep_count=0. Since household_demographics has 7,200 rows, a sequential scan is acceptable, but if we are going to do a join and then filter, it might be better to have an index on hd_demo_sk to quickly find the matching rows in store_sales and then filter by hd_dep_count.\n\nHowever, the condition on household_demographics is two-fold: the join condition and the filter. We can create a composite index on (hd_demo_sk, hd_dep_count) to cover both.\n\nSimilarly, for store_sales, we have three join conditions and one filter condition (none directly on store_sales, but note that the store table is very small). The join conditions are:\n- `ss_sold_time_sk = time_dim.t_time_sk`\n- `ss_hdemo_sk = household_demographics.hd_demo_sk`\n- `ss_store_sk = s_store_sk`\n\nWe can create a composite index on store_sales for (ss_sold_time_sk, ss_hdemo_sk, ss_store_sk) to cover the joins.\n\nBut note: the query also has a condition on store_sales via the store table: `ss_store_sk = s_store_sk` and then `store.s_store_name = 'ese'`. We can also index store_sales on ss_store_sk to help the join with store.\n\nAlternatively, we can index store_sales on (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) to cover the joins.\n\nBut note: the order of columns in the index matters for the join conditions. We are joining with time_dim, household_demographics, and store. The condition on time_dim is a filter, so we might not need to index store_sales for that. However, the condition on time_dim is `time_dim.t_hour=8` and `time_dim.t_minute>=30`. We can index time_dim to make the filter faster.\n\nLet's consider the tables one by one:\n\n1. **time_dim**: We can create an index on (t_hour, t_minute) to quickly find the rows with t_hour=8 and t_minute>=30.\n\n2. **household_demographics**: We can create an index on (hd_demo_sk, hd_dep_count) to help the join and the filter.\n\n3. **store**: We can create an index on s_store_name to quickly find the store with name 'ese'. Since store has only 44 rows, this might not be necessary, but it could help the join.\n\n4. **store_sales**: We can create an index on (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) to cover the joins.\n\nBut note: the query is counting the rows from store_sales. The condition on store_sales is through the joins and the filters on the other tables. We can also consider creating a covering index on store_sales that includes the columns used in the joins and the filter, but note that the filter is on the other tables.\n\nAlternatively, we can use a composite index on store_sales for (ss_sold_time_sk, ss_hdemo_sk, ss_store_sk) to cover the joins.\n\nNow, let's think about the execution plan without indexes:\n\n- The planner might do a sequential scan on store_sales and then join with the other tables. But the other tables are small, so it might do a sequential scan on store_sales and then use nested loops to join with the small tables.\n\nBut note: the query has a condition on time_dim and household_demographics and store. The planner might do a sequential scan on store_sales and then filter by the conditions on the other tables by doing a join and then filtering.\n\nAlternatively, the planner might do a hash join or nested loop joins.\n\nGiven that store_sales is large, we want to avoid a sequential scan on store_sales if possible.\n\nWe can try to index the columns that are used in the joins and filters.\n\nBut note: the query has a condition on time_dim and household_demographics and store. We can also consider creating indexes on the other tables to make the joins faster.\n\nLet's list the index candidates:\n\n1. **time_dim**: Create an index on (t_hour, t_minute) to quickly find the rows with t_hour=8 and t_minute>=30.\n\n2. **household_demographics**: Create an index on (hd_demo_sk, hd_dep_count) to help the join and the filter.\n\n3. **store**: Create an index on s_store_name to quickly find the store with name 'ese'.\n\n4. **store_sales**: Create an index on (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) to help the joins.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nHowever, the condition on store_sales is also via the time_dim and household_demographics. We are joining store_sales with time_dim on ss_sold_time_sk = time_dim.t_time_sk. We can index store_sales on ss_sold_time_sk, but note that time_dim is being filtered by t_hour and t_minute. We can also index time_dim to make the filter faster.\n\nBut note: the condition on time_dim is two columns. We can create a composite index on time_dim for (t_hour, t_minute) to cover the condition.\n\nSimilarly, for household_demographics, we have two conditions: the join condition (hd_demo_sk) and the filter (hd_dep_count). We can create a composite index on (hd_demo_sk, hd_dep_count) to cover both.\n\nNow, let's consider the order of the indexes. We want to reduce the cost of the most expensive part first.\n\nThe store_sales table has 57 million rows. The joins and filters on the other tables might be reducing the number of rows, but without indexes, the planner might be doing a sequential scan on store_sales and then doing nested loops with the small tables.\n\nAlternatively, the planner might be doing a hash join with the other tables, which would require a lot of memory and time.\n\nWe can try to index the columns in store_sales that are used in the joins to make the joins faster.\n\nBut note: the query is counting the rows from store_sales. We can also consider creating a covering index on store_sales that includes the columns used in the joins and the filter, but the filter is on the other tables.\n\nAlternatively, we can create an index on store_sales for the columns used in the joins and then use the other tables to filter.\n\nLet's break down the query:\n\nWe are joining store_sales with time_dim, household_demographics, and store.\n\nThe conditions are:\n- time_dim.t_hour = 8 and time_dim.t_minute >= 30\n- household_demographics.hd_dep_count = 0\n- store.s_store_name = 'ese'\n\nWe can pre-filter the other tables and then join with store_sales.\n\nBut note: the query is written as a join with no ON clauses, but the conditions are in the WHERE clause. The planner will likely do a nested loop or hash join.\n\nGiven that the other tables are small, the planner might do a sequential scan on store_sales and then use index scans on the other tables to join.\n\nBut without indexes, the planner might do a sequential scan on store_sales and then for each row, do a sequential scan on the other tables? That would be very slow.\n\nAlternatively, the planner might do a hash join with the other tables, which would require reading all the rows of store_sales and the other tables.\n\nWe need to reduce the cost of the joins and the filters.\n\nWe can create indexes on the columns that are used in the joins and filters.\n\nLet's list the index candidates again, but now with the table and column:\n\n1. **time_dim**: (t_hour, t_minute) - to quickly find the rows with t_hour=8 and t_minute>=30.\n2. **household_demographics**: (hd_demo_sk, hd_dep_count) - to quickly find the rows with hd_demo_sk and hd_dep = 0.\n3. **store**: s_store_name - to quickly find the store with name 'ese'.\n4. **store_sales**: (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) - to quickly find the rows that match the joins.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nAlternatively, we can create an index on store_sales for (ss_sold_time_sk, ss_hdemo_sk, ss_store_sk) to cover the joins.\n\nBut note: the condition on time_dim is two columns, so we can index time_dim on (t_hour, t_minute). Similarly, for household_demographics, we can index on (hd_demo_sk, hd_dep_count).\n\nNow, let's consider the order of the indexes. The store_sales table is the largest, so we want to reduce the number of rows scanned in store_sales first. We can do that by having an index on store_sales that allows the planner to quickly find the rows that match the joins and filters.\n\nBut note: the filters are on the other tables. We can also reduce the number of rows in the other tables by indexing them.\n\nWe can create indexes on the other tables to reduce the number of rows that need to be joined.\n\nBut note: the query is counting the rows from store_sales. The other tables are used to filter store_sales. We can also consider creating an index on store_sales for the columns that are used in the joins and then use the other tables to filter.\n\nGiven the above, we can suggest the following indexes:\n\n1. **time_dim**: (t_hour, t_minute) - This will help the condition on time_dim.\n2. **household_demographics**: (hd_demo_sk, hd_dep_count) - This will help the join and the filter on household_demographics.\n3. **store**: s_store_name - This will help the join with store.\n4. **store_sales**: (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) - This will help the joins with store, household_demographics, and time_dim.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nAlternatively, we can create an index on store_sales for (ss_sold_time_sk, ss_hdemo_sk, ss_store_sk) to cover the joins.\n\nBut note: the condition on time_dim is two columns, so we can index time_dim on (t_hour, t_minute). Similarly, for household_demographics, we can index on (hd_demo_sk, hd_dep_count).\n\nNow, let's write the JSON structure.\n\nWe are to return a list of indexes, each with:\n- target: table name\n- property: column name\n- index_type: the type of index (e.g., btree, hash, etc. \u2014 but note that the database is PostgreSQL and the extensions are hypopg and pg_trgm. We can use btree for most cases, and for partial indexes we can use the same.)\n- partial_predicate: null or a condition (but note the instructions: partial_predicate must reference ONLY columns of the indexed `target` table. Since the conditions in the query are on multiple tables, we cannot use a partial index for the other tables because the condition is not solely on the target table's columns. So we set partial_predicate to null for all.)\n\nBut note: the condition on household_demographics is `hd_dep_count = 0`. This condition is on the household_demographics table. We can create a partial index on household_demographics for hd_dep_count = 0? But note: the condition in the query is `household_demographics.hd_dep_count = 0`. We can create a partial index on household_demographics for rows where hd_dep_count = 0. However, the instructions say: \"partial_predicate must reference ONLY columns of the indexed `target` table\". The condition `hd_dep_count = 0` is on the target table's column, so we can use a partial index. But note: the condition is an equality, so we can create a partial index on household_demographics for hd_dep_count = 0. However, the query condition is `hd_dep_count = 0`, so we can create a partial index on household_demographics for rows where hd_dep_count = 0. But note: the index would be on the hd_demo_sk column, because the join condition is on hd_demo_sk. We can create a composite index on (hd_demo_sk, hd_dep_count) and then use a partial index for hd_dep_count = 0? But note: the condition is an equality, so we can create a partial index on household_demographics for hd_dep_count = 0, but then we would index only the rows with hd_dep_count=0. However, the join condition is on hd_demo_sk, so we still need to index hd_demo_sk. But note: the condition `hd_dep_count = 0` is a filter, so we can also index hd_dep_count alone. But the join condition is on hd_demo_sk, so we need to index that.\n\nAlternatively, we can create a composite index on (hd_demo_sk, hd_dep_count) and then use the condition on hd_dep_count to filter. But note: the condition is an equality on hd_dep_count, so we can create a composite index on (hd_dep_count, hd_demo_sk) and then use the condition on hd_dep_count. But the join condition is on hd_demo_sk, so we want the index to be efficient for the join.\n\nBut note: the condition in the query is two-fold: the join condition and the filter. We can create a composite index on (hd_demo_sk, hd_dep_count) and then the planner can use the index to find the rows with hd_demo_sk and then check hd_dep_count.\n\nAlternatively, we can create two indexes: one on hd_demo_sk and one on hd_dep_count. But a composite index on (hd_demo_sk, hd_dep_count) would be more efficient for both.\n\nBut note: the condition on hd_dep_count is an equality, so we can also create a separate index on hd_dep_count. However, the composite index might be better.\n\nBut note: the table household_demographics has 7,200 rows, so a composite index on (hd_demo_sk, hd_dep_count) would be acceptable.\n\nSimilarly, for time_dim, we can create a composite index on (t_hour, t_minute) because the condition is on two columns.\n\nFor store, we can create a B-tree index on s_store_name.\n\nFor store_sales, we can create a composite index on (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) to cover the joins.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nNow, let's write the JSON.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"time_dim\",\n      \"property\": \"t_hour, t_minute\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the cost of filtering time_dim by t_hour=8 and t_minute>=30\"\n    },\n    {\n      \"target\": \"household_demographics\",\n      \"property\": \"hd_demo_sk, hd_dep_count\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the cost of joining store_sales with household_demographics and filtering by hd_dep_count=0\"\n    },\n    {\n      \"target\": \"store\",\n      \"property\": \"s_store_name\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the cost of joining store_sales with store by s_store_name='ese'\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_store_sk, ss_hdemo_sk, ss_sold_time_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the cost of joining store_sales with store, household_demographics, and time_dim\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the columns used in the joins and filters. The store_sales table is the largest, so indexing its join columns first will reduce the most expensive part of the query.\"\n}\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nAlternatively, we can create an index on store_sales for (ss_sold_time_sk, ss_hdemo_sk, ss_store_sk) to cover the joins.\n\nBut note: the condition on time_dim is two columns, so we can index time_dim on (t_hour, t_minute). Similarly, for household_demographics, we can index on (hd_demo_sk, hd_dep_count).\n\nWe are not sure if the planner will use the index on store_sales for the joins, but it is worth trying.\n\nAlso, note that the query has a condition on store_sales via the store table: `store.s_store_name = 'ese'`. We can also index store_sales on ss_store_sk to help the join with store.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nAlternatively, we can create an index on store_sales for (ss_store_sk, ss_hdemo_sk, ss_sold_time_sk) to cover the joins.\n\nBut note: the condition on store_sales is also via the store table. We are joining store_sales with store on ss_store_sk = s_store_sk. We can also index store_sales on ss_store_sk alone, but a composite index might be better.\n\nWe are going to suggest the composite index on store_sales for (ss_store_sk, ss_hdemo_sk, ss_sold_ti",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk, ss_hdemo_sk, ss_sold_time_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 93.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": 93.7,
+      "baseline_exec_ms": 2868.341,
+      "optimized_exec_ms": 179.351,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956683.06,
+          "cost_with_index": 2956649.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1941311.08,
+          "cost_with_index": 1941273.4,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370613.74,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793293.84,
+          "cost_with_index": 793229.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117184.11,
+          "cost_with_index": 117183.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21111054.92,
+          "cost_with_index": 21110547.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020707.61,
+          "cost_with_index": 29019012.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130008.04,
+          "cost_with_index": 130008.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 179533.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81516.16,
+          "cost_with_index": 81515.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712229.04,
+          "cost_with_index": 3712190.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223892.0,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345283.72,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "time_dim",
+      "column": "t_hour, t_minute",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.3,
+      "baseline_exec_ms": 2911.488,
+      "optimized_exec_ms": 2903.571,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_demo_sk, hd_dep_count",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.4,
+      "baseline_exec_ms": 2929.578,
+      "optimized_exec_ms": 2940.417,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store",
+      "column": "s_store_name",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.8,
+      "baseline_exec_ms": 2905.199,
+      "optimized_exec_ms": 2852.724,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.22,
+          "cost_with_index": 1435939.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370584.93,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 179533.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81515.81,
+          "cost_with_index": 81515.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712190.53,
+          "cost_with_index": 3712190.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134964.32,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223891.99,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

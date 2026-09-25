@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-08-26T22:17:18.489462",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "split an OR predicate into UNION ALL branches",
+    "convert an IN subquery to a semi-join",
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": -17.71,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "outcome": "equivalence_failed_semantic",
+  "used_fallback": true,
+  "inference_ms": 538315.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH web_v1 AS (\n    SELECT \n        ws_item_sk AS item_sk,\n        d_date,\n        SUM(ws_sales_price) OVER (\n            PARTITION BY ws_item_sk \n            ORDER BY d_date \n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM web_sales\n    JOIN date_dim ON web_sales.ws_sold_date_sk = date_dim.d_date_sk\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n    AND ws_item_sk IS NOT NULL\n),\nstore_v1 AS (\n    SELECT \n        ss_item_sk AS item_sk,\n        d_date,\n        SUM(ss_sales_price) OVER (\n            PARTITION BY ss_item_sk \n            ORDER BY d_date \n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM store_sales\n    JOIN date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n    AND ss_item_sk IS NOT NULL\n),\njoined_data AS (\n    SELECT \n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM web_v1 web\n    LEFT JOIN store_v1 store \n        ON web.item_sk = store.item_sk \n        AND web.d_date = store.d_date\n    UNION ALL\n    SELECT \n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM store_v1 store\n    LEFT JOIN web_v1 web \n        ON store.item_sk = web.item_sk \n        AND store.d_date = web.d_date\n    WHERE web.item_sk IS NULL OR web.d_date IS NULL\n)\nSELECT \n    item_sk,\n    d_date,\n    web_sales,\n    store_sales\nFROM joined_data\nWHERE web_sales > store_sales\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to rewrite the given SQL to make it faster while preserving the exact same result. Let me start by understanding the original query and identifying potential bottlenecks.\n\nFirst, looking at the original query, there are two CTEs: web_v1 and store_v1. Each of these CTEs is aggregating data from web_sales and store_sales respectively, using window functions to calculate cumulative sales over time. Then, there's a full outer join between these two CTEs on item_sk and d_date. After that, they compute cumulative sales again using MAX() over partitions, and filter where web_cumulative > store_cumulative.\n\nHmm, the main issues I see here are:\n\n1. **Redundant Window Functions**: The web_v1 and store_v1 CTEs already compute the cumulative sales using a window function. Then, in the final SELECT, they're using MAX() over the same partition again. That's redundant and could be optimized by removing the redundant window function and using the existing cume_sales directly.\n\n2. **Full Outer Join**: A full outer join can be expensive, especially if there are many rows. Maybe we can split this into two separate joins (inner and left) to handle cases where one side might have missing data, but I need to check if that's necessary.\n\n3. **Subquery in SELECT**: The original query has a subquery in the SELECT clause that's using CASE statements to handle NULLs. Using COALESCE might be more efficient and clearer.\n\n4. **Group By and Aggregation**: The original CTEs have a GROUP BY clause, but the window function might already handle the aggregation. Wait, looking at the original query, the web_v1 and store_v1 CTEs have a GROUP BY on item_sk and d_date, but the window function is applied after. That might be redundant. The SUM(SUM(...)) is a bit confusing. Maybe the GROUP BY is unnecessary if the window function is correctly applied.\n\nWait, in the original query, the web_v1 CTE has a GROUP BY on ws_item_sk and d_date, but then applies a window function. That might not be correct. Because the GROUP BY would aggregate each item_sk and d_date into a single row, and then the window function would compute the cumulative sum over the ordered d_date. However, if the GROUP BY is not needed, perhaps the window function can be applied directly without the GROUP BY, which would reduce the number of rows processed.\n\nBut the user's previous attempts tried to remove the GROUP BY, which might have caused syntax errors. Let me check the original query again.\n\nOriginal web_v1:\nSELECT ws_item_sk item_sk, d_date, SUM(SUM(ws_sales_price)) OVER (...) cume_sales\nFROM web_sales, date_dim\nWHERE ws_sold_date_sk = d_date_sk\nAND d_month_seq between 1212 and 1212+11\nAND ws_item_sk is not null\nGROUP BY ws_item_sk, d_date\n\nWait, the SUM(SUM(...)) is a bit odd. Maybe that's a typo. It should be SUM(ws_sales_price) OVER (...). The GROUP BY is grouping by item_sk and d_date, which would collapse each (item_sk, d_date) pair into a single row, and then the window function would compute the cumulative sum over the ordered d_date. But if the window function is applied after grouping, it's redundant. The GROUP BY is unnecessary if the window function is correctly applied.\n\nSo, the first optimization is to remove the GROUP BY and the redundant SUM(SUM(...)) and just use SUM(ws_sales_price) OVER (...). That would reduce the number of rows processed in the CTEs.\n\nAnother point is the full outer join. If we can handle the cases where one side might be missing by using LEFT JOINs instead of FULL OUTER JOIN, that might be more efficient. However, the original query uses a full outer join, which could be causing a lot of rows to be processed. But since the final query is filtering where web_cumulative > store_cumulative, maybe we can split this into two separate joins: one for matching items and one for non-matching, but I need to think carefully.\n\nAlso, the final SELECT has a subquery that uses CASE statements to handle NULLs. Using COALESCE would be more efficient and clearer.\n\nPutting this all together, the optimized query would:\n\n1. Remove the GROUP BY and redundant SUM(SUM(...)) in the CTEs, using just SUM(ws_sales_price) OVER (...).\n2. Replace the full outer join with left joins, handling the cases where one side might be missing.\n3. Use COALESCE instead of CASE for handling NULLs.\n4. Remove the redundant window functions in the final SELECT by using the existing cume_sales columns.\n\nLet me structure this step by step.\n\nFirst, rewrite the web_v1 and store_v1 CTEs without the GROUP BY and fix the SUM function.\n\nThen, in the joined_data CTE, use LEFT JOINs instead of FULL OUTER JOIN, and handle the COALESCE for item_sk and d_date.\n\nFinally, in the final SELECT, use the existing cume_sales columns directly instead of recalculating them with MAX().\n\nThis should reduce the number of operations and improve performance.\n\n</think>\n\nWITH web_v1 AS (\n    SELECT \n        ws_item_sk AS item_sk,\n        d_date,\n        SUM(ws_sales_price) OVER (\n            PARTITION BY ws_item_sk \n            ORDER BY d_date \n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM web_sales\n    JOIN date_dim ON web_sales.ws_sold_date_sk = date_dim.d_date_sk\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n    AND ws_item_sk IS NOT NULL\n),\nstore_v1 AS (\n    SELECT \n        ss_item_sk AS item_sk,\n        d_date,\n        SUM(ss_sales_price) OVER (\n            PARTITION BY ss_item_sk \n            ORDER BY d_date \n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM store_sales\n    JOIN date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n    AND ss_item_sk IS NOT NULL\n),\njoined_data AS (\n    SELECT \n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM web_v1 web\n    LEFT JOIN store_v1 store \n        ON web.item_sk = store.item_sk \n        AND web.d_date = store.d_date\n    UNION ALL\n    SELECT \n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM store_v1 store\n    LEFT JOIN web_v1 web \n        ON store.item_sk = web.item_sk \n        AND store.d_date = web.d_date\n    WHERE web.item_sk IS NULL OR web.d_date IS NULL\n)\nSELECT \n    item_sk,\n    d_date,\n    web_sales,\n    store_sales\nFROM joined_data\nWHERE web_sales > store_sales\nORDER BY item_sk, d_date\nLIMIT 100",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 17407.221,
+      "optimized_ms": 20489.892,
+      "delta_ms": -3082.671,
+      "improvement_pct": -17.71,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1936451.6,
+      "optimized": 1971296.88,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": false
+    },
+    "inference_ms": 421645.1,
+    "index_advisor_inference_ms": 109693.2,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 6977.3,
+    "total_inference_ms": 538315.6,
+    "writer_inference_ms": 0.0,
+    "writer_tokens_in": 0,
+    "writer_tokens_out": 0,
+    "writer_calls": 0
+  },
+  "errors": [
+    "Integrity check failed: result hashes differ (S\u22601) \u2014 your rewrite returns different rows than the original. Common causes: converting IN/EXISTS to a plain JOIN without DISTINCT multiplies rows; changing the driving table in FROM alters the result set. Fix: use EXISTS or add DISTINCT when flattening subqueries into JOINs.",
+    "Significant cost increase: original=1936451.60 \u2192 optimized=1971296.88 (+1.8%)",
+    "Execution time regression: 17407.221ms \u2192 20489.892ms"
+  ],
+  "strategy": null,
+  "writer": null,
+  "strategy_attempts": 0,
+  "adherence": null,
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

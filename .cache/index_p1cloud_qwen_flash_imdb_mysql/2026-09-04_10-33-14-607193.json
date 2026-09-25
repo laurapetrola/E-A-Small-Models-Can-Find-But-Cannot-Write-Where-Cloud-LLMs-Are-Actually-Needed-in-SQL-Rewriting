@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-09-04T10:33:14.607173",
+  "query_hash": "48fbb3e8a39d",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 39477.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for their specific SQL query. Let me start by understanding the query and the schema.\n\nFirst, looking at the query structure. The main goal is to find movies produced by US companies, along with their ratings and titles. The query uses several CTEs (Common Table Expressions) to filter data. Let me break down each part.\n\nThe movie_kind CTE selects kind_type where kind is 'movie'. Since kind_type has a small number of rows (7), this is likely a fast lookup. Similarly, production_company is filtering company_type for 'production companies', which is also a small table. The info_types CTE is filtering info_type for 'rating' and 'release dates', which are specific values. The us_companies CTE is selecting company_name where country_code is '[us]', which might be a significant portion of the company_name table.\n\nNow, the main joins are between production_movie_companies (which is a join of movie_companies with production_company), movie_titles (joining title with kind_type), and then joining with rating_movie_info_idx and release_movie_info. \n\nLooking at the tables involved in the joins and their existing indexes:\n\n- movie_companies has indexes on company_id, company_type_id, and movie_id. But the query is joining production_movie_companies (which is a derived table from movie_companies) with us_companies (company_name) on company_id. Since company_name has no indexes, that's a problem. The join on company_id would require a full table scan on company_name, which has 234,997 rows. So, adding an index on company_name.id (which is the primary key) might not help here because the join is on company_id, which is the primary key. Wait, company_name's primary key is id, so the company_id in movie_companies is a foreign key to company_name.id. So, if the join is on cn.id = pmc.company_id, and company_name has no indexes, then the join would scan the entire company_name table. Therefore, an index on company_name.id (which is already the primary key) isn't helpful. Wait, maybe the company_name table doesn't have an index on country_code? The user mentioned that company_name has no indexes. So, the us_companies CTE is filtering company_name where country_code = '[us]'. Since there's no index on country_code, this would cause a full table scan on company_name, which has 234k rows. So, adding an index on country_code would help here.\n\nAnother part is the release_movie_info, which is selecting movie_id from movie_info where info_type_id is for 'release dates'. The movie_info table has an index on info_type_id, so that subquery should be efficient. Similarly, the rating_movie_info_idx is filtering movie_info_idx where info_type_id is for 'rating', which is covered by the existing index on info_type_id.\n\nThe main full table scans might be on company_name (due to the country_code filter) and possibly on movie_info or movie_info_idx. Wait, let me check the tables involved in the joins.\n\nLooking at the main query:\n\nThe production_movie_companies is a derived table from movie_companies joined with production_company. The movie_companies table has indexes on company_id, company_type_id, and movie_id. The production_company is a small table, so that join should be efficient. Then, joining with us_companies (company_name) on company_id. Since company_name has no indexes, the join on company_id would require a full table scan. So, adding an index on company_name.country_code would help here, as the filter is on country_code = '[us]'.\n\nAnother possible full table scan is on movie_info for the release_movie_info CTE. Wait, the release_movie_info is selecting movie_id from movie_info where info_type_id is in the info_types for 'release dates'. Since movie_info has an index on info_type_id, this subquery should be efficient. Similarly, the rating_movie_info_idx is using movie_info_idx's index on info_type_id.\n\nAnother possible issue is the join between production_movie_companies and movie_titles. The movie_titles is a join of title with kind_type. The title table has an index on kind_id, which is used here. So that should be efficient.\n\nWait, but the main join in the final SELECT is between production_movie_companies (which is movie_companies joined with production_company) and us_companies (company_name) on company_id. Since company_name has no indexes, the join on company_id would require a full table scan. So, adding an index on company_name.country_code would allow the filter to be applied quickly, reducing the number of rows scanned.\n\nAdditionally, the release_movie_info is a subquery that selects movie_id from movie_info where info_type_id is for 'release dates'. Since movie_info has an index on info_type_id, this should be efficient. Similarly, the rating_movie_info_idx is using the index on info_type_id.\n\nAnother possible full table scan could be on movie_info or movie_info_idx if the joins are not using the indexes. But given the existing indexes, those subqueries should be efficient.\n\nSo, the main candidate for an index is company_name on country_code. Since the query filters company_name where country_code = '[us]', adding an index on country_code would allow the database to quickly find those rows, eliminating the full table scan.\n\nAnother possible candidate is the movie_companies table. The production_movie_companies is a join between movie_companies and production_company. Since production_company is a small table, the join should be efficient. However, if the movie_companies table is being scanned without using the existing indexes, but the existing indexes are on company_id, company_type_id, and movie_id. The join here is on company_type_id (since production_company is company_type with kind 'production companies'), so the existing index on company_type_id_movie_companies would be used. So that's already covered.\n\nTherefore, the primary index to add is on company_name(country_code). The estimated benefit would be eliminating the full table scan on company_name, which has 234k rows. So, the index would help in the us_companies CTE, which is then joined with production_movie_companies.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates full table scan on company_name (234,997 rows) for country_code = '[us]' filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The us_companies CTE requires filtering company_name by country_code = '[us]'. Since company_name has no indexes, this causes a full table scan. Creating a BTREE index on country_code (with prefix_length 255 for TEXT) will enable efficient filtering and eliminate the scan.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": -17.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.3,
+      "baseline_exec_ms": 39002.987,
+      "optimized_exec_ms": 38116.688,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -13.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 13140254.88,
+          "cost_with_index": 13155771.05,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7308.49,
+          "cost_with_index": 7311.55,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 380971.23,
+          "cost_with_index": 376442.57,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46624.31,
+          "cost_with_index": 47309.32,
+          "benefit_pct": -1.5
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 370008.77,
+          "cost_with_index": 386417.76,
+          "benefit_pct": -4.4
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6822.13,
+          "cost_with_index": 6785.44,
+          "benefit_pct": 0.5
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 1370340.78,
+          "cost_with_index": 3126215.5,
+          "benefit_pct": -128.1
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 2416070.14,
+          "cost_with_index": 1855430.94,
+          "benefit_pct": 23.2
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 3,
+      "status": null
+    }
+  ]
+}

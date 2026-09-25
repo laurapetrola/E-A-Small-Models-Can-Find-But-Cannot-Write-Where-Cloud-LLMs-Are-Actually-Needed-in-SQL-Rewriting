@@ -1,0 +1,187 @@
+{
+  "timestamp": "2026-09-16T06:50:47.583369",
+  "query_hash": "fef1783ef8c8",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 68234.3,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the right indexes to reduce the execution cost of their SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting MIN values from several tables: company_type, info_type, movie_companies, movie_info_idx, and title. The main goal is to find the production note, movie title, and production year based on certain conditions. \n\nLooking at the relevant tables and their indexes:\n\n- movie_companies has indexes on company_id, company_type_id, and movie_id. \n- movie_info_idx has indexes on info_type_id and movie_id.\n- title has an index on kind_id, but the query is filtering on t.id (which is the primary key) and joining with movie_companies on t.id = mc.movie_id. \n\nThe query's WHERE clause has several conditions. Let's break down the joins and filters:\n\n1. ct.kind = 'production companies' \u2014 This is filtering the company_type table. Since company_type has no indexes, a Seq Scan is happening here. But since there are only 4 rows, maybe it's not the main issue. However, the join condition is ct.id = mc.company_type_id. If there's an index on company_type.id, that would help, but the table has no indexes. Wait, the user mentioned that the existing indexes are listed, and company_type has none. So, maybe the join on ct.id is causing a full table scan on company_type. But since it's a small table, maybe it's not the main problem. However, the query might be using a hash join or something else.\n\n2. info_type.info = 'top 250 rank' \u2014 info_type has 113 rows and no indexes. So, a Seq Scan here as well. The join condition is it.id = mi_idx.info_type_id. Again, without an index on info_type.id, this could be a bottleneck.\n\n3. The main tables involved are movie_companies (2.6 million rows) and movie_info_idx (1.38 million rows), joined with title (2.5 million rows). The filters on mc.note and the joins on t.id and mc.movie_id = mi_idx.movie_id are critical.\n\nLooking at the execution plan, the user mentioned that there's an error in the plan hints, so I need to rely on the structure and schema. The main issue is likely the Seq Scans on company_type and info_type because they have no indexes. However, since these tables are small, maybe the real problem is in the larger tables.\n\nWait, the query has a condition on mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' and mc.note LIKE '%(co-production)%' OR '%(presents)%'. These are full-text searches on the mc.note column. Since there's no index on mc.note, a Seq Scan is happening here, which is expensive for a large table. Also, the joins on t.id and mc.movie_id = mi_idx.movie_id might be causing full table scans if the indexes aren't there.\n\nBut the existing indexes on movie_companies are company_type_id, movie_id, and company_id. The query joins on mc.movie_id = t.id and mc.movie_id = mi_idx.movie_id. Since movie_companies has an index on movie_id, that's good. However, the note column is being filtered with LIKE, which can't use the existing indexes. So, adding an index on mc.note might help, but the query has a NOT LIKE and OR conditions. However, the user's instructions say to look for Seq Scans on large tables. The movie_companies table is large (2.6 million rows), so a Seq Scan there is a problem. The same applies to movie_info_idx, which is 1.38 million rows. \n\nWait, the query is joining movie_companies with movie_info_idx on movie_id. The existing indexes on movie_id for both tables might help, but the filters on mc.note are causing a full scan. So, adding an index on mc.note would help with the LIKE conditions. However, the query has a NOT LIKE and OR, which might make a partial index less effective. But the user's instructions mention that partial_predicate should reference only columns of the target table. Since the note is in movie_companies, maybe a partial index on mc.note where the note doesn't contain certain strings. But the query's conditions are complex. Alternatively, a B-tree index on mc.note might not be effective for LIKE with wildcards, but with the trgm extension, a GIN index could help. However, the user has pg_trgm installed, so maybe a GIN index on mc.note would be better for pattern matching.\n\nAnother point: the query is selecting MIN(t.title) and MIN(t.production_year). The title table's index is on kind_id, but the query is joining on t.id, which is the primary key. So, the title table's primary key is indexed, but the query is filtering on t.id via joins. However, the title table's index on kind_id might not be relevant here. \n\nThe main bottlenecks are likely the Seq Scans on company_type and info_type because they have no indexes. Even though they are small, if the query is doing a full table scan on them, it could be a bottleneck. Adding indexes on company_type.id and info_type.id would help. But the user's instructions say to look for Seq Scans on large tables first. Since company_type and info_type are small, maybe the main issue is the movie_companies and movie_info_idx tables. \n\nWait, the query has a condition on mc.note NOT LIKE ... and LIKE ... which are full-text searches. Without an index on mc.note, the database has to scan the entire table. So, adding an index on mc.note would help. However, the LIKE conditions are using wildcards at the start (e.g., '%(as...') which makes a B-tree index ineffective. But with pg_trgm, a GIN index on mc.note could help with pattern matching. So, a GIN index on mc.note might be beneficial. \n\nSimilarly, the movie_info_idx table is being joined on info_type_id and movie_id. The existing indexes on info_type_id and movie_id are already there. But the query is filtering on it.info = 'top 250 rank', which is a condition on info_type.info. Since info_type has no index, a Seq Scan is happening there. Adding an index on info_type.info would help. \n\nSo, the main candidates for indexes are:\n\n1. info_type (on info column) to speed up the filter it.info = 'top 250 rank'.\n2. company_type (on kind column) to speed up ct.kind = 'production companies'.\n3. movie_companies (on note column) to handle the LIKE conditions.\n4. movie_info_idx (on info_type_id and movie_id) \u2014 but those indexes already exist.\n\nWait, the existing indexes on movie_info_idx are info_type_id and movie_id. The query joins on it.id = mi_idx.info_type_id, which is covered by the existing index. So, maybe the main issues are the info_type and company_type tables. \n\nBut the user's instructions say to look for Seq Scans on large tables first. The company_type and info_type tables are small, so their Seq Scans might not be the main issue. However, the query's joins on these tables might be causing full table scans. \n\nAlternatively, the movie_companies table's note column is being filtered with LIKE, which is expensive. Adding a GIN index on mc.note would help. \n\nSo, the top candidates are:\n\n- info_type.info (to speed up the filter)\n- company_type.kind (to speed up the filter)\n- movie_companies.note (to handle the LIKE conditions)\n\nBut the user's instructions mention that if there are multiple scans, prioritize the largest tables. The movie_companies and movie_info_idx are large, so their scans are more impactful. \n\nTherefore, the indexes to suggest would be:\n\n1. On info_type (info column) to avoid scanning the entire table.\n2. On company_type (kind column) to avoid scanning the entire table.\n3. On movie_companies (note column) to handle the LIKE conditions.\n\nBut the user's schema says that company_type has no indexes, and info_type has no indexes. So, adding indexes on those columns would help. \n\nSo, the JSON should list these indexes. The estimated benefit would be the rows scanned in the Seq Scans on these tables. Since info_type has 113 rows and company_type has 4 rows, the benefit is on those rows. However, the main issue might be the movie_companies' note column, which is a large table. \n\nWait, the query's main tables are movie_companies and movie_info_idx. The conditions on mc.note are causing a full scan on movie_companies. So, adding an index on mc.note would help. \n\nSo, the indexes to suggest are:\n\n- info_type (info)\n- company_type (kind)\n- movie_companies (note)\n\nBut the user's instructions say to look for Seq Scans on large tables first. The movie_companies is large, so the index on note would help. \n\nSo, the final answer would include indexes on info_type.info, company_type.kind, and movie_companies.note. However, the user's schema shows that movie_companies has indexes on company_type_id, movie_id, and company_id. The note column is not indexed. \n\nTherefore, the indexes to add are:\n\n1. info_type (info)\n2. company_type (kind)\n3. movie_companies (note)\n\nBut the user's instructions say to not suggest indexes that already exist. Since the existing indexes are on movie_companies' company_type_id, movie_id, and company_id, the note column is not indexed. So, adding an index on note is needed. \n\nSo, the JSON should have these three indexes. However, the user's example might have different priorities. Let me check again.\n\nThe query's main joins are between movie_companies and movie_info_idx on movie_id, and between movie_companies and title on movie_id. The conditions on mc.note are causing a full scan on movie_companies. So, an index on mc.note would help. \n\nThe info_type.info filter is on a small table, so an index there would help. Similarly, company_type.kind is a small table. \n\nSo, the indexes to suggest are:\n\n- info_type.info\n- company_type.kind\n- movie_companies.note\n\nBut the user's instructions say to order by the number of rows scanned, largest first. The movie_companies has 2.6 million rows, so the index on note would eliminate a Seq Scan on that large table. Then, the info_type has 113 rows, and company_type has 4 rows. \n\nSo, the first index should be on movie_companies.note, then info_type.info, then company_type.kind. \n\nBut the user's query has a condition on mc.note NOT LIKE ... and LIKE ... which are complex. A B-tree index on note might not be effective for LIKE with wildcards, but with pg_trgm, a GIN index could help. So, the index_type would be GIN for movie_companies.note. \n\nTherefore, the JSON should include these three indexes with appropriate types.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_companies\",\n      \"property\": \"note\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates Seq Scan on movie_companies (2,609,129 rows) for LIKE/NOT LIKE filters\"\n    },\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates Seq Scan on info_type (113 rows) for equality filter on info\"\n    },\n    {\n      \"target\": \"company_type\",\n      \"property\": \"kind\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates Seq Scan on company_type (4 rows) for equality filter on kind\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs full table scans on movie_companies (2.6M rows) for complex LIKE filters, info_type (113 rows) for equality filter, and company_type (4 rows) for equality filter. GIN index on movie_companies.note handles pattern matching, while B-tree indexes on info_type.info and company_type.kind accelerate equality filters.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_companies",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 9.8,
+      "baseline_exec_ms": 48.913,
+      "optimized_exec_ms": 44.141,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20735.0,
+          "cost_with_index": 20735.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4805.33,
+          "cost_with_index": 4805.33,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55706.08,
+          "cost_with_index": 55706.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7443.71,
+          "cost_with_index": 7443.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67057.73,
+          "cost_with_index": 67057.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9493.97,
+          "cost_with_index": 8084.38,
+          "benefit_pct": 14.8
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45665.42,
+          "cost_with_index": 45665.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3805.96,
+          "cost_with_index": 3805.96,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3845.5,
+          "cost_with_index": 3845.5,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.3,
+      "baseline_exec_ms": 46.148,
+      "optimized_exec_ms": 46.269,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20735.0,
+          "cost_with_index": 20735.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55706.08,
+          "cost_with_index": 55706.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7443.71,
+          "cost_with_index": 7443.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67057.73,
+          "cost_with_index": 67057.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10371.94,
+          "cost_with_index": 10371.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9493.97,
+          "cost_with_index": 9493.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9563.91,
+          "cost_with_index": 9563.91,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "company_type",
+      "column": "kind",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.9,
+      "baseline_exec_ms": 44.743,
+      "optimized_exec_ms": 46.022,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20735.0,
+          "cost_with_index": 20735.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7443.71,
+          "cost_with_index": 7443.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67057.73,
+          "cost_with_index": 67057.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45665.42,
+          "cost_with_index": 45665.42,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-08-27T08:45:53.961726",
+  "query_hash": "cddbdcb96bc9",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "materialize intermediate results"
+  ],
+  "improvement_pct": -29.66,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 415251.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_items AS (\n    SELECT i_item_sk, i_brand_id, i_brand\n    FROM item\n    WHERE i_manufact_id = 816\n),\nnovember_dates AS (\n    SELECT d_date_sk, d_year\n    FROM date_dim\n    WHERE d_moy = 11\n),\nitem_year_agg AS (\n    SELECT ss.ss_item_sk,\n           nd.d_year,\n           SUM(ss.ss_sales_price) AS sum_agg\n    FROM store_sales AS ss\n    JOIN november_dates AS nd ON nd.d_date_sk = ss.ss_sold_date_sk\n    WHERE ss.ss_item_sk IN (SELECT i_item_sk FROM filtered_items)\n    GROUP BY ss.ss_item_sk, nd.d_year\n)\nSELECT iya.d_year,\n       fi.i_brand_id AS brand_id,\n       fi.i_brand AS brand,\n       SUM(iya.sum_agg) AS sum_agg\nFROM item_year_agg AS iya\nJOIN filtered_items AS fi ON fi.i_item_sk = iya.ss_item_sk\nGROUP BY iya.d_year, fi.i_brand, fi.i_brand_id\nORDER BY iya.d_year, SUM(iya.sum_agg) DESC, fi.i_brand_id\nLIMIT 100",
+  "reasoning_trace": "1. FILTERED-ITEM SEMIJOIN GATE \u2014 TARGET: the `store_sales` join to `item` on `ss_item_sk = i_item_sk` with `i_manufact_id = 816` \u2014 TRANSFORMATION: first isolate the small set of `i_item_sk` values where `i_manufact_id = 816`, then use that set as an `IN`/semijoin restriction on `store_sales.ss_item_sk` so the 57.6M-row fact table is narrowed before any date join or aggregation.\n\n2. NOVEMBER DATE-MAP MATERIALIZATION \u2014 TARGET: the `date_dim` predicate `d_moy = 11` and the `date_dim` to `store_sales` join on `d_date_sk = ss_sold_date_sk` \u2014 TRANSFORMATION: precompute only the November `(d_date_sk, d_year)` pairs and use them as a compact lookup/semijoin on `store_sales.ss_sold_date_sk`, discarding non-November sales rows before summing.\n\n3. SET-BASED ITEM-YEAR PRE-AGGREGATION \u2014 TARGET: the remaining `store_sales` rows after the item and November filters, grouped by `ss_item_sk` and `d_year` \u2014 TRANSFORMATION: aggregate `SUM(ss_sales_price)` at `(ss_item_sk, d_year)` granularity in a simple non-correlated derived subquery, collapsing all per-ticket fact rows to one row per item per year before brand attributes are added.\n\n4. FINAL BRAND-YEAR GROUP AND TOP-N \u2014 TARGET: the outer `GROUP BY d_year, i_brand_id, i_brand ORDER BY sum_agg DESC LIMIT 100` \u2014 TRANSFORMATION: perform the final brand/year grouping, ordering, and limit only on the small item-year preaggregated set, reattaching `i_brand_id` and `i_brand` from the filtered `item` set, so no large fact-table sort or second scan occurs.\n\n5. COLUMN PROJECTION PUSHDOWN \u2014 TARGET: the `store_sales` columns `ss_sold_date_sk`, `ss_item_sk`, and `ss_sales_price` \u2014 TRANSFORMATION: in the reduced fact scan/subquery, touch only those three columns and never materialize the full `store_sales` row, minimizing I/O from the base fact table.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 141.99,
+      "optimized_ms": 184.102,
+      "delta_ms": -42.112,
+      "improvement_pct": -29.66,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 129316.55,
+      "optimized": 217764.17,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 393046.2,
+    "index_advisor_inference_ms": 16770.6,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 5434.5,
+    "total_inference_ms": 415251.3,
+    "writer_inference_ms": 1567884.6,
+    "writer_tokens_in": 7442,
+    "writer_tokens_out": 141371,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=129316.55 \u2192 optimized=217764.17 (+68.4%)",
+    "Execution time regression: 141.99ms \u2192 184.102ms"
+  ],
+  "strategy": "1. FILTERED-ITEM SEMIJOIN GATE \u2014 TARGET: the `store_sales` join to `item` on `ss_item_sk = i_item_sk` with `i_manufact_id = 816` \u2014 TRANSFORMATION: first isolate the small set of `i_item_sk` values where `i_manufact_id = 816`, then use that set as an `IN`/semijoin restriction on `store_sales.ss_item_sk` so the 57.6M-row fact table is narrowed before any date join or aggregation.\n\n2. NOVEMBER DATE-MAP MATERIALIZATION \u2014 TARGET: the `date_dim` predicate `d_moy = 11` and the `date_dim` to `store_sales` join on `d_date_sk = ss_sold_date_sk` \u2014 TRANSFORMATION: precompute only the November `(d_date_sk, d_year)` pairs and use them as a compact lookup/semijoin on `store_sales.ss_sold_date_sk`, discarding non-November sales rows before summing.\n\n3. SET-BASED ITEM-YEAR PRE-AGGREGATION \u2014 TARGET: the remaining `store_sales` rows after the item and November filters, grouped by `ss_item_sk` and `d_year` \u2014 TRANSFORMATION: aggregate `SUM(ss_sales_price)` at `(ss_item_sk, d_year)` granularity in a simple non-correlated derived subquery, collapsing all per-ticket fact rows to one row per item per year before brand attributes are added.\n\n4. FINAL BRAND-YEAR GROUP AND TOP-N \u2014 TARGET: the outer `GROUP BY d_year, i_brand_id, i_brand ORDER BY sum_agg DESC LIMIT 100` \u2014 TRANSFORMATION: perform the final brand/year grouping, ordering, and limit only on the small item-year preaggregated set, reattaching `i_brand_id` and `i_brand` from the filtered `item` set, so no large fact-table sort or second scan occurs.\n\n5. COLUMN PROJECTION PUSHDOWN \u2014 TARGET: the `store_sales` columns `ss_sold_date_sk`, `ss_item_sk`, and `ss_sales_price` \u2014 TRANSFORMATION: in the reduced fact scan/subquery, touch only those three columns and never materialize the full `store_sales` row, minimizing I/O from the base fact table.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique is FILTERED-ITEM SEMIJOIN GATE, and the rewrite isolates `i_manufact_id = 816` in a CTE and uses it as an `IN` restriction on `ss_item_sk`, matching the strate"
+  },
+  "raw_sql": "select dt.d_year ,item.i_brand_id brand_id ,item.i_brand brand ,sum(ss_sales_price) sum_agg from date_dim dt ,store_sales ,item where dt.d_date_sk = store_sales.ss_sold_date_sk and store_sales.ss_item_sk = item.i_item_sk and item.i_manufact_id = 816 and dt.d_moy=11 group by dt.d_year ,item.i_brand ,item.i_brand_id order by dt.d_year ,sum_agg desc ,brand_id limit 100"
+}

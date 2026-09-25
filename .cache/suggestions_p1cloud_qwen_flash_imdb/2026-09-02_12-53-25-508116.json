@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-02T12:53:25.508060",
+  "query_hash": "fef1783ef8c8",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 0.0,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 667683.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "SELECT MIN(mc.note) AS production_note,\n       MIN(t.title) AS movie_title,\n       MIN(t.production_year) AS movie_year\nFROM (SELECT id\n      FROM company_type\n      WHERE kind = 'production companies') AS ct\nJOIN (SELECT company_type_id,\n             movie_id,\n             note\n      FROM movie_companies\n      WHERE note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'\n        AND (note LIKE '%(co-production)%' OR note LIKE '%(presents)%')) AS mc\n  ON mc.company_type_id = ct.id\nJOIN title AS t\n  ON t.id = mc.movie_id\nJOIN (SELECT mi_idx.movie_id\n      FROM movie_info_idx AS mi_idx\n      WHERE EXISTS (SELECT 1\n                    FROM info_type AS it\n                    WHERE it.id = mi_idx.info_type_id\n                      AND it.info = 'top 250 rank')) AS mi\n  ON mi.movie_id = mc.movie_id",
+  "reached_sql": "SELECT MIN(mc.note) AS production_note,\n       MIN(t.title) AS movie_title,\n       MIN(t.production_year) AS movie_year\nFROM (SELECT id\n      FROM company_type\n      WHERE kind = 'production companies') AS ct\nJOIN (SELECT company_type_id,\n             movie_id,\n             note\n      FROM movie_companies\n      WHERE note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'\n        AND (note LIKE '%(co-production)%' OR note LIKE '%(presents)%')) AS mc\n  ON mc.company_type_id = ct.id\nJOIN title AS t\n  ON t.id = mc.movie_id\nJOIN (SELECT mi_idx.movie_id\n      FROM movie_info_idx AS mi_idx\n      WHERE EXISTS (SELECT 1\n                    FROM info_type AS it\n                    WHERE it.id = mi_idx.info_type_id\n                      AND it.info = 'top 250 rank')) AS mi\n  ON mi.movie_id = mc.movie_id",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization. First, I need to understand the original query. The user is selecting MIN values from several tables: movie_companies (mc), movie_info_idx (mi_idx), title (t), company_type (ct), and info_type (it). The goal is to find the production note, movie title, and production year with certain conditions.\n\nLooking at the WHERE clause, there are several conditions. The main ones are ct.kind = 'production companies', it.info = 'top 250 rank', and some LIKE conditions on mc.note. Then there are joins between these tables via their IDs.\n\nNow, the first thing I notice is that the query has multiple joins. The tables involved are ct, it, mc, mi_idx, and t. The joins are on ct.id = mc.company_type_id, t.id = mc.movie_id, t.id = mi_idx.movie_id, and mc.movie_id = mi_idx.movie_id, and it.id = mi_idx.info_type_id. Wait, that seems redundant. For example, t.id is joined to mc.movie_id and also to mi_idx.movie_id. Since mc and mi_idx are both joined to t, maybe there's a way to simplify that.\n\nBut the main issue might be the use of LIKE with wildcards. The conditions mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' and the OR with LIKE '%(co-production)%' or '%(presents)%' could be expensive because LIKE with leading % does a full scan. Maybe using indexes on mc.note would help, but the query doesn't have any indexes on that column. However, the user mentioned that the database has pg_trgm and hypopg extensions, which might help with text search.\n\nAnother thing is the MIN functions. Since they're aggregating, maybe the query can be optimized by filtering early to reduce the number of rows processed. For example, if we can filter mc.note first, that might reduce the dataset before joining with other tables.\n\nLooking at the joins, the mc table is joined with ct, and also with mi_idx and t. The mi_idx is joined with it. The conditions on it.info = 'top 250 rank' might be a good candidate for an index, as it's a specific value. Similarly, the ct.kind = 'production companies' is a specific value, so an index on ct.kind could help.\n\nThe subqueries or repeated joins: the query has multiple joins, but perhaps some can be restructured. For example, the joins between mc and t, and mc and mi_idx might be redundant. Since t.id is linked to mc.movie_id and mi_idx.movie_id, maybe the mi_idx is already linked to t via mc. But the way the joins are written, it's possible that the query is doing more work than necessary.\n\nAlso, the use of MIN on multiple columns might benefit from having indexes on the columns being aggregated, but since they're MIN, the indexes would need to be on those columns. However, the user's schema doesn't mention indexes on those columns, so maybe creating them would help, but the user is asking for optimization strategies without writing SQL, so I need to focus on restructuring the query.\n\nAnother point is the repeated use of t.id = mc.movie_id and t.id = mi_idx.movie_id. Since mc and mi_idx are both linked to t, maybe the joins can be optimized by ensuring that the joins are done in a way that reduces the number of rows early. For example, joining mc with ct first, then joining with t and mi_idx.\n\nThe LIKE conditions on mc.note might be a bottleneck. If those conditions can be converted into a more efficient filter, like using a GIN index with pg_trgm, but again, the user is not writing SQL, so the advice would be to ensure that the query is structured to minimize the rows processed by these conditions.\n\nSo, possible optimization steps:\n\n1. Restructure the joins to process the most selective conditions first. For example, filtering ct.kind and it.info early to reduce the number of rows joined with mc and mi_idx.\n\n2. Use indexes on the columns used in the WHERE clause, like ct.kind, it.info, and mc.note. But since the user can't write SQL, the advice would be to ensure that these columns are indexed.\n\n3. Avoid redundant joins. For example, since t.id is linked to both mc and mi_idx, maybe the joins can be optimized to reduce the number of rows processed.\n\n4. Consider using a CTE or subquery to pre-filter the mc table based on the LIKE conditions, which might reduce the number of rows before joining with other tables.\n\n5. Since the query is using MIN, perhaps the query can be restructured to use a LIMIT clause if the user is only interested in the top result, but the original query doesn't have that.\n\nWait, the original query is selecting MIN values, which might not require all rows. Maybe the query can be optimized by using a subquery to get the necessary rows first, then applying the MIN functions.\n\nAnother thought: the joins between mc and mi_idx are on movie_id, which is also linked to t. So, perhaps the mi_idx is already linked to t via mc, so the join between t and mi_idx is redundant if mc is already linked to mi_idx. But the way the joins are written, it's possible that the query is joining t with mc and mi_idx separately, which might be redundant.\n\nSo, the main optimization points are:\n\n- Filter the mc table first with the LIKE conditions to reduce the number of rows early.\n- Ensure that the joins are ordered to process the most selective conditions first.\n- Use indexes on the columns used in the WHERE clause.\n- Avoid redundant joins by restructuring the query to join tables in a way that reduces the number of rows processed.\n\n</think>\n\n1. **Filter Early on mc.note Conditions** \u2014 TARGET: `mc.note` \u2014 TRANSFORMATION: Restructure the query to apply the `mc.note NOT LIKE` and `mc.note LIKE` conditions first, reducing the dataset before joining with other tables.  \n2. **Index on ct.kind and it.info** \u2014 TARGET: `ct.kind`, `it.info` \u2014 TRANSFORMATION: Ensure these columns are indexed to accelerate the equality filters.  \n3. **Avoid Redundant Joins** \u2014 TARGET: `t.id = mc.movie_id` and `t.id = mi_idx.movie_id` \u2014 TRANSFORMATION: Merge joins to eliminate redundant links between `t` and `mc`/`mi_idx` where possible.  \n4. **Index on mc.company_type_id** \u2014 TARGET: `mc.company_type_id` \u2014 TRANSFORMATION: Index this column to speed up the join with `ct.id`.  \n5. **Pre-filter mi_idx with it.id = ...** \u2014 TARGET: `mi_idx` and `it.id` \u2014 TRANSFORMATION: Restructure to filter `mi_idx` using `it.id = ...` first, reducing rows before joining with `t`.  \n6. **Use pg_trgm for mc.note LIKE** \u2014 TARGET: `mc.note` \u2014 TRANSFORMATION: Leverage the `pg_trgm` extension to optimize full-text pattern matching on `mc.note`.  \n7. **Limit Aggregation Scope** \u2014 TARGET: `MIN(mc.note), MIN(t.title), MIN(t.production_year)` \u2014 TRANSFORMATION: Ensure the aggregation operates on a pre-filtered dataset to minimize row processing.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 44.147,
+      "optimized_ms": 46.499,
+      "delta_ms": 0.0,
+      "improvement_pct": 0.0,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 19511.66,
+      "optimized": 19511.38,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 630894.0,
+    "index_advisor_inference_ms": 31879.5,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4910.3,
+    "total_inference_ms": 667683.8,
+    "writer_inference_ms": 1313282.2,
+    "writer_tokens_in": 5765,
+    "writer_tokens_out": 179945,
+    "writer_calls": 5
+  },
+  "errors": [],
+  "strategy": "1. **Filter Early on mc.note Conditions** \u2014 TARGET: `mc.note` \u2014 TRANSFORMATION: Restructure the query to apply the `mc.note NOT LIKE` and `mc.note LIKE` conditions first, reducing the dataset before joining with other tables.  \n2. **Index on ct.kind and it.info** \u2014 TARGET: `ct.kind`, `it.info` \u2014 TRANSFORMATION: Ensure these columns are indexed to accelerate the equality filters.  \n3. **Avoid Redundant Joins** \u2014 TARGET: `t.id = mc.movie_id` and `t.id = mi_idx.movie_id` \u2014 TRANSFORMATION: Merge joins to eliminate redundant links between `t` and `mc`/`mi_idx` where possible.  \n4. **Index on mc.company_type_id** \u2014 TARGET: `mc.company_type_id` \u2014 TRANSFORMATION: Index this column to speed up the join with `ct.id`.  \n5. **Pre-filter mi_idx with it.id = ...** \u2014 TARGET: `mi_idx` and `it.id` \u2014 TRANSFORMATION: Restructure to filter `mi_idx` using `it.id = ...` first, reducing rows before joining with `t`.  \n6. **Use pg_trgm for mc.note LIKE** \u2014 TARGET: `mc.note` \u2014 TRANSFORMATION: Leverage the `pg_trgm` extension to optimize full-text pattern matching on `mc.note`.  \n7. **Limit Aggregation Scope** \u2014 TARGET: `MIN(mc.note), MIN(t.title), MIN(t.production_year)` \u2014 TRANSFORMATION: Ensure the aggregation operates on a pre-filtered dataset to minimize row processing.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy aimed to pre-filter `mc.note` conditions early, and the rewrite applies this by filtering `mc.note` in a subquery before joining. It also aligns with pre-filtering `mi_idx` usi"
+  },
+  "raw_sql": "SELECT MIN(mc.note) AS production_note, MIN(t.title) AS movie_title, MIN(t.production_year) AS movie_year FROM company_type AS ct, info_type AS it, movie_companies AS mc, movie_info_idx AS mi_idx, title AS t WHERE ct.kind = 'production companies' AND it.info = 'top 250 rank' AND mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' AND (mc.note LIKE '%(co-production)%' OR mc.note LIKE '%(presents)%') AND ct.id = mc.company_type_id AND t.id = mc.movie_id AND t.id = mi_idx.movie_id AND mc.movie_id = mi_idx.movie_id AND it.id = mi_idx.info_type_id"
+}

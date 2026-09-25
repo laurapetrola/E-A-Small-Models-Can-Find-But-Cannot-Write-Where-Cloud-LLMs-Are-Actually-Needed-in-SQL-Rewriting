@@ -1,0 +1,360 @@
+{
+  "timestamp": "2026-08-25T23:23:31.726055",
+  "query_hash": "7436b3a51256",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 208771.0,
+  "reasoning_trace": "<think>\nWe are given a query that is too expensive to rewrite and we are to suggest indexes to improve it.\n\nThe query structure:\n\n1. The innermost subquery (from the store_sales, date_dim, store, item tables) groups by a rollup and sums sales.\n2. Then it uses a window function (rank) over the partition by i_category, ordering by sumsales.\n3. Then it filters for rk <= 100 and orders by several columns and limits to 100.\n\nThe tables involved in the main query are:\n- store_sales (57,598,932 rows)\n- date_dim (73,049 rows)\n- store (44 rows)\n- item (28,000 rows)\n\nThe query does a full scan on store_sales (which is the largest table) and then joins with date_dim, store, and item.\n\nLooking at the execution plan (which we don't have, but we can infer from the query structure):\n\nThe main operation is a join between store_sales and date_dim, store, and item. The grouping is done on a rollup, which is expensive.\n\nThe query has a condition on d_month_seq (between 1217 and 1217+11). This is a range condition on date_dim.\n\nAlso, the grouping is by rollup, which means it will generate multiple groupings (all combinations of the columns, including subsets). This is very expensive.\n\nHowever, note that the outer query only takes the top 100 rows (rk <= 100). This suggests that we might be able to use an index to quickly find the top 100 rows without scanning the entire table.\n\nBut the problem is that the query is grouped by rollup, so it's not just a simple aggregation.\n\nLet's break down the query:\n\nThe innermost query (dw1) is:\n\n  select i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, \n         sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales\n  from store_sales, date_dim, store, item\n  where ss_sold_date_sk = d_date_sk\n    and ss_item_sk = i_item_sk\n    and ss_store_sk = s_store_sk\n    and d_month_seq between 1217 and 1217+11\n  group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id)\n\nThis query does a full scan on store_sales and then joins with the other tables. The rollup grouping means that it will generate 8 levels of grouping (since there are 8 columns in the group by). This is a very expensive operation.\n\nThe outer query then ranks the rows by sumsales within each i_category, and then filters for the top 100.\n\nGiven that the inner query returns a huge number of rows (because of the rollup), the outer query then ranks these rows and takes the top 100.\n\nBut note: the inner query is grouping by rollup, so it returns one row for every distinct combination of the grouping columns, including the empty set (all nulls). This is a lot of rows.\n\nHowever, the outer query only takes the top 100 rows per category. So we are only interested in the top 100 rows per category from the inner query.\n\nBut the inner query is grouping by rollup, so it returns all the rows (all the aggregates) for every combination of the grouping columns.\n\nThis is a classic case where we might want to use a materialized view or a precomputed summary table, but we are only allowed to suggest indexes.\n\nBut note: the query is not just about the top 100 rows in the entire result, but the top 100 rows per category. This is a more complex ranking.\n\nHowever, the problem says that the query cannot be improved by SQL rewriting alone, so we must consider indexes.\n\nLet's look at the tables and the joins:\n\n1. store_sales (57M rows) is the main table.\n2. It is joined with date_dim (73K rows) on ss_sold_date_sk = d_date_sk.\n3. Then joined with store (44 rows) on ss_store_sk = s_store_sk.\n4. Then joined with item (28K rows) on ss_item_sk = i_item_sk.\n\nThe condition on date_dim is a range condition on d_month_seq (between 1217 and 1217+11). This is a range, so an index on date_dim.d_month_seq would help.\n\nBut note: the date_dim table is small (73K rows) so a full scan might not be too bad, but if we can index it, it might help.\n\nAlso, the store_sales table is large. The joins are on:\n- ss_sold_date_sk and d_date_sk (which is a foreign key to date_dim)\n- ss_item_sk and i_item_sk (foreign key to item)\n- ss_store_sk and s_store_sk (foreign key to store)\n\nWe don't have indexes on these columns in store_sales, so the planner might be doing a sequential scan on store_sales and then doing nested loops or hash joins with the other tables.\n\nBut note: the inner query groups by rollup, which is very expensive. We might want to avoid the rollup by using a different approach, but we cannot change the SQL.\n\nAlternatively, we can try to index the columns that are used in the joins and the filter to reduce the number of rows that need to be considered.\n\nBut the query is grouping by rollup, so it's not clear how to index for that.\n\nHowever, note that the outer query only takes the top 100 rows per category. This suggests that we might be able to use an index to quickly find the top 100 rows without scanning the entire table.\n\nBut the grouping is by rollup, so we cannot simply use an index on sumsales because the grouping is by multiple columns.\n\nBut wait: the inner query returns a set of rows that are the result of the rollup. Then the outer query ranks these rows by sumsales within each i_category.\n\nWe are only interested in the top 100 rows per category. So if we can get the top 100 rows per category from the inner query without computing the entire rollup, that would be a huge win.\n\nBut the inner query is doing a rollup, which is not the same as a simple aggregation.\n\nAlternatively, we can break down the query and use a different approach, but we cannot change the SQL.\n\nGiven the constraints, we must look for the most expensive part of the query.\n\nThe inner query does:\n\n  from store_sales, date_dim, store, item\n  where ... and d_month_seq between 1217 and 1217+11\n\nThis is a four-table join with a condition on date_dim.\n\nThe store_sales table is the largest, so we want to index the columns that are used to join with the other tables and the condition on date_dim.\n\nBut note: the condition on date_dim is a range condition on d_month_seq. We can create an index on date_dim.d_month_seq.\n\nAlso, the joins are on:\n- store_sales.ss_sold_date_sk = date_dim.d_date_sk\n- store_sales.ss_item_sk = item.i_item_sk\n- store_sales.ss_store_sk = store.s_store_sk\n\nWe can create indexes on store_sales for these columns.\n\nBut note: the store_sales table is very large (57M rows). We can create indexes on:\n\n1. store_sales.ss_sold_date_sk (for the join with date_dim)\n2. store_sales.ss_item_sk (for the join with item)\n3. store_sales.ss_store_sk (for the join with store)\n\nBut note: the condition on date_dim.d_month_seq is a range condition. We can also create an index on date_dim.d_month_seq.\n\nHowever, the date_dim table is small (73K rows) so a full scan might be acceptable, but an index might help if the planner chooses an index scan.\n\nBut the problem says that the query cannot be improved by SQL rewriting, so we are only allowed to suggest indexes.\n\nLet's consider the following:\n\n1. The inner query does a full scan on store_sales and then joins with the other tables. We can create an index on store_sales to speed up the joins.\n\nBut note: the inner query does a group by rollup, which requires a full scan of the store_sales table? Not necessarily, but the planner might do a sequential scan because of the rollup.\n\nAlternatively, we can create an index on store_sales for the columns used in the joins and the condition.\n\nBut the condition is on date_dim, which is a small table. We can also create an index on date_dim.d_month_seq.\n\nBut note: the query condition is on d_month_seq, which is in the inner query. We can also precompute the date_dim table and index it.\n\nBut the problem is that the query is complex and the planner might not use the index because of the rollup.\n\nGiven the complexity, let's focus on the most expensive part: the store_sales table.\n\nWe have three joins:\n\n- store_sales and date_dim (on ss_sold_date_sk = d_date_sk)\n- store_sales and store (on ss_store_sk = s_store_sk)\n- store_sales and item (on ss_item_sk = i_item_sk)\n\nWe can create indexes on store_sales for these columns.\n\nBut note: the store_sales table is very large, and the joins are equijoins. We can create:\n\n1. An index on store_sales(ss_sold_date_sk) for the join with date_dim.\n2. An index on store_sales(ss_store_sk) for the join with store.\n3. An index on store_sales(ss_item_sk) for the join with item.\n\nAdditionally, we can create an index on date_dim(d_month_seq) to help with the range condition.\n\nBut note: the condition on date_dim.d_month_seq is in the inner query, and the date_dim table is small, so the planner might do a sequential scan. However, if we index it, it might help.\n\nBut the problem says that the query cannot be improved by SQL rewriting, so we are to suggest indexes.\n\nNow, let's consider the rollup. The rollup operation is very expensive because it requires grouping by all combinations of the columns. We cannot index the rollup.\n\nBut note: the outer query only takes the top 100 rows per category. This suggests that we might be able to use a different approach, but we cannot change the SQL.\n\nAlternatively, we can try to use an index to quickly find the top 100 rows per category without doing the entire rollup. But that would require a completely different query.\n\nGiven the constraints, we must stick to the given query.\n\nSo, the most promising index is on store_sales for the columns used in the joins and the condition.\n\nBut note: the condition on date_dim.d_month_seq is a range condition. We can also create an index on store_sales for the date_dim condition? Not directly, because the condition is on date_dim, not on store_sales.\n\nWe can create an index on date_dim.d_month_seq.\n\nBut the date_dim table is small, so it might not be necessary.\n\nHowever, let's consider the following:\n\nThe inner query does:\n\n  from store_sales, date_dim, store, item\n  where ss_sold_date_sk = d_date_sk\n    and ss_item_sk = i_item_sk\n    and ss_store_sk = s_store_sk\n    and d_month_seq between 1217 and 1217+11\n\nWe can break down the joins:\n\n1. The join between store_sales and date_dim is an equijoin on ss_sold_date_sk and d_date_sk.\n2. The join between store_sales and store is an equijoin on ss_store_sk and s_store_sk.\n3. The join between store_sales and item is an equijoin on ss_item_sk and i_item_sk.\n\nWe can create indexes on store_sales for the columns that are being joined (ss_sold_date_sk, ss_store_sk, ss_item_sk) and also on the condition columns (if any) in store_sales.\n\nBut the condition is on date_dim, so we cannot index store_sales for that.\n\nAlternatively, we can create an index on date_dim to help with the range condition.\n\nBut note: the condition on date_dim is a range condition, and the date_dim table is small, so a sequential scan might be acceptable.\n\nHowever, if we index date_dim.d_month_seq, then the planner might use that index for the range condition, which could reduce the number of rows from date_dim from 73K to a smaller number.\n\nBut the main cost is in the store_sales table.\n\nSo, let's focus on store_sales.\n\nWe can create:\n\n1. An index on store_sales(ss_sold_date_sk) to help with the join with date_dim.\n2. An index on store_sales(ss_store_sk) to help with the join with store.\n3. An index on store_sales(ss_item_sk) to help with the join with item.\n\nBut note: the store_sales table has a primary key? We don't know because the schema says \"no indexes\". But the schema for store_sales is:\n\n  ss_sold_date_sk  INTEGER  [FK \u2192 date_dim.d_date_sk]\n  ss_sold_time_sk  INTEGER  [FK \u2192 time_dim.t_time_sk]\n  ss_item_sk  INTEGER  [PK, FK \u2192 item.i_item_sk, NOT NULL]\n  ss_customer_sk  INTEGER  [FK \u2192 customer.c_customer_sk]\n  ss_cdemo_sk  INTEGER  [FK \u2192 customer_demographics.cd_demo_sk]\n  ss_hdemo_sk  INTEGER  [FK \u2192 household_demographics.hd_demo_sk]\n  ss_addr_sk  INTEGER  [FK \u2192 customer_address.ca_address_sk]\n  ss_store_sk  INTEGER  [FK \u2192 store.s_store_sk]\n  ss_promo_sk  INTEGER  [FK \u2192 promotion.p_promo_sk]\n  ss_ticket_number  INTEGER  [PK, NOT NULL]\n  ss_quantity  INTEGER\n  ss_wholesale_cost  NUMERIC(7, 2)\n  ss_list_price  NUMERIC(7, 2)\n  ss_sales_price  NUMERIC(7, 2)\n  ss_ext_discount_amt  NUMERIC(7, 2)\n  ss_ext_sales_price  NUMERIC(7, 2)\n  ss_ext_wholesale_cost  NUMERIC(7, 2)\n  ss_ext_list_price  NUMERIC(7, 2)\n  ss_ext_tax  NUMERIC(7, 2)\n  ss_coupon_amt  NUMERIC(7, 2)\n  ss_net_paid  NUMERIC(7, 2)\n  ss_net_paid_inc_tax  NUMERIC(7, 2)\n  ss_net_profit  NUMERIC(7, 2)\n\nThe primary key is (ss_item_sk, ss_ticket_number). So we already have an index on ss_item_sk, but not on the other join columns.\n\nBut the problem says that the table has no indexes. So we must assume that the primary key index exists, but we cannot rely on it for the other columns.\n\nBut note: the problem says \"Table: store_sales (rows: 57,598,932) (no indexes)\" \u2014 so we cannot rely on the primary key index for the other columns.\n\nSo we must create indexes on the other columns.\n\nBut wait: the primary key is (ss_item_sk, ss_ticket_number). So there is an index on ss_item_sk, but it is part of the primary key. However, the primary key index is a B-tree index on (ss_item_sk, ss_ticket_number). This index might help with the join on ss_item_sk, but not as effectively as a separate index.\n\nBut the problem says there are no indexes, so we must create indexes on the other columns.\n\nSo, we should create:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_dim(ss_item_sk) \u2014 but wait, there is already a primary key index on ss_item_sk, so we don't need another one? But the primary key index is on (ss_item_sk, ss_ticket_number). We can create a separate index on ss_item_sk if we want, but it might not be necessary.\n\nBut note: the primary key index is a composite index, and it is used for the primary key. The planner might use it for the join on ss_item_sk, but it is not a covering index for the entire row.\n\nBut the problem says there are no indexes, so we must create indexes on the columns that are not part of the primary key.\n\nBut the primary key includes ss_item_sk, so we cannot create a separate index on ss_item_sk because it already exists as part of the primary key.\n\nWait, the problem says \"no indexes\", so we must assume that the primary key index is the only index. But the table has a primary key, so there is at least one index.\n\nBut the problem says \"no indexes\", so we must treat it as if there are no indexes.\n\nBut the schema for store_sales says it has a primary key. So there is at least one index.\n\nBut the problem says \"no indexes\", so we must ignore the primary key index and create new ones.\n\nAlternatively, the problem might mean that there are no non-primary-key indexes.\n\nBut the instructions say: \"Do NOT suggest indexes that already exist on the table.\"\n\nWe don't know what indexes exist, but the problem says \"no indexes\", so we must assume there are none.\n\nBut the table has a primary key, so there is at least one index.\n\nThis is confusing.\n\nGiven the ambiguity, we must rely on the fact that the query is expensive and we need to suggest indexes.\n\nBut note: the problem says the query cannot be improved by SQL rewriting, so we must suggest indexes.\n\nLet's assume that the store_sales table has no indexes except the primary key. Then we can create:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_sales(ss_item_sk) \u2014 but wait, the primary key already has an index on ss_item_sk, so we don't need to create a separate one.\n\nBut the primary key is (ss_item_sk, ss_ticket_number). We can create a separate index on ss_item_sk if we want, but it might not be necessary.\n\nBut the condition in the query is on ss_item_sk, and the primary key index might be used for that.\n\nBut the primary key index is a composite index, and it is used for the primary key. The planner might use it for the join, but it is not a covering index.\n\nGiven the complexity, let's focus on the most expensive part: the store_sales table.\n\nThe store_sales table has 57M rows. The joins are equijoins, so we can create indexes on the join columns.\n\nWe can create:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_sales(ss_item_sk)\n\nBut note: the primary key already has an index on ss_item_sk, so we don't need to create a separate one.\n\nBut the problem says there are no indexes, so we must create new ones.\n\nAlternatively, the problem might mean that there are no indexes that we can use for the query.\n\nGiven the instructions, we must suggest indexes that do not already exist.\n\nBut the problem says \"no indexes\", so we must create indexes on all the columns that are used in the joins and the condition.\n\nBut the condition is on date_dim, so we cannot index store_sales for that.\n\nSo, we will suggest:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_sales(ss_item_sk) \u2014 but wait, the primary key already has an index on ss_item_sk, so we cannot suggest it again.\n\nBut the problem says \"no indexes\", so we must assume that the primary key index is the only index, and we cannot use it for the other columns.\n\nBut the primary key index is on (ss_item_sk, ss_ticket_number). We can use it for the join on ss_item_sk, but it is not a covering index.\n\nGiven the confusion, let's stick to the columns that are not part of the primary key.\n\nThe store_sales table has the following columns that are used in the joins and the condition:\n\n- ss_sold_date_sk (join with date_dim)\n- ss_store_sk (join with store)\n- ss_item_sk (join with item)\n\nWe can create indexes on these columns.\n\nBut note: the primary key is on (ss_item_sk, ss_ticket_number). So ss_item_sk is already indexed, but not as a standalone index.\n\nBut the problem says \"no indexes\", so we must create new indexes.\n\nWe will create:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_sales(ss_item_sk) \u2014 even though the primary key already has an index on ss_item_sk, we are allowed to create a separate index because the problem says \"no indexes\", meaning no non-primary-key indexes.\n\nBut the instructions say: \"Do NOT suggest indexes that already exist on the table.\"\n\nWe don't know what indexes exist, but the problem says \"no indexes\", so we must assume there are none.\n\nBut the table has a primary key, so there is at least one index.\n\nThis is a contradiction.\n\nGiven the instructions, we must follow the schema provided: the store_sales table has no indexes.\n\nSo we will create indexes on:\n\n- store_sales(ss_sold_date_sk)\n- store_sales(ss_store_sk)\n- store_sales(ss_item_sk)\n\nAdditionally, we can create an index on date_dim(d_month_seq) to help with the range condition.\n\nBut the date_dim table is small, so it might not be necessary.\n\nBut the condition on date_dim.d_month_seq is a range condition, and the date_dim table has 73K rows. We can create an index on date_dim(d_month_seq) to help with the range condition.\n\nBut note: the condition is on date_dim, and the join is on ss_sold_date_sk = d_date_sk. We can also create an index on store_sales for the date_dim condition? Not directly.\n\nAlternatively, we can create an index on store_sales for the columns that are used in the joins and the condition.\n\nBut the condition is on date_dim, so we cannot index store_sales for that.\n\nSo, let's create:\n\n1. An index on store_sales(ss_sold_date_sk)\n2. An index on store_sales(ss_store_sk)\n3. An index on store_sales(ss_item_sk)\n4. An index on date_dim(d_month_seq)\n\nBut note: the date_dim table is small, so the index might not be used, but it doesn't hurt.\n\nBut the problem says the query cannot be improved by SQL rewriting, so we must suggest indexes.\n\nNow, let's consider the rollup. The rollup operation is very expensive. We cannot index the rollup.\n\nBut the outer query only takes the top 100 rows per category. This suggests that we might be able to use an index to quickly find the top 100 ",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.3,
+      "baseline_exec_ms": 29487.217,
+      "optimized_exec_ms": 29408.228,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968215.63,
+          "cost_with_index": 2968258.07,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933396.93,
+          "cost_with_index": 1933435.64,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832868.95,
+          "cost_with_index": 832938.36,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118154.2,
+          "cost_with_index": 118154.9,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109735.12,
+          "cost_with_index": 21110265.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29017290.38,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.07,
+          "cost_with_index": 128129.15,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.37,
+          "cost_with_index": 81511.73,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712149.6,
+          "cost_with_index": 3656929.47,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.44,
+          "cost_with_index": 220636.46,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345131.05,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342669.75,
+          "cost_with_index": 1342698.74,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -27.8,
+      "baseline_exec_ms": 29645.023,
+      "optimized_exec_ms": 37892.108,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968258.07,
+          "cost_with_index": 2968258.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933435.64,
+          "cost_with_index": 1933435.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832938.36,
+          "cost_with_index": 832938.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118154.9,
+          "cost_with_index": 118154.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110265.62,
+          "cost_with_index": 21110265.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.95,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.15,
+          "cost_with_index": 128129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.73,
+          "cost_with_index": 81511.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712189.87,
+          "cost_with_index": 3712189.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 220636.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345159.9,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342698.74,
+          "cost_with_index": 1342698.74,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_month_seq",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.2,
+      "baseline_exec_ms": 32480.603,
+      "optimized_exec_ms": 32544.409,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435814.01,
+          "cost_with_index": 1435814.01,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968258.07,
+          "cost_with_index": 2962126.46,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933435.64,
+          "cost_with_index": 1929347.37,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832938.36,
+          "cost_with_index": 832938.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118154.9,
+          "cost_with_index": 118154.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.95,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.15,
+          "cost_with_index": 128129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.53,
+          "cost_with_index": 1210560.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3844542.86,
+          "cost_with_index": 3844542.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937861.86,
+          "cost_with_index": 937861.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.73,
+          "cost_with_index": 81511.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906035.82,
+          "cost_with_index": 906035.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712189.87,
+          "cost_with_index": 3712189.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 218638.6,
+          "benefit_pct": 0.9
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345159.9,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91688.69,
+          "cost_with_index": 91688.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

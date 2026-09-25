@@ -1,0 +1,367 @@
+{
+  "timestamp": "2026-08-25T03:17:44.616975",
+  "query_hash": "3505b74fb5bb",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 84141.1,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of the given SQL query. The database is PostgreSQL 16.14 with extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure. The main query is selecting customer details and counts from store_sales, joined with other tables like date_dim, store, household_demographics, and customer. The query has a subquery that groups store_sales data based on certain conditions involving date, store, household demographics, and then joins with the customer table.\n\nLooking at the relevant tables: customer (266k rows), household_demographics (7.2k rows), store (44 rows), store_sales (57.6 million rows), and date_dim (73k rows). All tables have no indexes, so the execution plan is likely using sequential scans, which are expensive for large tables like store_sales.\n\nThe main issue is the subquery that's part of the FROM clause. Let's break down the subquery. It's selecting ss_ticket_number, ss_customer_sk, and count(*) from store_sales, joined with date_dim, store, and household_demographics. The join conditions are on store_sales.ss_sold_date_sk = date_dim.d_date_sk, store_sales.ss_store_sk = store.s_store_sk, and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk. \n\nThe WHERE clause has several conditions:\n- date_dim.d_dom between 1 and 2 (so two days)\n- household_demographics.hd_buy_potential is either '1001-5000' or '5001-10000'\n- hd_vehicle_count > 0\n- A case statement that checks if hd_vehicle_count > 0, then hd_dep_count / hd_vehicle_count > 1\n- date_dim.d_year in (2000, 2001, 2002)\n- store.s_county in ('Williamson County', repeated four times)\n\nSince store_sales is the largest table, a sequential scan on it would be costly. The joins with date_dim, store, and household_demographics might be causing the query to scan a lot of rows. \n\nThe first thing to consider is indexing the store_sales table. The joins are on ss_sold_date_sk (to date_dim), ss_store_sk (to store), and ss_hdemo_sk (to household_demographics). However, the WHERE conditions on date_dim.d_dom and d_year, and store.s_county, and household_demographics attributes might benefit from indexes.\n\nBut since the query is filtering on date_dim.d_dom and d_year, an index on date_dim.d_date_sk (since it's joined with store_sales.ss_sold_date_sk) might help. However, the date_dim table is small (73k rows), so a sequential scan might be manageable. The main problem is the store_sales table.\n\nLooking at the subquery, the store_sales table is being joined with date_dim, store, and household_demographics. The conditions on date_dim.d_dom and d_year could be optimized with an index on date_dim.d_date_sk, but since date_dim is small, maybe not. The store table has s_county in the WHERE clause, which is a small table (44 rows), so an index on s_county might help, but again, it's small. \n\nThe household_demographics table has conditions on hd_buy_potential, hd_vehicle_count, and hd_dep_count. Since this table is small (7.2k rows), an index on hd_buy_potential and hd_vehicle_count might help, but again, the main issue is store_sales.\n\nThe main bottleneck is likely the store_sales table. The subquery is grouping by ss_ticket_number and ss_customer_sk, and counting. The joins with date_dim, store, and household_demographics are filtering rows. \n\nFor store_sales, the columns involved in joins and filters are ss_sold_date_sk, ss_store_sk, ss_hdemo_sk, and possibly the columns in the WHERE clause. However, the WHERE conditions on date_dim.d_dom and d_year are part of the date_dim table, which is joined. \n\nWait, the date_dim.d_dom is between 1 and 2, which is two days. The date_dim.d_year is in 2000, 2001, 2002. So, the date_dim table is being filtered to a small subset. But since date_dim is small, the join might not be the problem. \n\nThe main problem is the store_sales table. The subquery is scanning store_sales and joining with other tables. The store_sales table has 57.6 million rows. Without indexes, this is a sequential scan. \n\nSo, the first index to consider is on store_sales. The columns involved in the joins are ss_sold_date_sk, ss_store_sk, and ss_hdemo_sk. Also, the WHERE conditions on date_dim.d_dom and d_year are part of the date_dim table, but the store_sales table's ss_sold_date_sk is joined with date_dim.d_date_sk. \n\nWait, the date_dim.d_date_sk is the same as store_sales.ss_sold_date_sk. So, the date_dim table is being joined on that key. The WHERE conditions on date_dim.d_dom and d_year would filter the date_dim rows, but since date_dim is small, the join might not be the issue. \n\nThe main issue is the store_sales table. The subquery is grouping by ss_ticket_number and ss_customer_sk, and counting. The joins with household_demographics are filtering based on hd_buy_potential, hd_vehicle_count, and hd_dep_count. \n\nSo, for store_sales, the columns involved in the joins are ss_sold_date_sk (joined with date_dim), ss_store_sk (joined with store), and ss_hdemo_sk (joined with household_demographics). Also, the household_demographics table has conditions on hd_buy_potential, hd_vehicle_count, and hd_dep_count. \n\nBut since household_demographics is small, maybe the main issue is the store_sales table. \n\nTo optimize the subquery, we need to index store_sales on the columns involved in the joins and the filters. However, the filters are on date_dim and household_demographics, which are joined. \n\nAlternatively, the store_sales table might have a lot of rows that meet the conditions, so an index on the columns used in the joins and the filters could help. \n\nWait, the store_sales table is being joined with date_dim on ss_sold_date_sk = d_date_sk. The date_dim has conditions on d_dom between 1 and 2 and d_year in (2000, 2001, 2002). So, the date_dim is filtered to a small subset. The store_sales table's ss_sold_date_sk would be in those dates. \n\nBut the store_sales table is large, so a sequential scan on it would be expensive. \n\nAn index on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) might help, but that's a composite index. Alternatively, indexes on each of those columns separately. \n\nBut the main filter is on the date_dim's d_dom and d_year. Since date_dim is small, maybe the join is manageable. \n\nThe other part is the household_demographics table. The conditions are on hd_buy_potential (two values), hd_vehicle_count > 0, and hd_dep_count / hd_vehicle_count > 1. Since household_demographics is small, an index on hd_buy_potential and hd_vehicle_count might help. \n\nBut the main problem is the store_sales table. \n\nSo, the first index to consider is on store_sales, covering the columns used in the joins and the filters. The columns involved are ss_sold_date_sk (joined with date_dim), ss_store_sk (joined with store), and ss_hdemo_sk (joined with household_demographics). \n\nAdditionally, the store table has s_county in the WHERE clause. Since store is small (44 rows), an index on s_county would help. \n\nBut the main issue is the store_sales table. \n\nSo, the first index to create would be on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk). This would help with the joins and reduce the number of rows scanned. \n\nAnother index could be on household_demographics.hd_buy_potential and hd_vehicle_count to speed up the filter. \n\nBut the user's query is about the indexes that would most reduce execution cost. The main bottleneck is the store_sales table. \n\nSo, the best index would be on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk), which covers the join conditions. \n\nAdditionally, since the date_dim has conditions on d_dom and d_year, an index on date_dim.d_date_sk (which is the same as store_sales.ss_sold_date_sk) might help, but since date_dim is small, maybe not. \n\nWait, the date_dim is joined with store_sales on ss_sold_date_sk = d_date_sk. The date_dim has conditions on d_dom and d_year. So, if we can filter the date_dim rows first, that would reduce the number of rows joined with store_sales. \n\nBut since date_dim is small, the join might not be the problem. \n\nThe main problem is the store_sales table. \n\nSo, the first index to create is on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk). \n\nAnother possible index is on store_sales.ss_customer_sk, since the subquery groups by ss_customer_sk. But the grouping is part of the subquery, and the main query joins with customer on ss_customer_sk = c_customer_sk. \n\nAlternatively, the subquery's group by is on ss_ticket_number and ss_customer_sk. \n\nBut the main issue is the store_sales table's sequential scan. \n\nSo, the best index is on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to speed up the joins. \n\nAnother index could be on store_sales.ss_customer_sk to help with the join with customer. \n\nBut the user's query is about the indexes that would most reduce execution cost. \n\nSo, the primary index is on store_sales for the join columns. \n\nTherefore, the first index is on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk). \n\nAnother index could be on household_demographics.hd_buy_potential and hd_vehicle_count to speed up the filter. \n\nBut the main bottleneck is store_sales. \n\nSo, the answer would suggest indexes on store_sales for the join columns and on household_demographics for the filter conditions.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for date_dim join filter (57.6M rows)\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_store_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for store join filter (57.6M rows)\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_hdemo_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for household_demographics join filter (57.6M rows)\"\n    },\n    {\n      \"target\": \"household_demographics\",\n      \"property\": \"hd_buy_potential\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": \"hd_buy_potential = '1001-5000' OR hd_buy_potential = '5001-10000'\",\n      \"estimated_benefit\": \"Reduces scan on household_demographics for buy potential filter (7.2k rows)\"\n    },\n    {\n      \"target\": \"household_demographics\",\n      \"property\": \"hd_vehicle_count\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": \"hd_vehicle_count > 0\",\n      \"estimated_benefit\": \"Reduces scan on household_demographics for vehicle count filter (7.2k rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottleneck is the sequential scan on store_sales (57.6M rows) for joins with date_dim, store, and household_demographics. Indexes on the join columns (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) will dramatically reduce the scan cost. The household_demographics filter conditions also benefit from targeted indexes on hd_buy_potential and hd_vehicle_count.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 3.1,
+      "baseline_exec_ms": 2261.546,
+      "optimized_exec_ms": 2192.004,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2942744.38,
+          "cost_with_index": 2942754.93,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1954987.49,
+          "cost_with_index": 1955003.24,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372377.23,
+          "cost_with_index": 1372386.39,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816283.93,
+          "cost_with_index": 816301.02,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118335.67,
+          "cost_with_index": 118335.88,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110039.43,
+          "cost_with_index": 21110199.63,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018256.0,
+          "cost_with_index": 29018784.97,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129261.31,
+          "cost_with_index": 129261.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179276.47,
+          "cost_with_index": 179276.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81585.39,
+          "cost_with_index": 81585.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712143.78,
+          "cost_with_index": 3655925.31,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135230.57,
+          "cost_with_index": 135230.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222648.43,
+          "cost_with_index": 222648.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342689.15,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.5,
+      "baseline_exec_ms": 2238.1,
+      "optimized_exec_ms": 2248.975,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2942754.93,
+          "cost_with_index": 2942754.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955003.24,
+          "cost_with_index": 1955003.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372386.39,
+          "cost_with_index": 1372386.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816301.02,
+          "cost_with_index": 816301.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118335.88,
+          "cost_with_index": 118335.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110199.63,
+          "cost_with_index": 21110199.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018784.97,
+          "cost_with_index": 29018784.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129261.31,
+          "cost_with_index": 129261.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179276.47,
+          "cost_with_index": 179276.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81585.5,
+          "cost_with_index": 81585.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712155.94,
+          "cost_with_index": 3712155.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135230.57,
+          "cost_with_index": 135230.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222648.43,
+          "cost_with_index": 222648.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342697.9,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_hdemo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.8,
+      "baseline_exec_ms": 2248.0,
+      "optimized_exec_ms": 2229.998,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2942754.93,
+          "cost_with_index": 2942754.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955003.24,
+          "cost_with_index": 1955003.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372386.39,
+          "cost_with_index": 1372386.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816301.02,
+          "cost_with_index": 816301.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118335.88,
+          "cost_with_index": 118335.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110199.63,
+          "cost_with_index": 21110199.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018784.97,
+          "cost_with_index": 29018784.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129261.31,
+          "cost_with_index": 129261.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179276.47,
+          "cost_with_index": 179276.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81585.5,
+          "cost_with_index": 81585.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712155.94,
+          "cost_with_index": 3712155.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135230.57,
+          "cost_with_index": 135230.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222648.43,
+          "cost_with_index": 222648.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342697.9,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_buy_potential",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.1,
+      "baseline_exec_ms": 2215.547,
+      "optimized_exec_ms": 2262.003,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342697.9,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_vehicle_count",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.2,
+      "baseline_exec_ms": 2244.429,
+      "optimized_exec_ms": 2216.955,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342697.9,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-10T07:51:30.284046",
+  "query_hash": "7ade099a566c",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "use window function to precompute average",
+    "decorrelate scalar aggregate subquery into CTE plus join",
+    "split a correlated subquery into a CTE join"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 732906.4,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "with customer_total_return as (select sr_customer_sk as ctr_customer_sk ,sr_store_sk as ctr_store_sk ,sum(SR_FEE) as ctr_total_return from store_returns join date_dim on sr_returned_date_sk = d_date_sk where d_year = 2000 group by sr_customer_sk ,sr_store_sk having sum(SR_FEE) > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr2.ctr_store_sk = ctr_store_sk)) select c_customer_id from customer_total_return ctr1 join store s on ctr1.ctr_store_sk = s.s_store_sk where s_state = 'TN' order by c_customer_id limit 100",
+  "reasoning_trace": "<think>\nOkay, let's take a look at the original query and the previous strategies that didn't work. The user wants a different optimization strategy. \n\nFirst, the query involves a CTE called customer_total_return which aggregates SR_FEE by customer and store. Then, the main query selects customers where their total return is greater than 1.2 times the average for their store, filtered by state TN, and ordered by customer ID with a limit of 100.\n\nThe previous strategies included materializing the CTE, filtering date_dim early, precomputing store averages with window functions, indexing join columns, limiting aggregation scope, and early limiting the final output. Now, I need to think of another approach.\n\nLooking at the subquery in the main select: it's a correlated subquery that calculates the average ctr_total_return per store. This might be expensive because it's correlated and could lead to repeated scans. Maybe using a lateral join or a common table expression with window functions could help. Wait, the third strategy already mentioned using window functions in the CTE. So perhaps another angle.\n\nAnother thing: the main query joins customer_total_return with store and customer. The store table has s_store_sk and s_state. Since the main query filters s_state = 'TN', maybe we can pre-filter the store table to only include TN stores before joining. That way, the join with customer_total_return would be on fewer rows. \n\nAlso, the CTE's group by is on sr_customer_sk and sr_store_sk. If we can filter the store_returns to only those with sr_store_sk that are in TN stores first, that might reduce the number of rows in the CTE. \n\nWait, the original query's CTE joins store_returns with date_dim where d_year=2000. Maybe the date_dim filter can be applied earlier. But the previous strategy already mentioned that. \n\nAnother thought: the final result is ordered by c_customer_id with a limit of 100. If we can find a way to limit the rows early in the process, that could help. For example, after aggregating, maybe we can filter the rows that are above the average before joining with the store and customer tables. \n\nAlternatively, since the final output is limited to 100 rows, perhaps we can use a limit in the CTE or in the main query to reduce the number of rows processed. But the previous strategy already suggested an early limit on the final output. \n\nWait, maybe the join between customer_total_return and store is causing a lot of rows. If we can pre-filter the store table to only TN states, then the join would be with fewer rows. So, the target here is the join between customer_total_return and store. The transformation would be to filter the store table for s_state = 'TN' before joining. \n\nBut how is the store table being used? The main query has s_store_sk = ctr1.ctr_store_sk and s_state = 'TN'. So, if we can get the store table to only include TN stores, then the join would be with a smaller set. \n\nSo, the optimization strategy could be to pre-filter the store table for s_state = 'TN' and then join with the CTE. That way, the join is done on a smaller subset, reducing the number of rows processed. \n\nAnother possibility: the CTE's aggregation might be expensive. If we can find a way to compute the average per store in a way that's more efficient. But the third strategy already suggested using window functions. \n\nAlternatively, maybe the subquery in the main select can be rewritten as a join with a derived table that has the average per store. But that's similar to the third strategy. \n\nWait, the main query's subquery is a correlated subquery. If we can convert that into a join with a derived table that has the average per store, that might be more efficient. But that's similar to the third strategy. \n\nAnother angle: the CTE's group by is on customer and store. If we can find a way to precompute the average per store and then join that with the customer_total_return, but that's what the third strategy suggests. \n\nHmm. Maybe the key is to optimize the join between customer_total_return and store. Since the main query filters s_state = 'TN', if we can get the store table to only include TN stores first, then the join would be on a smaller set. \n\nSo, the target here is the join between customer_total_return and store. The transformation would be to filter the store table for s_state = 'TN' before joining. \n\nAlternatively, maybe the CTE can be joined with the filtered store table. \n\nSo, the optimization strategy would be to pre-filter the store table for s_state = 'TN' and then join with the CTE. That way, the join is done on a smaller subset, reducing the number of rows processed. \n\nAnother possibility: the CTE's aggregation could be optimized by adding a filter on the date_dim to only include 2000, which was already mentioned in strategy 2. \n\nBut the user wants a different strategy. So, focusing on the join between customer_total_return and store. \n\nTherefore, the new strategy would be to filter the store table for s_state = 'TN' before joining with the CTE. That way, the join is done on a smaller set, reducing the number of rows processed.\n\n</think>\n\n1. **Pre-filter Store Table for TN State** \u2014 TARGET: `store` table join in main query \u2014 TRANSFORMATION: Filter the `store` table to only include rows where `s_state = 'TN'` before joining with `customer_total_return` to reduce the join size.  \n2. **Index on Store State** \u2014 TARGET: `store.s_state` \u2014 TRANSFORMATION: Create an index on `s_state` to accelerate the filtering of TN stores in the main query.  \n3. **Materialize Filtered Store List** \u2014 TARGET: `store` table in main query \u2014 TRANSFORMATION: Replace the `store` table with a subquery that pre-filters `s_state = 'TN'` to minimize join overhead.  \n4. **Early Limit on Aggregated Results** \u2014 TARGET: `customer_total_return` CTE \u2014 TRANSFORMATION: Add a `LIMIT` clause to the CTE to restrict the number of rows before joining with `store` and `customer`.  \n5. **Index on CTE Join Columns** \u2014 TARGET: `ctr_store_sk` in `customer_total_return` and `s_store_sk` in `store` \u2014 TRANSFORMATION: Ensure indexes on these columns to speed up the join between the CTE and `store`.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1436064.52,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 664716.4,
+    "index_advisor_inference_ms": 60597.5,
+    "reflection_iterations": 3,
+    "labeler_inference_ms": 7592.5,
+    "total_inference_ms": 732906.4,
+    "writer_inference_ms": 376996.8,
+    "writer_tokens_in": 10870,
+    "writer_tokens_out": 1586,
+    "writer_calls": 8
+  },
+  "errors": [
+    "duplicate_attempt \u2014 identical SQL was already rejected this session"
+  ],
+  "strategy": "1. **Pre-filter Store Table for TN State** \u2014 TARGET: `store` table join in main query \u2014 TRANSFORMATION: Filter the `store` table to only include rows where `s_state = 'TN'` before joining with `customer_total_return` to reduce the join size.  \n2. **Index on Store State** \u2014 TARGET: `store.s_state` \u2014 TRANSFORMATION: Create an index on `s_state` to accelerate the filtering of TN stores in the main query.  \n3. **Materialize Filtered Store List** \u2014 TARGET: `store` table in main query \u2014 TRANSFORMATION: Replace the `store` table with a subquery that pre-filters `s_state = 'TN'` to minimize join overhead.  \n4. **Early Limit on Aggregated Results** \u2014 TARGET: `customer_total_return` CTE \u2014 TRANSFORMATION: Add a `LIMIT` clause to the CTE to restrict the number of rows before joining with `store` and `customer`.  \n5. **Index on CTE Join Columns** \u2014 TARGET: `ctr_store_sk` in `customer_total_return` and `s_store_sk` in `store` \u2014 TRANSFORMATION: Ensure indexes on these columns to speed up the join between the CTE and `store`.",
+  "writer": "local:qwen2.5-coder:7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy aimed to pre-filter the store table for TN state and materialize the filtered store list, while the rewrite applies a subquery in the CTE to filter `ctr_total_return` based on "
+  },
+  "raw_sql": "with customer_total_return as (select sr_customer_sk as ctr_customer_sk ,sr_store_sk as ctr_store_sk ,sum(SR_FEE) as ctr_total_return from store_returns ,date_dim where sr_returned_date_sk = d_date_sk and d_year =2000 group by sr_customer_sk ,sr_store_sk) select c_customer_id from customer_total_return ctr1 ,store ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk) and s_store_sk = ctr1.ctr_store_sk and s_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id limit 100"
+}

@@ -1,0 +1,318 @@
+{
+  "timestamp": "2026-09-10T08:03:39.302756",
+  "query_hash": "7aed0fb6af9b",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 158178.9,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables (item, store, store_sales, date_dim). We are to identify indexes that would most reduce the execution cost.\n\nFirst, let's break down the query:\n\nThe query uses several CTEs (Common Table Expressions):\n\n1. `month_seq`: Generates a series of 12 months (from 1222 to 1233). This is a small set and doesn't require an index.\n\n2. `date_filtered`: Joins `date_dim` with `month_seq` on `d.d_month_seq`. Since `month_seq` is a small set, this might be efficient without an index, but note that `date_dim` has 73,049 rows. However, the join condition is on `d.d_month_seq` which is an integer. Without an index on `date_dim.d_month_seq`, this might be a sequential scan on `date_dim` for each month, but note that the `month_seq` is only 12 rows. Alternatively, we can consider an index on `date_dim.d_month_seq` to speed up the join.\n\n3. `item_filtered`: Filters `item` by category, class, and brand. The `item` table has 28,000 rows. Without an index, this would be a sequential scan. The filter conditions are on `i_category`, `i_class`, and `i_brand`. We might consider a composite index or multiple indexes on these columns.\n\n4. `monthly_sales`: Joins `item_filtered` (via `i.i_item_sk` and `i.i_manager_id`), `store_sales` (via `ss.ss_item_sk`), and `date_filtered` (via `ss.ss_sold_date_sk`). Then groups by `i.i_manager_id` and `d.d_moy`. The `store_sales` table has 57 million rows. Without indexes, the joins might be expensive.\n\n5. `with_avg`: Computes the average of `sum_sales` partitioned by `i_manager_id`. This is done using window functions.\n\n6. The final SELECT filters on a condition that compares `sum_sales` to `avg_monthly_sales` (if `avg_monthly_sales` is not zero). Then orders by `i_manager_id`, `avg_monthly_sales`, and `sum_sales`, and limits to 100 rows.\n\nNow, let's look for the bottlenecks:\n\n- The `date_filtered` CTE: It does a join between `date_dim` and `month_seq` on `d.d_month_seq`. Since `month_seq` is small, the main cost is in the `date_dim` table. Without an index on `d_month_seq`, the planner might do a sequential scan on `date_dim` for each month, which is 12 * 73,049 rows (about 876,588 rows) \u2014 that's a lot. Alternatively, we can create an index on `date_dim.d_month_seq` to make the join faster.\n\n- The `item_filtered` CTE: It filters `item` by three columns. Without an index, it will do a sequential scan of 28,000 rows. We can create an index on the combination of `i_category`, `i_class`, and `i_brand` to speed up the filter.\n\n- The `monthly_sales` CTE: It joins `item_filtered` (which is a filtered set of `item`) with `store_sales` and `date_filtered`. The `store_sales` table is huge (57 million rows). The join condition is `ss.ss_item_sk = i.i_item_sk`. Without an index on `store_sales.ss_item_sk`, this join will be expensive. Also, the join with `date_filtered` is on `ss.ss_sold_date_sk`. Without an index on `store_sales.ss_sold_date_sk`, that join might be expensive too.\n\nAdditionally, note that the `monthly_sales` CTE groups by `i.i_manager_id` and `d.d_moy`. The grouping might be efficient if the join is done correctly.\n\nNow, let's consider the indexes:\n\n1. For `date_dim.d_month_seq`: We can create a B-tree index. This would help the join in `date_filtered`.\n\n2. For `item`: We can create a composite index on `(i_category, i_class, i_brand)`. This would help the filter in `item_filtered`.\n\n3. For `store_sales`:\n   - On `ss_item_sk`: This is a foreign key to `item`. We can create a B-tree index to speed up the join with `item_filtered`.\n   - On `ss_sold_date_sk`: This is a foreign key to `date_dim`. We can create a B-tree index to speed up the join with `date_filtered`.\n\nBut note: The `item_filtered` CTE is used in `monthly_sales` and then in the final join. We are filtering `item` by three columns. We can also consider a covering index for the `item` table that includes the columns used in the filter and the ones used in the join (like `i_item_sk` and `i_manager_id`). However, the `item_filtered` CTE only selects `i_item_sk` and `i_manager_id`. We can create an index that includes these columns as well.\n\nHowever, note that the `item_filtered` CTE is a filter and then a selection of two columns. We can create a composite index on `(i_category, i_class, i_brand, i_item_sk, i_manager_id)` to cover the filter and the selection. But note that the filter columns are the first three, and then the two selected columns. This might be efficient.\n\nBut let's think about the query: The `item_filtered` CTE is used in the `monthly_sales` CTE via `i.i_item_sk` and `i.i_manager_id`. So the index should at least include `i_item_sk` and `i_manager_id` to avoid a lookup after the filter.\n\nAlternatively, we can break down the index:\n\n- One index for the filter: `(i_category, i_class, i_brand)`\n- One index for the join: `(i_item_sk)` \u2014 but that's a primary key? Wait, the `item` table has a primary key on `i_item_sk`? Actually, the schema says `i_item_sk` is the primary key. So there is already a B-tree index on `i_item_sk`. But note: the `item` table has no indexes in the provided schema. So we don't know if there is an index on `i_item_sk`. We must assume there is none because the problem states \"no indexes\" for `item` and `store_sales`.\n\nWait, the problem says: \"Table: item (28,000 rows)  (no indexes)\" and \"Table: store_sales (57,598,932 rows)  (no indexes)\". So we don't have any indexes on these tables.\n\nSo we must create indexes on `item` and `store_sales` and `date_dim`.\n\nNow, let's list the indexes we would recommend:\n\n1. Index on `date_dim` for `d_month_seq` (to speed up the join in `date_filtered`).\n2. Index on `item` for the filter columns: `(i_category, i_class, i_brand)` and then include `i_item_sk` and `i_manager_id` to avoid a lookup? But note that the filter is on three columns and then we select two. We can create a composite index on `(i_category, i_class, i_brand, i_item_sk, i_manager_id)`. This would allow the planner to quickly find the rows that match the filter and then get the two columns without a lookup. But note that the filter conditions are on three columns, so the index must start with those three.\n\nAlternatively, we can create a separate index on the filter columns and then rely on the primary key for the join? But the `item_filtered` CTE is used in a join with `store_sales` on `i_item_sk`. Since `item` has a primary key on `i_item_sk` (if we create one) then the join would be efficient. But note: the `item` table has no index, so we don't have a primary key index? Actually, the schema says `i_item_sk` is the primary key, so there should be an index. But the problem says \"no indexes\", so we must assume there is none. Therefore, we must create an index on `item.i_item_sk` as well.\n\nWait, the `item` table has a primary key on `i_item_sk` (from the schema). But the problem says \"no indexes\", so we are to ignore that and assume there is no index. So we must create an index on `item.i_item_sk` to speed up the join in `monthly_sales`.\n\nBut note: the `item_filtered` CTE is a filter and then a selection. We can create an index that covers the filter and the join. Since the filter is on three columns and the join is on `i_item_sk`, we can create a composite index on `(i_category, i_class, i_brand, i_item_sk, i_manager_id)`. This would be a covering index for the filter and the join.\n\nAlternatively, we can create two indexes:\n\n- One on `(i_category, i_class, i_brand)` for the filter.\n- One on `(i_item_sk)` for the join.\n\nBut note that the filter is done first, so the index on the filter columns would help the filter, and then the index on `i_item_sk` would help the join.\n\nBut the planner might use the index on `i_item_sk` for the join and then do a sequential scan for the filter? Or vice versa. We need to consider the access path.\n\nAlternatively, we can create a composite index that includes the filter columns and then the join column. But note that the filter columns are not the join column. The composite index would be:\n\n```sql\nCREATE INDEX item_filter_idx ON item (i_category, i_class, i_brand, i_item_sk, i_manager_id);\n```\n\nThis index would allow the planner to quickly find the rows that match the filter and then get the `i_item_sk` and `i_manager_id` without a lookup.\n\nBut note: the filter conditions are on three columns, so the index must start with those three. Then the `i_item_sk` and `i_manager_id` are included for the join.\n\nNow, for `store_sales`:\n\n- We need an index on `ss_item_sk` to join with `item_filtered`.\n- We need an index on `ss_sold_date_sk` to join with `date_filtered`.\n\nBut note: the `monthly_sales` CTE also groups by `i.i_manager_id` and `d.d_moy`. The grouping might be efficient if the join is done correctly.\n\nNow, let's consider the final filter: It filters by a condition that compares `sum_sales` to `avg_monthly_sales`. This is done on the result of the aggregation. Without an index, the planner will have to scan the entire result set. But note that the final query orders by `i_manager_id` and then `avg_monthly_sales` and `sum_sales`, and limits to 100 rows. This might be efficient because the limit is small, but the cost is in the aggregation and the window function.\n\nNow, let's list the indexes we would recommend:\n\n1. `date_dim`: B-tree index on `d_month_seq`.\n2. `item`: B-tree composite index on `(i_category, i_class, i_brand, i_item_sk, i_manager_id)`.\n3. `store_sales`: B-tree index on `ss_item_sk`.\n4. `store_sales`: B-tree index on `ss_sold_date_sk`.\n\nBut note: the `item` table has a primary key on `i_item_sk` (from the schema). We are told that there are no indexes, so we must create one. However, the `item` table is small (28,000 rows) so an index might not be necessary for the filter, but it is necessary for the join with `store_sales`. So we must create an index on `i_item_sk` for `item` as well. But wait, the `item` table has a primary key, so there should be an index. But the problem says \"no indexes\", so we are to ignore that and assume there is none. Therefore, we must create an index on `i_item_sk` for `item`? Actually, the `item` table has a primary key, so there is an index. But the problem says \"no indexes\", so we are to assume there is none. This is confusing.\n\nLet me re-read the instructions: \"Table: item (28,000 rows)  (no indexes)\" \u2014 so we are to assume there is no index on `item`. Therefore, we must create an index on `item.i_item_sk` to speed up the join.\n\nBut note: the `item` table has a primary key, so there should be an index. However, the problem says \"no indexes\", so we are to ignore that and assume there is none. So we must create an index.\n\nAlternatively, the problem might mean that there are no indexes that we can use (i.e., the existing ones) and we are to suggest new ones. So we are free to create any index.\n\nNow, let's consider the `date_dim` table: It has 73,049 rows. We are doing a join with a small set (12 months). Without an index, the planner might do a sequential scan on `date_dim` for each month. We can create a B-tree index on `d_month_seq` to make the join faster.\n\nNow, let's write the JSON:\n\nWe will suggest four indexes:\n\n1. On `date_dim` for `d_month_seq`.\n2. On `item` for `(i_category, i_class, i_brand, i_item_sk, i_manager_id)`.\n3. On `store_sales` for `ss_item_sk`.\n4. On `store_sales` for `ss_sold_date_sk`.\n\nBut note: the `item` table has a primary key on `i_item_sk` (from the schema). We are told that there are no indexes, so we must create an index on `i_item_sk` for `item` as well? Actually, the `item` table has a primary key, so there is an index. But the problem says \"no indexes\", so we are to assume there is none. This is a contradiction.\n\nLet me clarify: The problem says \"Table: item (28,000 rows)  (no indexes)\". This means that in the current database, there are no indexes on the `item` table. But the schema says `i_item_sk` is the primary key, so there should be an index. However, the problem says \"no indexes\", so we must treat it as if there is none.\n\nTherefore, we must create an index on `item.i_item_sk` to speed up the join. But note that the `item` table has a primary key, so the index exists. But the problem says \"no indexes\", so we are to ignore that and assume there is none. So we must create an index.\n\nAlternatively, the problem might be that the `item` table does not have any index (even the primary key) \u2014 but that would be unusual. However, the instructions say \"no indexes\", so we must create an index.\n\nBut note: the `item` table has a primary key, so there is an index. The problem might be that the index is not a B-tree index that the planner can use? Or maybe the problem is that the `item` table has no index at all, including the primary key? This is confusing.\n\nGiven the ambiguity, let's stick to the provided schema and the instructions. The schema says `item` has a primary key on `i_item_sk`, so there is an index. But the problem says \"no indexes\", so we are to assume there is none. Therefore, we must create an index.\n\nBut note: the `item` table is small (28,000 rows). Without an index, the planner might do a sequential scan for the filter and then for the join. We can create an index on `i_item_sk` to speed up the join.\n\nAlternatively, we can create a composite index that includes the filter columns and `i_item_sk` and `i_manager_id`.\n\nNow, let's write the JSON:\n\nWe will suggest:\n\n1. Index on `date_dim` for `d_month_seq`.\n2. Index on `item` for `(i_category, i_class, i_brand, i_item_sk, i_manager_id)`.\n3. Index on `store_sales` for `ss_item_sk`.\n4. Index on `store_sales` for `ss_sold_date_sk`.\n\nBut note: the `item` table has a primary key on `i_item_sk`, so we don't need to create an index on `i_item_sk` separately. We can include it in the composite index.\n\nNow, let's consider the `store_sales` table: It has two indexes, one on `ss_item_sk` and one on `ss_sold_date_sk`. These two columns are used in joins, so B-tree indexes are appropriate.\n\nNow, let's write the JSON:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_month_seq\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on date_dim for the join with month_seq, reducing the cost from 73,049 rows to a lookup by d_month_seq.\"\n    },\n    {\n      \"target\": \"item\",\n      \"property\": \"i_category, i_class, i_brand, i_item_sk, i_manager_id\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on item for the filter, reducing the cost from 28,000 rows to a lookup by the filter columns.\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_item_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with item_filtered, reducing the cost from 57 million rows to a lookup by ss_item_sk.\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with date_filtered, reducing the cost from 57 million rows to a lookup by ss_sold_date_sk.\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the main bottlenecks: the join in date_filtered, the filter in item_filtered, and the joins in monthly_sales. The index on date_dim.d_month_seq will speed up the join with the small month_seq. The index on item will speed up the filter and the join with store_sales. The indexes on store_sales will speed up the joins with item_filtered and date_filtered.\"\n}\n\nBut note: the `item` table has a primary key on `i_item_sk`, so we don't need to create an index on `i_item_sk` separately. The composite index on `item` already includes `i_item_sk`.\n\nAlso, note that the `item` table has a primary key, so there is an index on `i_item_sk`. But the problem says \"no indexes\", so we are to assume there is none. Therefore, we must create an index.\n\nAlternatively, the problem might be that the `item` table has no index at all, including the primary key. But that would be unusual. However, the instructions say \"no indexes\", so we must create an index.\n\nNow, let's check the `store_sales` table: It has a primary key? The schema doesn't specify, but the `store_sales` table has a primary key on `(ss_ticket_number, ss_item_sk)`. So there is an index. But the problem says \"no indexes\", so we must create indexes.\n\nGiven the instructions, we must create indexes on the tables that are not present.\n\nBut note: the `store_sales` table has a primary key, so there is an index. However, the problem says \"no indexes\", so we are to assume there is none. Therefore, we must create indexes.\n\nNow, let's adjust the JSON to only include the columns we are indexing:\n\nWe are indexing `date_dim.d_month_seq`, `item.i_category, i_class, i_brand, i_item_sk, i_manager_id`, `store_sales.ss_item_sk`, and `store_sales.ss_sold_date_sk`.\n\nBut note: the `item` table has a primary key on `i_item_sk`, so we don't need to index `i_item_sk` separately. We are including it in the composite index.\n\nNow, let's write the JSON accordingly.\n\nHowever, note that the `item` table has a primary key, so there is an index on `i_item_sk`. But the problem says \"no indexes\", so we are to assume there is none. Therefore, we must create an index.\n\nBut wait, the `item` table has a primary key, so there is an index. The problem might be that the index is not a B-tree index that the planner can use? Or maybe the problem is that the `item` table has no index at all, including the primary key? This is confusing.\n\nGiven the instructions, we must create indexes on the columns that are causing the sequential scans.\n\nNow, let's output the JSON.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_month_seq\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on date_dim for the join with month_seq, reducing the cost from 73,049 rows to a lookup by d_month_seq.\"\n    },\n    {\n      \"target\": \"item\",\n      \"property\": \"i_category, i_class, i_brand, i_item_sk, i_manager_id\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on item for the filter, reducing the cost from 28,000 rows to a lookup by the filter columns.\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_item_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with item_filtered, reducing the cost from 57 million rows to a lookup by ss_item_sk.\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with date_filtered, reducing the cost from 57 million rows to a lookup by ss_sold_date_sk.\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the main bottlenecks: the join in date_filtered, the filter in item_filtered, and the joins in monthly_sales. The index on date_dim.d_month_seq will speed up the join with the small month_seq. The index on item will speed up the filter and the join with store_sales. The indexes on store_sales will speed up the joins with item_filtered and date_filtered.\"\n}",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_month_seq",
+      "index_type": "btree",
+      "estimated_benefit_pct": 1.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": 3.8,
+      "baseline_exec_ms": 3672.658,
+      "optimized_exec_ms": 3532.566,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.03,
+          "cost_with_index": 1435939.03,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961716.87,
+          "cost_with_index": 2955584.46,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931106.09,
+          "cost_with_index": 1927015.63,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368791.94,
+          "cost_with_index": 1366746.53,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803006.15,
+          "cost_with_index": 803006.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.88,
+          "cost_with_index": 118817.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020557.08,
+          "cost_with_index": 29020557.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.61,
+          "cost_with_index": 1210560.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3973412.13,
+          "cost_with_index": 3973412.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 937619.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81960.2,
+          "cost_with_index": 81960.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906080.7,
+          "cost_with_index": 906080.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712279.45,
+          "cost_with_index": 3712279.45,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345260.47,
+          "cost_with_index": 1345260.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91640.22,
+          "cost_with_index": 91640.22,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_category, i_class, i_brand, i_item_sk, i_manager_id",
+      "index_type": "btree",
+      "estimated_benefit_pct": 2.5,
+      "validation": "executed",
+      "measured_read_benefit_pct": -163.3,
+      "baseline_exec_ms": 3696.433,
+      "optimized_exec_ms": 9731.134,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368791.94,
+          "cost_with_index": 1368791.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.88,
+          "cost_with_index": 118817.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 937619.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81960.2,
+          "cost_with_index": 81960.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906080.7,
+          "cost_with_index": 906080.7,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.9,
+      "baseline_exec_ms": 3689.571,
+      "optimized_exec_ms": 3724.163,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961716.87,
+          "cost_with_index": 2961711.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931106.09,
+          "cost_with_index": 1931099.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368791.94,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803006.15,
+          "cost_with_index": 802997.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.88,
+          "cost_with_index": 118817.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110027.72,
+          "cost_with_index": 21109947.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020557.08,
+          "cost_with_index": 29020287.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81960.2,
+          "cost_with_index": 81964.49,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712279.45,
+          "cost_with_index": 3657217.18,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345260.47,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342766.73,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

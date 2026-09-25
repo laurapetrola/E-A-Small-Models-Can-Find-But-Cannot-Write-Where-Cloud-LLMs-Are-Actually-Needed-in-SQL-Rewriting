@@ -1,0 +1,216 @@
+{
+  "timestamp": "2026-09-16T17:44:48.038022",
+  "query_hash": "839ef9da291c",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 60170.2,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The query is quite complex, joining several tables and applying various filters. \n\nFirst, I need to understand the query structure. The main goal is to find the minimum name (of_person) and title (biography_movie) based on certain conditions. The tables involved are aka_name, cast_info, info_type, link_type, movie_link, name, person_info, and title.\n\nLooking at the schema and existing indexes, I notice that some tables don't have indexes on columns that are used in the WHERE clause or JOIN conditions. Let's break down the query step by step.\n\nStarting with the WHERE clause:\n- an.name LIKE '%a%' \u2013 This is a pattern match on the 'name' column of the aka_name table. Since it's a LIKE with a leading wildcard, an index on 'name' might not be effective. But the existing index on person_id_aka_name is on person_id, not name. So, if there's a full table scan on aka_name here, an index on name could help, but with the leading %, it's tricky. However, maybe the query optimizer can use a prefix if the index is created with a prefix length. But the user mentioned that for TEXT/BLOB columns, a prefix length is needed. Since 'name' is TEXT, maybe creating an index with a prefix length of 255 could help. But the query uses LIKE '%a%', which might not benefit from a prefix index. Hmm, maybe this isn't the best candidate.\n\nNext, the condition n.name_pcode_cf LIKE 'D%' \u2013 The name_pcode_cf column is in the name table. The existing indexes on name are none. So, if there's a full table scan on the name table here, an index on name_pcode_cf would help. Since it's a prefix match (starts with 'D'), an index on name_pcode_cf would be useful. So, creating an index on name_pcode_cf for the name table could eliminate a full table scan here.\n\nAnother condition is n.gender='m' \u2013 The name table's gender column. Since there's no index on gender, if the query is scanning the name table for gender='m', an index on gender would help. But the query might be joining on n.id with other tables, so maybe the index on (gender, id) could be beneficial. However, the existing indexes on name are none, so adding an index on gender might help.\n\nLooking at the person_info table, the condition pi.note = 'Volker Boehm' \u2013 The note column is TEXT. Since there's no index on note, a full table scan is happening here. Creating an index on note would help, but since it's a specific value, maybe the index isn't very selective. However, if the query is filtering on note, an index on note would speed up this condition.\n\nThe info_type table has a condition it.info = 'mini biography'. Since there are no indexes on info_type, and it's a small table (113 rows), maybe the full table scan isn't a big issue. But if the query is joining with it, an index on info would help. However, the user mentioned that if there's no access_type \"ALL\", then no index is possible. Since info_type is small, maybe the full table scan is acceptable, so no index needed here.\n\nThe link_type table has a condition lt.link = 'features'. Again, no indexes on link, but since it's a small table (18 rows), the full table scan might not be a problem. So, no index needed here.\n\nNow, looking at the JOIN conditions. The name table is joined with aka_name on n.id = an.person_id. If there's an index on n.id, but since it's the primary key, that's already covered. However, the query also has conditions on n.name_pcode_cf and n.gender. So, if the name table is being scanned due to those conditions, indexes on those columns would help.\n\nThe person_info table is joined with name via pi.person_id = n.id. Since there's an existing index on person_id_person_info, but the query also has a condition on pi.note. So, if the person_info table is being scanned because of the note condition, an index on note would help.\n\nThe movie_link table is joined with title via ml.linked_movie_id = t.id. The existing indexes on movie_link include linked_movie_id, so that's already covered. But the link_type_id is part of the join with link_type, which has no index. However, since link_type is small, maybe that's not a problem.\n\nThe title table is joined with cast_info via t.id = ci.movie_id. The title table has an index on kind_id, but the query is filtering on production_year. So, if there's a full table scan on title due to the production_year condition, an index on production_year would help. However, the existing index on kind_id might not help with production_year. So, creating an index on production_year for the title table could eliminate a full table scan here.\n\nPutting this all together, the main tables causing full table scans are:\n\n1. name table: conditions on name_pcode_cf, gender, and joins with other tables.\n2. person_info table: condition on note.\n3. title table: condition on production_year.\n\nSo, the indexes needed would be:\n\n- For name table: index on name_pcode_cf (prefix length 5 since it's a 5-character code) and gender.\n- For person_info: index on note.\n- For title: index on production_year.\n\nBut wait, the user mentioned that for TEXT columns, a prefix length is required. The name_pcode_cf is a VARCHAR(5), so maybe the index can be on name_pcode_cf with prefix length 5. Similarly, the note in person_info is TEXT, so an index on note with a prefix length (maybe 255) would help. The title's production_year is an integer, so an index on that column would be straightforward.\n\nHowever, the existing indexes on name are none, so adding indexes on name_pcode_cf and gender would help. For the person_info, adding an index on note. For title, adding an index on production_year.\n\nBut the user's schema shows that the title table has an index on kind_id, but not on production_year. So, adding an index on production_year would help.\n\nSo, the indexes to suggest are:\n\n1. name (name_pcode_cf)\n2. name (gender)\n3. person_info (note)\n4. title (production_year)\n\nBut wait, the query has a condition on n.name_pcode_cf LIKE 'D%' and n.gender='m'. So, an index on (name_pcode_cf, gender) might be more efficient, but since the query is using separate conditions, maybe separate indexes are better. However, in MySQL, creating a composite index on (name_pcode_cf, gender) could help with both conditions. But since the user's existing indexes on name are none, creating an index on name_pcode_cf would help with the LIKE condition, and an index on gender would help with the equality condition.\n\nBut the query might be scanning the name table because of those conditions. So, adding indexes on those columns would eliminate the full table scan.\n\nSimilarly, for person_info, the note condition is a string, so an index on note would help. For title, the production_year is an integer, so an index on that column would help.\n\nSo, the JSON should list these indexes. Let me check the existing indexes again to make sure I'm not suggesting existing ones. The existing indexes are:\n\n- name: none\n- person_info: info_type_id and person_id\n- title: kind_id\n\nSo, the suggested indexes are for name_pcode_cf, gender, note, and production_year.\n\nTherefore, the indexes to add would be:\n\n- name (name_pcode_cf)\n- name (gender)\n- person_info (note)\n- title (production_year)\n\nBut wait, the user's query has a condition on n.name_pcode_cf LIKE 'D%' and n.gender='m'. So, if there's an index on name_pcode_cf, that would help with the LIKE condition. The gender condition would be handled by an index on gender. However, if the query is filtering on both, a composite index on (name_pcode_cf, gender) might be more efficient. But since the user's instructions say to suggest indexes that would eliminate full table scans, and the existing indexes are none, adding separate indexes on each column would help.\n\nBut in MySQL, creating an index on name_pcode_cf would allow the query to use that index for the LIKE condition. Similarly, an index on gender would help with the equality condition. So, both indexes are needed.\n\nSo, the final answer should include these four indexes. However, the user's schema for the name table has no indexes, so adding indexes on name_pcode_cf and gender would be necessary. For person_info, adding an index on note. For title, adding an index on production_year.\n\nThus, the JSON should list these four indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"name\",\n      \"property\": \"name_pcode_cf\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 5,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on name table for name_pcode_cf LIKE 'D%' condition on 4,167,491 rows\"\n    },\n    {\n      \"target\": \"name\",\n      \"property\": \"gender\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on name table for gender='m' condition on 4,167,491 rows\"\n    },\n    {\n      \"target\": \"person_info\",\n      \"property\": \"note\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on person_info table for note='Volker Boehm' condition on 2,963,664 rows\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title table for production_year BETWEEN 1980 AND 1984 condition on 2,528,312 rows\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query requires indexes on name_pcode_cf (prefix 5) for the LIKE condition, gender for equality filter, note for exact string match, and production_year for range filter. These columns are involved in WHERE clauses and JOIN conditions but lack existing indexes, leading to full table scans.\"\n}",
+  "recommendations": [
+    {
+      "table": "name",
+      "column": "name_pcode_cf",
+      "index_type": "btree",
+      "estimated_benefit_pct": -2.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.5,
+      "baseline_exec_ms": 407.078,
+      "optimized_exec_ms": 409.148,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.9,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 23158182.19,
+          "cost_with_index": 23405470.21,
+          "benefit_pct": -1.1
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7311.2,
+          "cost_with_index": 7371.71,
+          "benefit_pct": -0.8
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17102.64,
+          "cost_with_index": 17291.04,
+          "benefit_pct": -1.1
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 390099.82,
+          "cost_with_index": 394008.42,
+          "benefit_pct": -1.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2412009.0,
+          "cost_with_index": 2423153.64,
+          "benefit_pct": -0.5
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 4,
+      "status": null
+    },
+    {
+      "table": "name",
+      "column": "gender",
+      "index_type": "btree",
+      "estimated_benefit_pct": -2.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.8,
+      "baseline_exec_ms": 440.486,
+      "optimized_exec_ms": 419.247,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 23084984.83,
+          "cost_with_index": 23321992.79,
+          "benefit_pct": -1.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7290.23,
+          "cost_with_index": 7352.7,
+          "benefit_pct": -0.9
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17270.3,
+          "cost_with_index": 17291.67,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 393620.54,
+          "cost_with_index": 397444.93,
+          "benefit_pct": -1.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2410927.55,
+          "cost_with_index": 2421075.98,
+          "benefit_pct": -0.4
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "person_info",
+      "column": "note",
+      "index_type": "btree",
+      "estimated_benefit_pct": 98.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": 99.1,
+      "baseline_exec_ms": 425.165,
+      "optimized_exec_ms": 3.8,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 26.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.0,
+      "baseline_exec_ms": 421.565,
+      "optimized_exec_ms": 429.818,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -3.2,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 950514.2,
+          "cost_with_index": 953740.35,
+          "benefit_pct": -0.3
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 23036873.27,
+          "cost_with_index": 23268976.01,
+          "benefit_pct": -1.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7282.2,
+          "cost_with_index": 7341.8,
+          "benefit_pct": -0.8
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 2094230.17,
+          "cost_with_index": 2095034.31,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 734506.65,
+          "cost_with_index": 747944.58,
+          "benefit_pct": -1.8
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46301.64,
+          "cost_with_index": 55370.34,
+          "benefit_pct": -19.6
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17268.49,
+          "cost_with_index": 18247.13,
+          "benefit_pct": -5.7
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 393588.13,
+          "cost_with_index": 406422.43,
+          "benefit_pct": -3.3
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 729185.73,
+          "cost_with_index": 752725.95,
+          "benefit_pct": -3.2
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6844.47,
+          "cost_with_index": 6999.02,
+          "benefit_pct": -2.3
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2409329.53,
+          "cost_with_index": 2419355.22,
+          "benefit_pct": -0.4
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 5082711.76,
+          "cost_with_index": 5091152.26,
+          "benefit_pct": -0.2
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 8,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-08-28T17:51:56.006899",
+  "query_hash": "5346a55b96e8",
+  "suggestions": [
+    "materialize filtered subqueries into CTEs",
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "materialize subquery into CTE",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": -149.62,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 537604.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH time_dim AS MATERIALIZED (\n    SELECT t_time_sk\n    FROM time_dim\n    WHERE time_dim.t_hour = 8\n      AND time_dim.t_minute >= 30\n), store AS MATERIALIZED (\n    SELECT s_store_sk\n    FROM store\n    WHERE store.s_store_name = 'ese'\n), household_demographics AS MATERIALIZED (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE household_demographics.hd_dep_count = 0\n)\nSELECT count(*)\nFROM store\nJOIN store_sales ON store_sales.ss_store_sk = s_store_sk\nWHERE EXISTS (\n    SELECT 1\n    FROM time_dim\n    WHERE store_sales.ss_sold_time_sk = time_dim.t_time_sk\n)\nAND EXISTS (\n    SELECT 1\n    FROM household_demographics\n    WHERE store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk\n)\nORDER BY count(*)\nLIMIT 100",
+  "reasoning_trace": "1. **INDEX-ONLY COUNT FROM THE FACT TABLE** \u2014 TARGET: `store_sales(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: Build a composite covering index on those three columns and drive from the filtered `store` rows (`s_store_name='ese'`) so the count is resolved from compact index ranges instead of a 57.6M-row heap scan and large hash joins.\n\n2. **REWRITE DIMENSION EQUI-JOINS AS SEMI-JOINS** \u2014 TARGET: the multi-way join between `store_sales`, `store`, `time_dim`, and `household_demographics` \u2014 TRANSFORMATION: Replace the inner joins with `IN`/`EXISTS` filters on `ss_store_sk`, `ss_sold_time_sk`, and `ss_hdemo_sk`; since the dimension keys are unique, this is count-equivalent and prevents the planner from joining the full fact stream to the 1.9M-row demographics table.\n\n3. **COVERING INDEX FOR THE HOUSEHOLD FILTER SET** \u2014 TARGET: `household_demographics(hd_dep_count) INCLUDE (hd_demo_sk)` \u2014 TRANSFORMATION: Add this covering index so `hd_dep_count = 0` produces the matching `hd_demo_sk` values with an index-only scan and can be used as a compact hash/semi-join build set.\n\n4. **MATERIALIZE FILTERED TIME/STORE KEY SETS** \u2014 TARGET: `time_dim` (`t_hour=8`, `t_minute>=30`) and `store` (`s_store_name='ese'`) \u2014 TRANSFORMATION: Resolve these small dimension filters once into materialized key sets before probing `store_sales`, so the 86,400-row `time_dim` and 44-row `store` tables are not scanned or rebuilt repeatedly in the join plan.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2330.714,
+      "optimized_ms": 5817.993,
+      "delta_ms": -3487.279,
+      "improvement_pct": -149.62,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1342695.48,
+      "optimized": 1808589.83,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 511833.3,
+    "index_advisor_inference_ms": 21296.8,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 4474.8,
+    "total_inference_ms": 537604.9,
+    "writer_inference_ms": 1208624.8,
+    "writer_tokens_in": 5541,
+    "writer_tokens_out": 136994,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=1342695.48 \u2192 optimized=1808589.83 (+34.7%)",
+    "Execution time regression: 2330.714ms \u2192 5817.993ms"
+  ],
+  "strategy": "1. **INDEX-ONLY COUNT FROM THE FACT TABLE** \u2014 TARGET: `store_sales(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: Build a composite covering index on those three columns and drive from the filtered `store` rows (`s_store_name='ese'`) so the count is resolved from compact index ranges instead of a 57.6M-row heap scan and large hash joins.\n\n2. **REWRITE DIMENSION EQUI-JOINS AS SEMI-JOINS** \u2014 TARGET: the multi-way join between `store_sales`, `store`, `time_dim`, and `household_demographics` \u2014 TRANSFORMATION: Replace the inner joins with `IN`/`EXISTS` filters on `ss_store_sk`, `ss_sold_time_sk`, and `ss_hdemo_sk`; since the dimension keys are unique, this is count-equivalent and prevents the planner from joining the full fact stream to the 1.9M-row demographics table.\n\n3. **COVERING INDEX FOR THE HOUSEHOLD FILTER SET** \u2014 TARGET: `household_demographics(hd_dep_count) INCLUDE (hd_demo_sk)` \u2014 TRANSFORMATION: Add this covering index so `hd_dep_count = 0` produces the matching `hd_demo_sk` values with an index-only scan and can be used as a compact hash/semi-join build set.\n\n4. **MATERIALIZE FILTERED TIME/STORE KEY SETS** \u2014 TARGET: `time_dim` (`t_hour=8`, `t_minute>=30`) and `store` (`s_store_name='ese'`) \u2014 TRANSFORMATION: Resolve these small dimension filters once into materialized key sets before probing `store_sales`, so the 86,400-row `time_dim` and 44-row `store` tables are not scanned or rebuilt repeatedly in the join plan.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to materialize filtered dimension key sets (time_dim and store) and rewrite dimension joins as semi-joins. The rewrite applies both: it materializes the fi"
+  },
+  "raw_sql": "select count(*) from store_sales ,household_demographics ,time_dim, store where ss_sold_time_sk = time_dim.t_time_sk and ss_hdemo_sk = household_demographics.hd_demo_sk and ss_store_sk = s_store_sk and time_dim.t_hour = 8 and time_dim.t_minute >= 30 and household_demographics.hd_dep_count = 0 and store.s_store_name = 'ese' order by count(*) limit 100"
+}

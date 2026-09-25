@@ -1,0 +1,197 @@
+{
+  "timestamp": "2026-09-14T01:18:35.795068",
+  "query_hash": "0ce6157463a0",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 249772.3,
+  "reasoning_trace": "<think>\nWe are given a complex query that involves two CTEs (web_v1 and store_v1) and then a main query that does a full outer join and then a condition on cumulative sales.\n\nThe query is trying to compare cumulative sales of web and store for each item over time. The main goal is to find items where the web cumulative sales are greater than the store cumulative sales.\n\nThe physical execution plan is not provided, but we can analyze the query structure.\n\nThe two CTEs (web_v1 and store_v1) are doing:\n  - For web_sales: joining with date_dim and then doing a window function (sum over partition by item_sk, ordered by date) for each item and date.\n  - Similarly for store_sales.\n\nThen the main query does a full outer join between the two CTEs on (item_sk, d_date). Then it computes two more window functions (max over the same partition and order) to get the cumulative sales for web and store.\n\nFinally, it filters for rows where web_cumulative > store_cumulative and orders by item_sk and d_date, then limits to 100.\n\nGiven that the tables store_sales and web_sales have no indexes, and date_dim has no indexes, the query is likely to be doing a lot of sequential scans and joins.\n\nLet's break down the bottlenecks:\n\n1. The CTEs (web_v1 and store_v1) are doing:\n   - A join between web_sales (or store_sales) and date_dim on the date_sk. Without an index on date_dim.d_date_sk (or web_sales.ws_sold_date_sk, store_sales.ss_sold_date_sk) this will be a sequential scan on the large table and then a nested loop or hash join might be expensive.\n\n2. The main query does a full outer join on two large intermediate tables (from the CTEs). The CTEs are already aggregating by item_sk and d_date, so the intermediate tables might be large.\n\nHowever, note that the CTEs are grouping by item_sk and d_date and then doing a window function. The window function is a running sum (or cumulative sum) over the partition by item_sk and ordered by d_date.\n\nWithout indexes, the CTEs might be doing:\n   - For web_v1: \n        SELECT ws_item_sk, d_date, SUM(ws_sales_price) ... \n        This requires joining web_sales and date_dim. Without an index on web_sales.ws_sold_date_sk, it will be a sequential scan on web_sales and then a nested loop with date_dim (if the date_dim is small) or a hash join.\n\n   - Similarly for store_v1.\n\nBut note: the query is filtering by d_month_seq between 1212 and 1212+11. This is a range on date_dim. Without an index on date_dim, the date_dim table will be scanned sequentially.\n\nGiven the large size of store_sales and web_sales, the main bottlenecks are likely to be the joins in the CTEs and the full outer join in the main query.\n\nHowever, note that the CTEs are grouping by item_sk and d_date, so they are reducing the number of rows. But the intermediate tables might still be large.\n\nBut the problem says the query cannot be improved by SQL rewriting, so we must consider indexing.\n\nLet's consider the tables that are being scanned:\n\n1. store_sales and web_sales: no indexes. We should consider indexing the columns used in joins and filters.\n\n   In the CTEs, the joins are on:\n        web_sales.ws_sold_date_sk = date_dim.d_date_sk\n        store_sales.ss_sold_date_sk = date_dim.d_date_sk\n\n   Also, the CTEs are grouping by item_sk and d_date, so we might want to index the item_sk columns in store_sales and web_sales.\n\n   However, note that the CTEs are doing a window function that requires ordering by d_date. So the date_dim table might be used to order the data.\n\n   But the main query does a full outer join on (item_sk, d_date). So the CTEs are producing rows with (item_sk, d_date) and the cumulative sales.\n\n   The main query then does a full outer join on these two sets. The two sets are from two different tables (store_sales and web_sales) and the join condition is on (item_sk, d_date). So we might want to index the combination (item_sk, d_date) in the CTEs? But note: the CTEs are already grouping by (item_sk, d_date). So the intermediate tables are keyed by (item_sk, d_date).\n\n   However, the CTEs are built from the original tables. So the intermediate tables are not materialized as physical tables, but as CTEs. So the planner might be doing a hash join or something else.\n\n   But note: the query is doing a full outer join on two large intermediate tables. Without an index on the join columns (item_sk and d_date) in the intermediate tables, the join might be expensive.\n\n   However, the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows. But the join condition is on two columns, so we might want to index the columns in the original tables that are used in the join.\n\n   But wait: the CTEs are grouping by (item_sk, d_date). So the intermediate result for web_v1 has one row per (item_sk, d_date) and similarly for store_v1. Then the main query does a full outer join on (item_sk, d_date). So the two intermediate tables are keyed by (item_sk, d_date). \n\n   The planner might be using a hash join for the full outer join because the two tables are large. Without an index on (item_sk, d_date) in the intermediate tables, the hash join would require a hash of the entire table. But note: the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not necessarily indexed.\n\n   However, the original tables (store_sales and web_sales) have no indexes. So the CTEs are built by scanning the entire table and then grouping. The grouping is done by two columns, so the planner might be using an index on (item_sk, d_date) if it existed, but it doesn't.\n\n   So the CTEs are likely to be doing a sequential scan on store_sales and web_sales, then grouping by (item_sk, d_date). This is expensive.\n\n   We can consider creating an index on store_sales(ss_item_sk, ss_sold_date_sk) and similarly for web_sales(ws_item_sk, ws_sold_date_sk). This would help the join with date_dim and also the grouping.\n\n   But note: the CTEs are also doing a window function that requires ordering by d_date. So the date_dim table is used to order the data. Without an index on date_dim, the join might be slow.\n\n   However, the date_dim table is small (73,049 rows). So a sequential scan on date_dim might be acceptable.\n\n   The main bottleneck is the large tables store_sales and web_sales.\n\n   Let's consider the columns that are being used in the joins and aggregations:\n\n   For store_sales:\n        - ss_item_sk: used in the join with item and in the grouping.\n        - ss_sold_date_sk: used in the join with date_dim and in the window function.\n\n   Similarly for web_sales.\n\n   We can create indexes on store_sales(ss_sold_date_sk, ss_item_sk) and web_sales(ws_sold_date_sk, ws_item_sk) to help the joins and the grouping.\n\n   But note: the CTEs are grouping by (item_sk, d_date). The d_date comes from date_dim, which is joined by ss_sold_date_sk. So if we have an index on store_sales(ss_sold_date_sk, ss_item_sk), then the join with date_dim might be faster because we can use the index to find the matching date_dim rows.\n\n   Also, the grouping by (item_sk, d_date) might be faster if we have an index on (ss_item_sk, ss_sold_date_sk) because then we can group by these two columns.\n\n   However, note that the window function requires ordering by d_date. The d_date is from date_dim, which is joined by ss_sold_date_sk. So we might want to have an index that orders by ss_sold_date_sk to get the dates in order.\n\n   But the window function is partitioned by item_sk and ordered by d_date. So we need to have the data for each item_sk ordered by d_date. Without an index, the planner might be doing a sort for each item_sk, which is expensive.\n\n   Alternatively, we can create an index on store_sales(ss_item_sk, ss_sold_date_sk) and similarly for web_sales. This index would help in grouping and in the window function because the data is stored by item_sk and then by date.\n\n   But note: the window function is defined as:\n        SUM(sum(ws_sales_price)) ... \n   Actually, the CTE for web_v1 does:\n        SELECT ws_item_sk, d_date, SUM(ws_sales_price) ... \n   But wait, the window function is a running sum of the sales price. The sales price is from web_sales.ws_sales_price. So the CTE is grouping by (ws_item_sk, d_date) and then doing a window function that sums the sales_price for each item_sk over time.\n\n   The CTE for web_v1 is:\n        SELECT ws_item_sk, d_date, SUM(ws_sales_price) ... \n   But note: the window function is defined as:\n        SUM(sum(ws_sales_price)) ... \n   Actually, the query has a nested sum. Let me re-read:\n\n        SELECT ws_item_sk, d_date, sum(sum(ws_sales_price)) ... \n\n   This is incorrect. The inner sum is over the entire group by (ws_item_sk, d_date) and then the outer sum is a window function. But note: the inner sum is redundant because the group by already sums the sales_price. So the CTE is doing:\n\n        SELECT ws_item_sk, d_date, SUM(ws_sales_price) ... \n\n   But wait, the query says:\n        sum(sum(ws_sales_price)) \n\n   This is a mistake. The inner sum is over the entire group by (ws_item_sk, d_date) and then the outer sum is a window function. But the group by already gives one row per (ws_item_sk, d_date) with the total sales for that day. So the inner sum is redundant and the outer window function is then summing the daily totals.\n\n   But the query is written as:\n\n        sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row)\n\n   This is a running total of the daily sales. But note: the group by already gives the daily sales. So the CTE is doing:\n\n        For each (item_sk, date): total_sales = sum(ws_sales_price) for that day.\n\n        Then the window function is summing these daily totals.\n\n   This is a running total of the cumulative sales.\n\n   But the query is written with two nested sums. This is likely a mistake. However, we are not allowed to change the query.\n\n   Given the complexity, let's focus on the tables that are being scanned.\n\n   The main tables that are large are store_sales and web_sales. The query is doing two CTEs on these tables. The CTEs are doing joins with date_dim and then grouping and window functions.\n\n   Without indexes, the planner might be doing:\n\n        For web_v1:\n            - Sequential scan on web_sales.\n            - Join with date_dim (using a nested loop or hash join) because there's no index on web_sales.ws_sold_date_sk or date_dim.d_date_sk.\n            - Then grouping by (ws_item_sk, d_date) and then a window function.\n\n   This is very expensive.\n\n   We can create indexes on:\n\n        web_sales(ws_sold_date_sk, ws_item_sk)\n        store_sales(ss_sold_date_sk, ss_item_sk)\n\n   These indexes would help the joins and the grouping.\n\n   Additionally, the main query does a full outer join on (item_sk, d_date). The two CTEs are producing rows with (item_sk, d_date). The planner might be using a hash join for the full outer join. Without an index on the join columns in the intermediate tables, the hash join would require a hash of the entire table. But note: the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed.\n\n   However, the CTEs are grouping by (item_sk, d_date) so the intermediate tables are keyed by (item_sk, d_date). We can create an index on the original tables that is a composite index on (item_sk, d_date) for the columns that are used in the join (i.e., the grouping columns). But note: the grouping is done by (item_sk, d_date) and then the window function uses d_date. So an index on (item_sk, d_date) would help.\n\n   But wait: the CTEs are grouping by (item_sk, d_date) and then the window function uses d_date. So the data is already grouped. The intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition in the main query is on (item_sk, d_date). We can create an index on store_sales(ss_item_sk, ss_sold_date_sk) and web_sales(ws_item_sk, ws_sold_date_sk) to help the grouping and the join.\n\n   However, note that the main query does a full outer join on two intermediate tables that are built from the CTEs. The CTEs are built by grouping, so the intermediate tables are not stored. The planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed in the intermediate tables. But the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows and then doing a hash join on the two intermediate tables.\n\n   Without an index on the grouping columns (item_sk, d_date) in the original tables, the grouping might be expensive. But the grouping is done by two columns, so an index on (item_sk, d_date) would help.\n\n   But note: the CTEs are grouping by (item_sk, d_date) and then the window function uses d_date. So the data must be ordered by d_date for the window function. The index on (item_sk, d_date) would help with the ordering.\n\n   However, the CTEs are built from the original tables. The grouping is done by (item_sk, d_date). We can create an index on store_sales(ss_item_sk, ss_sold_date_sk) and web_sales(ws_item_sk, ws_sold_sales_date_sk) to help the grouping and the window function.\n\n   But note: the window function requires ordering by d_date. The d_date is from date_dim, which is joined by the date_sk. So the index on (item_sk, date_sk) would help.\n\n   Let's propose:\n\n   For store_sales:\n        - Create an index on (ss_item_sk, ss_sold_date_sk) to help the grouping and the join with date_dim.\n\n   For web_sales:\n        - Create an index on (ws_item_sk, ws_sold_date_sk) to help the grouping and the join with date_dim.\n\n   Additionally, the main query does a full outer join on (item_sk, d_date). The two CTEs are producing rows with (item_sk, d_date). The planner might be using a hash join for the full outer join. Without an index on the join columns in the intermediate tables, the hash join would require a hash of the entire table. But the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed.\n\n   However, the CTEs are grouping by (item_sk, d_date) so the intermediate tables are keyed by (item_sk, d_date). We can create an index on the original tables that is a composite index on (item_sk, d_date) for the columns that are used in the join (i.e., the grouping columns). But note: the grouping is done by (item_sk, d_date) and then the window function uses d_date. So an index on (item_sk, d_date) would help.\n\n   But wait: the CTEs are grouping by (item_sk, d_date) and then the window function uses d_date. So the data is already grouped. The intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition in the main query is on (item_sk, d_date). We can create an index on store_sales(ss_item_sk, ss_sold_date_sk) and web_sales(ws_item_sk, ws_sold_date_sk) to help the grouping and the join.\n\n   However, note that the main query does a full outer join on two intermediate tables that are built from the CTEs. The CTEs are built by grouping, so the intermediate tables are not stored. The planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed in the intermediate tables. But the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed in the original tables.\n\n   We are not allowed to change the query, so we must focus on the tables that are being scanned.\n\n   The two CTEs are scanning store_sales and web_sales. We can create indexes on these tables to speed up the joins and the grouping.\n\n   Proposed indexes:\n\n   For store_sales:\n        - index1: (ss_sold_date_sk, ss_item_sk)  -- to help the join with date_dim and the grouping.\n        - index2: (ss_item_sk, ss_sold_date_sk)  -- to help the window function ordering and grouping.\n\n   But note: the window function requires ordering by d_date, which is from date_dim. The join between store_sales and date_dim is on ss_sold_date_sk. So if we have an index on store_sales(ss_sold_date_sk, ss_item_sk), then the join with date_dim might be faster because we can use the index to find the matching date_dim rows.\n\n   However, the window function requires ordering by d_date. The d_date is from date_dim, which is joined by ss_sold_date_sk. So we need to have the data ordered by ss_sold_date_sk. But the index on (ss_item_sk, ss_sold_date_sk) would order by ss_sold_date_sk, which is the date_sk. So that would help.\n\n   Similarly for web_sales.\n\n   But note: the CTEs are grouping by (item_sk, d_date). The d_date is from date_dim, which is joined by the date_sk. So the grouping is by (item_sk, date_sk). We can create an index on store_sales(ss_item_sk, ss_sold_date_sk) to help the grouping.\n\n   However, the grouping is done by two columns: item_sk and d_date. The d_date is from date_dim, which is joined by ss_sold_date_sk. So the grouping is effectively by (item_sk, ss_sold_date_sk). So an index on (ss_item_sk, ss_sold_date_sk) would help.\n\n   Let's propose:\n\n   For store_sales: index on (ss_item_sk, ss_sold_date_sk)\n   For web_sales: index on (ws_item_sk, ws_sold_date_sk)\n\n   Additionally, the main query does a full outer join on (item_sk, d_date). The two CTEs are producing rows with (item_sk, d_date). The planner might be using a hash join for the full outer join. Without an index on the join columns in the intermediate tables, the hash join would require a hash of the entire table. But the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed.\n\n   However, the CTEs are grouping by (item_sk, d_date) so the intermediate tables are keyed by (item_sk, d_date). We can create an index on the original tables that is a composite index on (item_sk, d_date) for the columns that are used in the join (i.e., the grouping columns). But note: the grouping is done by (item_sk, d_date) and then the window function uses d_date. So an index on (item_sk, d_date) would help.\n\n   But wait: the CTEs are grouping by (item_sk, d_date) and then the window function uses d_date. So the data is already grouped. The intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition in the main query is on (item_sk, d_date). We can create an index on store_sales(ss_item_sk, ss_sold_date_sk) and web_sales(ws_item_sk, ws_sold_date_sk) to help the grouping and the join.\n\n   However, note that the main query does a full outer join on two intermediate tables that are built from the CTEs. The CTEs are built by grouping, so the intermediate tables are not stored. The planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed in the intermediate tables. But the intermediate tables are not stored, so the planner might be using the grouping to reduce the number of rows, but the join condition is on two columns that are not indexed in the original tables.\n\n   We are not allowed to change the query, so we must focus on the tables that are being scanned.\n\n   The two CTEs are scanning store_sales and web_sales. We can create indexes on these tables to speed up the joins and the grouping.\n\n   Proposed indexes:\n\n   For store_sales:\n        - index1: (ss_sold_date_sk, ss_item_sk)  -- to help the join with date_dim and the grouping.\n        - index2: (ss_item_sk, ss_sold_date_sk)  -- to help the window function ordering and groupin",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.1,
+      "baseline_exec_ms": 16202.87,
+      "optimized_exec_ms": 16178.624,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2962481.22,
+          "cost_with_index": 2962535.31,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369495.49,
+          "cost_with_index": 1369535.27,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 808736.68,
+          "cost_with_index": 808827.05,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118542.39,
+          "cost_with_index": 118543.32,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109534.88,
+          "cost_with_index": 21110235.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29034971.25,
+          "cost_with_index": 29037305.83,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 127545.18,
+          "cost_with_index": 127598.76,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178856.53,
+          "cost_with_index": 178856.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81475.03,
+          "cost_with_index": 81471.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712155.92,
+          "cost_with_index": 3657256.75,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135061.76,
+          "cost_with_index": 135061.76,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 219679.9,
+          "cost_with_index": 219775.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345169.72,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342684.39,
+          "cost_with_index": 1342722.68,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.1,
+      "baseline_exec_ms": 16274.699,
+      "optimized_exec_ms": 16255.483,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2962535.31,
+          "cost_with_index": 2962530.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 808827.05,
+          "cost_with_index": 808824.84,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037305.83,
+          "cost_with_index": 29037021.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712209.12,
+          "cost_with_index": 3712195.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91591.39,
+          "cost_with_index": 91591.39,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "Btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_item_sk",
+      "index_type": "Btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

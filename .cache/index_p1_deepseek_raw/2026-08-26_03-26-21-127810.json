@@ -1,0 +1,393 @@
+{
+  "timestamp": "2026-08-26T03:26:21.127769",
+  "query_hash": "a5945ebaf8f0",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 290067.0,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes.\n\nFirst, let's break down the query:\n\nThe query is selecting from `catalog_sales` (with a left outer join to `catalog_returns`), and also joining with `warehouse`, `item`, and `date_dim`.\n\nThe main goal is to compute the sum of sales (adjusted by refunds) before and after a specific date (2001-05-02) for items in certain price ranges, grouped by state and item ID.\n\nThe tables involved and their relevant columns:\n\n1. `catalog_sales` (28,803,583 rows) - the main table, with columns like `cs_item_sk`, `cs_warehouse_sk`, `cs_sold_date_sk`, etc.\n2. `catalog_returns` (2,882,133 rows) - joined via `cs_order_number` and `cs_item_sk`.\n3. `warehouse` (5 rows) - small table, so likely not a bottleneck.\n4. `item` (28,000 rows) - joined via `i_item_sk`.\n5. `date_dim` (73,049 rows) - joined via `cs_sold_date_sk`.\n\nThe query has a condition on `i_current_price` (between 0.99 and 1.49) and a date range for `d_date` (between 2001-04-02 and 2001-06-01).\n\nThe query groups by `w_state` and `i_item_id` and orders by the same, limiting to 100 rows.\n\nNow, let's look at the physical execution plan (which we don't have, but we can infer from the query structure):\n\nThe query starts with a `catalog_sales` table, which is the largest table (28 million rows). Then it joins with `catalog_returns` (2.8 million rows) and `item` (28k rows) and `warehouse` (5 rows) and `date_dim` (73k rows).\n\nThe main bottleneck is likely the `catalog_sales` table, which is being scanned and then joined with `catalog_returns` and other tables.\n\nThe query has a condition on `i_current_price` (on the `item` table) and a condition on `d_date` (on `date_dim`). Also, the `catalog_sales` table is being filtered by `cs_sold_date_sk` (which is a foreign key to `date_dim`).\n\nSince the query is grouping by `w_state` and `i_item_id`, and `w_state` comes from `warehouse` (which is small) and `i_item_id` from `item` (which is 28k rows), we might need to consider indexing the `item` table on `i_item_id` and the `warehouse` table on `w_state` (though it's small).\n\nBut note: the query is doing a left outer join with `catalog_returns` on `cs_order_number` and `cs_item_sk`. This might be a performance issue because `catalog_returns` has 2.8 million rows, and if there are many matching rows, it could be expensive.\n\nHowever, the problem states that the query cannot be improved by SQL rewriting alone, so we must consider indexing.\n\nLet's look at the tables and their existing indexes (none, according to the schema provided). We are to suggest indexes.\n\nWe are to look for Seq Scans on large tables. The large tables are `catalog_sales` and `catalog_returns`.\n\nIn the query, `catalog_sales` is the main table. The conditions on `catalog_sales` are:\n- `cs_item_sk` (joined with `item`)\n- `cs_warehouse_sk` (joined with `warehouse`)\n- `cs_sold_date_sk` (joined with `date_dim`)\n\nAlso, the `catalog_sales` table is being filtered by the date range (via `date_dim`).\n\nAdditionally, the `item` table is being filtered by `i_current_price` (a range condition) and `i_item_sk` (joined).\n\nThe `date_dim` table is being filtered by a date range.\n\nThe `warehouse` table is small.\n\nNow, let's think about the joins:\n\n1. `catalog_sales` to `item` via `i_item_sk` and `cs_item_sk`. We can index `item.i_item_sk` and `catalog_sales.cs_item_sk`.\n2. `catalog_sales` to `warehouse` via `cs_warehouse_sk` and `w_warehouse_sk`. We can index `warehouse.w_warehouse_sk` and `catalog_sales.cs_warehouse_sk`.\n3. `catalog_sales` to `date_dim` via `cs_sold_date_sk` and `d_date`. We can index `date_dim.d_date_sk` and `catalog_sales.cs_sold_date_sk`.\n4. The left outer join to `catalog_returns` on `cs_order_number` and `cs_item_sk`. We can index `catalog_returns` on `cr_order_number` and `cr_item_sk`.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. We might also consider creating an index on `catalog_sales` for the grouping columns? However, the grouping is done after joins, so it might be better to index the join columns.\n\nLet's break down the suggested indexes:\n\n1. On `item` table: index on `i_item_sk` and `i_current_price` (since we have a range condition on `i_current_price` and a join on `i_item_sk`).\n   - We can create a composite index on `(i_current_price, i_item_sk)` or two separate indexes? But note the condition is a range on `i_current_price` and then a join on `i_item_sk`. A composite index on `(i_current_price, i_item_sk)` would help both.\n\n2. On `date_dim` table: index on `d_date_sk` (since we are joining on `cs_sold_date_sk` and filtering by `d_date`). But note: the condition on `d_date` is a range, so we might want a composite index on `(d_date, d_date_sk)`? Actually, the join is on `cs_sold_date_sk` and then we filter by `d_date`. The `d_date` is the date, and `d_date_sk` is the surrogate key. We are joining on `cs_sold_date_sk = d_date_sk` and then filtering by `d_date` (which is the actual date). We can index `date_dim` on `d_date_sk` and `d_date`? But note: the condition on `d_date` is a range, so we might want to index `d_date` separately? However, the join condition is on `d_date_sk`, so we can index `d_date_sk` and then the range condition on `d_date` might be optimized by a separate index? But note: the `d_date` is the actual date, and `d_date_sk` is the surrogate key. We can create an index on `d_date` (the actual date) to help the range condition, but the join is on `d_date_sk`. Alternatively, we can index `d_date_sk` and then use the condition on `d_date` via the index on `d_date_sk` because the `d_date` is a function of `d_date_sk`? Actually, the condition `d_date between ...` is converted to `d_date_sk` because `d_date` is a date and `d_date_sk` is the surrogate key. But note: the condition is `cs_sold_date_sk = d_date_sk` and then `d_date between ...`. The `d_date` is the same as the date corresponding to `d_date_sk`. We can index `date_dim` on `d_date_sk` and `d_date`? But note: the condition on `d_date` is a range, so we might want to index `d_date` separately. However, the join condition is on `d_date_sk`, so we can index `d_date_sk` and then the range condition on `d_date` might be optimized by a separate index on `d_date`? But note: the `d_date` is the same as the date, and `d_date_sk` is the surrogate key. We can create a composite index on `(d_date, d_date_sk)`? But that might not help because the join condition is on `d_date_sk`. Alternatively, we can index `d_date_sk` and then the range condition on `d_date` is a function of `d_date_sk`? Actually, the condition `d_date between ...` is equivalent to `d_date_sk` being in a certain range? Not exactly, because `d_date` is the date and `d_date_sk` is the surrogate key. We can index `d_date_sk` and then the condition on `d_date` is a separate condition. We might need two indexes on `date_dim`: one on `d_date_sk` for the join and one on `d_date` for the range condition.\n\nBut note: the query condition is `cs_sold_date_sk = d_date_sk` and `d_date between ...`. The `d_date` is the actual date, and `d_date_sk` is the surrogate key. The condition on `d_date` is a range, so we can index `date_dim` on `d_date` (the actual date) to help the range condition, and then the join condition on `d_date_sk` is a separate condition. However, the join condition is on `cs_sold_date_sk = d_date_sk`, so we can index `d_date_sk` for the join.\n\nAlternatively, we can index `date_dim` on `d_date_sk` and `d_date` (composite) to cover both? But note: the join condition is on `d_date_sk` and the range condition is on `d_date`. We can create a composite index on `(d_date_sk, d_date)`? But that might not help because the range condition is on `d_date` and the join is on `d_date_sk`. We can also create two indexes: one on `d_date_sk` and one on `d_date`.\n\nBut note: the `date_dim` table is small (73k rows), so an index might not be necessary for performance, but it's still good practice.\n\nNow, let's consider the `catalog_returns` table. The left outer join condition is on `cs_order_number` and `cs_item_sk`. We can index `catalog_returns` on `cr_order_number` and `cr_item_sk` to speed up the join.\n\nAlso, note that the query is grouping by `w_state` and `i_item_id`. We might consider creating an index on `catalog_sales` for the grouping columns? But the grouping is done after joins, so it might be better to index the join columns.\n\nNow, let's list the suggested indexes:\n\n1. On `item` table: index on `(i_current_price, i_item_sk)` to cover the range condition and the join.\n2. On `date_dim` table: index on `d_date_sk` for the join and index on `d_date` for the range condition.\n3. On `catalog_returns` table: index on `(cr_order_number, cr_item_sk)` to speed up the left outer join.\n\nBut note: the query is doing a left outer join, so we want to index the columns in `catalog_returns` that are used in the join condition.\n\nAlso, the `warehouse` table is small, so no index is needed.\n\nNow, let's consider the `catalog_sales` table. We are joining on `cs_item_sk`, `cs_warehouse_sk`, and `cs_sold_date_sk`. We can index `catalog_sales` on these columns.\n\nBut note: the query is filtering `catalog_sales` by `cs_sold_date_sk` (via `date_dim`). We can index `catalog_sales.cs_sold_date_sk` and `catalog_sales.cs_item_sk` and `catalog_sales.cs_warehouse_sk`.\n\nAlternatively, we can create a composite index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`? But note: the grouping is by `w_state` and `i_item_id`, so we might also want to index `catalog_sales` on `cs_item_sk` and `cs_sold_date_sk` to help the grouping.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse`, so we are joining `catalog_sales` with `warehouse` on `cs_warehouse_sk`. We can index `catalog_sales.cs_warehouse_sk` to help the join.\n\nNow, let's think about the order of the query: the query starts with `catalog_sales` and then joins other tables. The `catalog_sales` table is the largest, so we want to minimize the scan on `catalog_sales`.\n\nWe can create an index on `catalog_sales` for the columns used in the join and filter conditions:\n\n- `cs_item_sk`\n- `cs_warehouse_sk`\n- `cs_sold_date_sk`\n\nBut note: the condition on `cs_sold_date_sk` is a join condition with `date_dim` and then a range condition on `d_date`. We can index `cs_sold_date_sk` to help the join, and then the range condition on `d_date` is handled by the index on `date_dim.d_date`.\n\nAlternatively, we can create a composite index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`? But note: the query is grouping by `w_state` and `i_item_id`, so we might also want to index `cs_item_sk` and `cs_sold_date_sk` separately.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse`, so we are joining `catalog_sales` with `warehouse` on `cs_warehouse_sk`. We can index `catalog_sales.cs_warehouse_sk` to help the join.\n\nNow, let's list the indexes we are going to suggest:\n\n1. `item` table: index on `(i_current_price, i_item_sk)`\n2. `date_dim` table: index on `d_date_sk` and index on `d_date`\n3. `catalog_returns` table: index on `(cr_order_number, cr_item_sk)`\n4. `catalog_sales` table: index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`? But note: the query is grouping by `w_state` and `i_item_id`, so we might also want to index `cs_item_sk` and `cs_sold_date_sk` separately. However, the composite index might help the join and the filter.\n\nBut note: the query is filtering `catalog_sales` by `cs_sold_date_sk` (via the join with `date_dim`). We can index `cs_sold_date_sk` to help the join. Also, the join with `item` is on `cs_item_sk`, so we can index `cs_item_sk`. And the join with `warehouse` is on `cs_warehouse_sk`, so we can index `cs_warehouse_sk`.\n\nAlternatively, we can create three separate indexes on `catalog_sales` for `cs_sold_date_sk`, `cs_item_sk`, and `cs_warehouse_sk`. But a composite index might be more efficient.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse`, so we are joining `catalog_sales` with `warehouse` on `cs_warehouse_sk`. We can index `catalog_sales.cs_warehouse_sk` to help the join.\n\nNow, let's consider the `item` table: the condition is `i_current_price between 0.99 and 1.49` and `i_item_sk = cs_item_sk`. We can index `item` on `i_current_price` and `i_item_sk`.\n\nBut note: the condition on `i_current_price` is a range, so we want an index that supports range scans. A B-tree index on `i_current_price` would support that.\n\nNow, let's write the JSON structure.\n\nWe are to return a list of indexes, each with:\n- target: table name\n- property: column name\n- index_type: the type of index (e.g., btree, brin, etc.)\n- partial_predicate: null or a condition (but note: the condition must be on the target table's column)\n- estimated_benefit: what the index eliminates and on how many rows.\n\nWe are to order the indexes by the number of rows scanned (largest first).\n\nWe don't have the exact row counts, but we know:\n- `catalog_sales` has 28 million rows.\n- `catalog_returns` has 2.8 million rows.\n- `item` has 28k rows.\n- `date_dim` has 73k rows.\n\nThe most expensive Seq Scan is likely on `catalog_sales`. Then `catalog_returns`. Then `item`. Then `date_dim`.\n\nSo, we should suggest indexes for `catalog_sales`, `catalog_returns`, `item`, and `date_dim`.\n\nBut note: the query is doing a left outer join on `catalog_returns`. The `catalog_returns` table has 2.8 million rows, so indexing it might help.\n\nAlso, the `item` table has 28k rows, so indexing it might help.\n\nThe `date_dim` table has 73k rows, so indexing it might help.\n\nNow, let's assign the estimated_benefit:\n\nFor `catalog_sales`: the index would eliminate the Seq Scan on `catalog_sales` and reduce the cost by scanning fewer rows. We don't know the exact number, but we can say it eliminates the Seq Scan on `catalog_sales` (28 million rows).\n\nFor `catalog_returns`: the index would eliminate the Seq Scan on `catalog_returns` (2.8 million rows) for the join condition.\n\nFor `item`: the index would eliminate the Seq Scan on `item` (28k rows) for the condition on `i_current_price` and the join.\n\nFor `date_dim`: the index would eliminate the Seq Scan on `date_dim` (73k rows) for the join and the range condition.\n\nBut note: the query is filtering `catalog_sales` by `cs_sold_date_sk` (via `date_dim`). We can index `catalog_sales.cs_sold_date_sk` to help the join with `date_dim`.\n\nNow, let's write the JSON.\n\nWe are to use the following index types:\n\n- For `item`: a B-tree index on `(i_current_price, i_item_sk)`\n- For `date_dim`: two B-tree indexes: one on `d_date_sk` and one on `d_date`\n- For `catalog_returns`: a B-tree index on `(cr_order_number, cr_item_sk)`\n- For `catalog_sales`: a B-tree index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`? But note: the query is grouping by `w_state` and `i_item_id`, so we might also want to index `cs_item_sk` and `cs_sold_date_sk` separately. However, the composite index might help the join and the filter.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse`, so we are joining `catalog_sales` with `warehouse` on `cs_warehouse_sk`. We can index `catalog_sales.cs_warehouse_sk` to help the join.\n\nAlternatively, we can create a composite index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)` to cover the join conditions and the filter.\n\nBut note: the query is filtering `catalog_sales` by `cs_sold_date_sk` (via the join with `date_dim`). We can index `cs_sold_date_sk` to help the join.\n\nNow, let's write the JSON.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for the join with date_dim, reducing rows scanned from 28 million to ...\"\n    },\n    ... and so on\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"...\"\n}\n\nBut note: the problem says to order the indexes by the number of rows scanned (largest first). So we should list the index for `catalog_sales` first (28 million rows), then `catalog_returns` (2.8 million), then `item` (28k), then `date_dim` (73k).\n\nHowever, the `date_dim` table is small, so the benefit might be less, but it's still worth indexing.\n\nBut note: the query is doing a left outer join on `catalog_returns`. The `catalog_returns` table has 2.8 million rows, so we should index it.\n\nAlso, the `item` table has a condition on `i_current_price` (a range) and a join on `i_item_sk`. We should index it.\n\nNow, let's write the JSON.\n\nWe are to use the following:\n\n- For `catalog_sales`: index on `cs_sold_date_sk` (for the join with `date_dim`) and `cs_item_sk` (for the join with `item`) and `cs_warehouse_sk` (for the join with `warehouse`). We can create a composite index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse`, so we are joining `catalog_sales` with `warehouse` on `cs_warehouse_sk`. We can index `catalog_sales.cs_warehouse_sk` to help the join.\n\nAlternatively, we can create a composite index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)` to cover the join conditions and the filter.\n\nBut note: the query is filtering `catalog_sales` by `cs_sold_date_sk` (via the join with `date_dim`). We can index `cs_sold_date_sk` to help the join.\n\nNow, let's list the indexes:\n\n1. `catalog_sales`: index on `(cs_sold_date_sk, cs_item_sk, cs_warehouse_sk)`\n2. `catalog_returns`: index on `(cr_order_number, cr_item_sk)`\n3. `item`: index on `(i_current_price, i_item_sk)`\n4. `date_dim`: index on `d_date_sk` and index on `d_date`\n\nBut note: the `date_dim` table has two conditions: the join condition and the range condition. We can index `d_date_sk` for the join and `d_date` for the range condition.\n\nNow, let's write the JSON.\n\nWe are to use the index_type as \"btree\" for all, since the database is PostgreSQL and the extensions are hypopg and pg_trgm. B-tree is the default.\n\nWe are to set partial_predicate to null for all, because the conditions are on the target table or on joined tables? But note: the condition on `i_current_price` is on the `item` table, so the index on `item` is a partial index? No, because the condition is a range and we want to cover the entire table. We are not filtering by `i_current_price` in the index definition, but the index will help the range condition. We don't need a partial index.\n\nSimilarly, the condition on `d_date` is on `date_dim`, so the index on `date_dim.d_date` is a regular index.\n\nNow, the JSON:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for the join with date_dim, reducing rows scanned from 28 million to the number of rows matching the join condition.\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_item_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for the join with item, reducing rows scanned from 28 million to the number of rows matching the join condition.\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_warehouse_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for the join with warehouse, reducing rows scanned from 28 million to the number of rows matching the join condition.\"\n    },\n    {\n      \"target\": \"catalog_returns\",\n      \"property\": \"cr_order_number\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_returns for the join condition, reducing rows scanned from 2.8 million to the number o",
+  "recommendations": [
+    {
+      "table": "catalog_sales",
+      "column": "cs_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 93.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 88.3,
+      "baseline_exec_ms": 1637.647,
+      "optimized_exec_ms": 190.864,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 19.2,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961226.3,
+          "cost_with_index": 2360608.1,
+          "benefit_pct": 20.3
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 843700.98,
+          "cost_with_index": 826938.0,
+          "benefit_pct": 2.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938108.15,
+          "cost_with_index": 337509.97,
+          "benefit_pct": 64.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712271.16,
+          "cost_with_index": 3346100.53,
+          "benefit_pct": 9.9
+        }
+      ],
+      "workload_queries_improved": 4,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_warehouse_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.1,
+      "baseline_exec_ms": 1622.143,
+      "optimized_exec_ms": 1639.683,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961265.8,
+          "cost_with_index": 2961265.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 843713.9,
+          "cost_with_index": 843713.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938136.34,
+          "cost_with_index": 938136.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712306.17,
+          "cost_with_index": 3712306.17,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_returns",
+      "column": "cr_order_number",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.0,
+      "baseline_exec_ms": 1620.978,
+      "optimized_exec_ms": 1604.046,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4087318.67,
+          "cost_with_index": 4085776.3,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712306.17,
+          "cost_with_index": 3712301.92,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_returns",
+      "column": "cr_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_current_price",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.8,
+      "baseline_exec_ms": 1612.81,
+      "optimized_exec_ms": 1625.135,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371409.89,
+          "cost_with_index": 1371409.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117867.56,
+          "cost_with_index": 117867.56,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128132.64,
+          "cost_with_index": 128132.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938136.34,
+          "cost_with_index": 938136.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81499.15,
+          "cost_with_index": 81499.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 220636.46,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.1,
+      "baseline_exec_ms": 1621.867,
+      "optimized_exec_ms": 1604.743,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1438350.88,
+          "cost_with_index": 1438350.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961265.8,
+          "cost_with_index": 2961265.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1943723.65,
+          "cost_with_index": 1943723.65,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371409.89,
+          "cost_with_index": 1371409.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 843713.9,
+          "cost_with_index": 843713.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117867.56,
+          "cost_with_index": 117867.56,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128132.64,
+          "cost_with_index": 128132.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1217053.91,
+          "cost_with_index": 1217053.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4085776.3,
+          "cost_with_index": 4085776.3,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938136.34,
+          "cost_with_index": 938136.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81499.15,
+          "cost_with_index": 81499.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712301.92,
+          "cost_with_index": 3706122.37,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134872.25,
+          "cost_with_index": 134872.25,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 220636.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91685.89,
+          "cost_with_index": 91685.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

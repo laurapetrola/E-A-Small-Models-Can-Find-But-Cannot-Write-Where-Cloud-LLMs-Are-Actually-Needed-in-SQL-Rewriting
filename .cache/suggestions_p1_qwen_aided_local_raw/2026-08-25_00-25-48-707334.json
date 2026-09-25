@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-08-25T00:25:48.707311",
+  "query_hash": "7aed0fb6af9b",
+  "suggestions": [
+    "split an OR predicate into UNION ALL branches",
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a range condition"
+  ],
+  "improvement_pct": 29.71,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 168583.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": "select * from (\n    select \n        i_manager_id,\n        sum(ss_sales_price) as sum_sales,\n        avg(sum(ss_sales_price)) over (partition by i_manager_id) as avg_monthly_sales\n    from \n        (select * from item where i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9') union all\n         select * from item where i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1')) as filtered_items\n    inner join store_sales on filtered_items.i_item_sk = store_sales.ss_item_sk\n    inner join date_dim on store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    inner join store on store_sales.ss_store_sk = store.s_store_sk\n    where date_dim.d_month_seq between 1222 and 1233\n    group by i_manager_id, date_dim.d_moy\n) tmp1\nwhere case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1\norder by i_manager_id, avg_monthly_sales, sum_sales\nlimit 100",
+  "reached_sql": "select * from (\n    select \n        i_manager_id,\n        sum(ss_sales_price) as sum_sales,\n        avg(sum(ss_sales_price)) over (partition by i_manager_id) as avg_monthly_sales\n    from \n        (select * from item where i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9') union all\n         select * from item where i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1')) as filtered_items\n    inner join store_sales on filtered_items.i_item_sk = store_sales.ss_item_sk\n    inner join date_dim on store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    inner join store on store_sales.ss_store_sk = store.s_store_sk\n    where date_dim.d_month_seq between 1222 and 1233\n    group by i_manager_id, date_dim.d_moy\n) tmp1\nwhere case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1\norder by i_manager_id, avg_monthly_sales, sum_sales\nlimit 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to rewrite the given SQL to make it faster while preserving the same result. The original query has a few issues that I can address.\n\nFirst, looking at the original query structure, it uses implicit joins with commas, which in PostgreSQL can be less efficient than explicit INNER JOINs. So, I'll start by converting those to explicit JOINs. That should help the optimizer understand the join relationships better.\n\nNext, the WHERE clause has a d_month_seq in a list of 12 consecutive numbers starting from 1222. Instead of using IN with a list of 12 values, I can replace that with a BETWEEN condition. Since 1222 + 11 is 1233, using BETWEEN 1222 AND 1233 simplifies the condition and might be more efficient, especially if the date_dim table has an index on d_month_seq.\n\nAnother thing I notice is that the original query groups by i_manager_id and d_moy (which is d_month_seq's month part). The subquery calculates sum_sales and avg_monthly_sales. The outer query filters based on the ratio of sum_sales to avg_monthly_sales. \n\nI should check if the grouping is necessary. The original groups by i_manager_id and d_moy, but the outer query's WHERE clause uses avg_monthly_sales, which is an aggregate over i_manager_id. Maybe the grouping by d_moy is redundant here, but I need to preserve the original logic. However, perhaps the grouping can be optimized by restructuring the joins or using CTEs.\n\nWait, the original query has a subquery that groups by i_manager_id and d_moy. The outer query then applies the condition on avg_monthly_sales. Maybe the grouping by d_moy is causing unnecessary partitions. But since the original query does that, I need to keep it unless there's a way to restructure it without changing the result.\n\nAnother point is the use of SUM and AVG in the same query. The SUM is per i_manager_id and d_moy, and the AVG is a window function over i_manager_id. The window function might be expensive if there are many partitions. But since the original query uses that, I can't change that part.\n\nLooking at the tables involved: item, store_sales, date_dim, store. The joins are on item.i_item_sk = store_sales.ss_item_sk, store_sales.ss_sold_date_sk = date_dim.d_date_sk, and store_sales.ss_store_sk = store.s_store_sk. \n\nThe original query's WHERE clause has a complex condition with ORs. The OR splits the item categories into two groups. To optimize, maybe I can split this into two separate CTEs or subqueries, each handling one part of the OR condition. This way, each subquery can be filtered early, reducing the data processed in subsequent joins.\n\nWait, the user mentioned that the previous attempt used INNER JOINs and BETWEEN, but the improvement was only 1.4%, which is below the target. So, maybe the current approach isn't sufficient. Let me think of other optimizations.\n\nThe original query has a LIMIT 100 at the end. Since the final result is limited, perhaps the intermediate steps can be optimized to filter data earlier. For example, applying the category filters as early as possible in the joins.\n\nAnother idea: the date_dim.d_month_seq is in a range. If the date_dim table has an index on d_month_seq, using BETWEEN would be efficient. Also, the original uses IN with 12 values, which might not be as efficient as BETWEEN.\n\nAlso, the original query has a CASE statement in the WHERE clause. The condition is checking if the ratio is greater than 0.1. Since this is a filter, maybe pushing this condition into the subquery's WHERE clause or using a CTE to precompute the necessary values could help.\n\nWait, the user's previous attempt used INNER JOINs and BETWEEN, but the improvement was minimal. Maybe the issue is with the grouping and the window function. Let me consider restructuring the query to use CTEs for the filtered item categories, which could reduce the data processed in the joins.\n\nSo, here's a plan:\n\n1. Split the item filters into two CTEs (cte1 and cte2) for each OR condition. This way, each CTE can be filtered early, reducing the data joined with store_sales and date_dim.\n\n2. Join each CTE with store_sales and date_dim, applying the date range filter using BETWEEN.\n\n3. Combine the results of the two CTEs using a UNION ALL, then proceed with the aggregation and window function.\n\n4. Ensure that all original tables are included and that the WHERE conditions are preserved.\n\nBy splitting the OR conditions into separate CTEs, each with their own filters, the joins can be optimized, and the data processed in each join is reduced. This should lead to better performance, especially if the item filters are selective.\n\nAlso, using explicit JOINs and restructuring the WHERE clause with BETWEEN instead of IN might help the query planner choose better execution plans, such as using indexes on the relevant columns.\n\nAnother thing to check is the use of aliases for tables in the CTEs to make the joins clearer and potentially more efficient.\n\nFinally, ensuring that the final ORDER BY and LIMIT are applied correctly after the aggregation.\n\n</think>\n\nselect * from (\n    select \n        i_manager_id,\n        sum(ss_sales_price) as sum_sales,\n        avg(sum(ss_sales_price)) over (partition by i_manager_id) as avg_monthly_sales\n    from \n        (select * from item where i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9') union all\n         select * from item where i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1')) as filtered_items\n    inner join store_sales on filtered_items.i_item_sk = store_sales.ss_item_sk\n    inner join date_dim on store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    inner join store on store_sales.ss_store_sk = store.s_store_sk\n    where date_dim.d_month_seq between 1222 and 1233\n    group by i_manager_id, date_dim.d_moy\n) tmp1\nwhere case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1\norder by i_manager_id, avg_monthly_sales, sum_sales\nlimit 100",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 4681.978,
+      "optimized_ms": 3290.796,
+      "delta_ms": 1391.182,
+      "improvement_pct": 29.71,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 221692.88,
+      "optimized": 171884.14,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 163392.7,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 5191.1,
+    "total_inference_ms": 168583.8,
+    "writer_inference_ms": 0.0,
+    "writer_tokens_in": 0,
+    "writer_tokens_out": 0,
+    "writer_calls": 0
+  },
+  "errors": [],
+  "strategy": null,
+  "writer": null,
+  "strategy_attempts": 0,
+  "adherence": null,
+  "raw_sql": "select * from (select i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales from item ,store_sales ,date_dim ,store where ss_item_sk = i_item_sk and ss_sold_date_sk = d_date_sk and ss_store_sk = s_store_sk and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) or( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) group by i_manager_id, d_moy) tmp1 where case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 order by i_manager_id ,avg_monthly_sales ,sum_sales limit 100"
+}

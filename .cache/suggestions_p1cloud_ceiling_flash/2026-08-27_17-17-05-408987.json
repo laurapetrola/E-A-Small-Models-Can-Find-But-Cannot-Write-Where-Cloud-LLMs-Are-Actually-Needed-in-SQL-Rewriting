@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-08-27T17:17:05.408962",
+  "query_hash": "eb7eda172416",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate results"
+  ],
+  "improvement_pct": -133.3,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 676080.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_sales AS (\n    SELECT ss_item_sk, ss_quantity, ss_list_price, ss_coupon_amt, ss_sales_price\n    FROM store_sales\n    WHERE ss_cdemo_sk IN (\n            SELECT cd_demo_sk\n            FROM customer_demographics\n            WHERE cd_gender = 'M'\n              AND cd_marital_status = 'W'\n              AND cd_education_status = 'Secondary'\n        )\n      AND ss_sold_date_sk IN (\n            SELECT d_date_sk\n            FROM date_dim\n            WHERE d_year = 1999\n        )\n      AND ss_store_sk IN (\n            SELECT s_store_sk\n            FROM store\n            WHERE s_state = 'TN'\n        )\n),\nitem_agg AS (\n    SELECT i.i_item_id,\n           COUNT(f.ss_quantity) AS cnt_ss_quantity,\n           SUM(f.ss_quantity) AS sum_ss_quantity,\n           COUNT(f.ss_list_price) AS cnt_ss_list_price,\n           SUM(f.ss_list_price) AS sum_ss_list_price,\n           COUNT(f.ss_coupon_amt) AS cnt_ss_coupon_amt,\n           SUM(f.ss_coupon_amt) AS sum_ss_coupon_amt,\n           COUNT(f.ss_sales_price) AS cnt_ss_sales_price,\n           SUM(f.ss_sales_price) AS sum_ss_sales_price\n    FROM filtered_sales f\n    JOIN item i ON f.ss_item_sk = i.i_item_sk\n    GROUP BY i.i_item_id\n)\nSELECT i_item_id, 'TN'::text AS s_state, 0 AS g_state,\n       sum_ss_quantity::numeric / cnt_ss_quantity AS agg1,\n       sum_ss_list_price::numeric / cnt_ss_list_price AS agg2,\n       sum_ss_coupon_amt::numeric / cnt_ss_coupon_amt AS agg3,\n       sum_ss_sales_price::numeric / cnt_ss_sales_price AS agg4\nFROM item_agg\nUNION ALL\nSELECT i_item_id, NULL::text, 1,\n       sum_ss_quantity::numeric / cnt_ss_quantity,\n       sum_ss_list_price::numeric / cnt_ss_list_price,\n       sum_ss_coupon_amt::numeric / cnt_ss_coupon_amt,\n       sum_ss_sales_price::numeric / cnt_ss_sales_price\nFROM item_agg\nUNION ALL\nSELECT NULL, NULL::text, 1,\n       SUM(sum_ss_quantity)::numeric / SUM(cnt_ss_quantity),\n       SUM(sum_ss_list_price)::numeric / SUM(cnt_ss_list_price),\n       SUM(sum_ss_coupon_amt)::numeric / SUM(cnt_ss_coupon_amt),\n       SUM(sum_ss_sales_price)::numeric / SUM(cnt_ss_sales_price)\nFROM item_agg\nORDER BY i_item_id, s_state\nLIMIT 100",
+  "reasoning_trace": "1. TOP-K ROLLUP PUSHDOWN \u2014 TARGET: the `GROUP BY ROLLUP(i_item_id, s_state)` + `ORDER BY i_item_id, s_state LIMIT 100` \u2014 TRANSFORMATION: Because `s_state` is constrained to the single value `'TN'`, each item produces exactly two output rows (`'TN'`, then the `NULL` item-subtotal) before the grand total; compute SUM/COUNT/AVG only for the first 50 distinct `i_item_id`s that have filtered sales, expand those aggregates into the two `s_state` rows, and emit a weighted grand-total row from the same per-item aggregates \u2014 the final `LIMIT 100` discards that grand row when 50 or more items exist, and it is correct when fewer.\n\n2. ITEM-LEADING COVERING INDEX \u2014 TARGET: the `store_sales` row access for the item-level lookups in the top-K aggregation \u2014 TRANSFORMATION: Add a covering index on `store_sales(ss_item_sk, ss_sold_date_sk, ss_cdemo_sk, ss_store_sk) INCLUDE (ss_quantity, ss_list_price, ss_coupon_amt, ss_sales_price)` so each of the \u226450 per-item aggregates and the existence checks are index-only scans over only that item\u2019s matching rows, with date/demographic/store predicates applied inside the index.\n\n3. STATE-CONSTANT JOIN ELIMINATION \u2014 TARGET: the `store` join and the `s_state IN ('TN','TN','TN','TN','TN','TN')` predicate \u2014 TRANSFORMATION: Collapse the repeated literals to one `s_state = 'TN'` check, replace the physical `store` join with a one-time lookup of the matching `s_store_sk` set, and expose `s_state` as the literal `'TN'` (or `NULL` for the subtotal/grand rows), computing `g_state` as `0` for `'TN'` and `1` for the two NULL-state row kinds \u2014 removing `store` from every per-item aggregate.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 3831.719,
+      "optimized_ms": 8939.367,
+      "delta_ms": -5107.648,
+      "improvement_pct": -133.3,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 81811.57,
+      "optimized": 2799819.37,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 642025.6,
+    "index_advisor_inference_ms": 30452.8,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 3602.3,
+    "total_inference_ms": 676080.7,
+    "writer_inference_ms": 3568060.5,
+    "writer_tokens_in": 9728,
+    "writer_tokens_out": 345068,
+    "writer_calls": 6
+  },
+  "errors": [
+    "optimizer produced no output (empty or unparseable response)"
+  ],
+  "strategy": "1. TOP-K ROLLUP PUSHDOWN \u2014 TARGET: the `GROUP BY ROLLUP(i_item_id, s_state)` + `ORDER BY i_item_id, s_state LIMIT 100` \u2014 TRANSFORMATION: Because `s_state` is constrained to the single value `'TN'`, each item produces exactly two output rows (`'TN'`, then the `NULL` item-subtotal) before the grand total; compute SUM/COUNT/AVG only for the first 50 distinct `i_item_id`s that have filtered sales, expand those aggregates into the two `s_state` rows, and emit a weighted grand-total row from the same per-item aggregates \u2014 the final `LIMIT 100` discards that grand row when 50 or more items exist, and it is correct when fewer.\n\n2. ITEM-LEADING COVERING INDEX \u2014 TARGET: the `store_sales` row access for the item-level lookups in the top-K aggregation \u2014 TRANSFORMATION: Add a covering index on `store_sales(ss_item_sk, ss_sold_date_sk, ss_cdemo_sk, ss_store_sk) INCLUDE (ss_quantity, ss_list_price, ss_coupon_amt, ss_sales_price)` so each of the \u226450 per-item aggregates and the existence checks are index-only scans over only that item\u2019s matching rows, with date/demographic/store predicates applied inside the index.\n\n3. STATE-CONSTANT JOIN ELIMINATION \u2014 TARGET: the `store` join and the `s_state IN ('TN','TN','TN','TN','TN','TN')` predicate \u2014 TRANSFORMATION: Collapse the repeated literals to one `s_state = 'TN'` check, replace the physical `store` join with a one-time lookup of the matching `s_store_sk` set, and expose `s_state` as the literal `'TN'` (or `NULL` for the subtotal/grand rows), computing `g_state` as `0` for `'TN'` and `1` for the two NULL-state row kinds \u2014 removing `store` from every per-item aggregate.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was TWO-STAGE ITEM AGGREGATION, and the rewrite implements this by pre-aggregating store_sales before joining with item, while also applying the DATE-RANGE PUS"
+  },
+  "raw_sql": "select i_item_id, s_state, grouping(s_state) g_state, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 from store_sales, customer_demographics, date_dim, store, item where ss_sold_date_sk = d_date_sk and ss_item_sk = i_item_sk and ss_store_sk = s_store_sk and ss_cdemo_sk = cd_demo_sk and cd_gender = 'M' and cd_marital_status = 'W' and cd_education_status = 'Secondary' and d_year = 1999 and s_state in ('TN','TN', 'TN', 'TN', 'TN', 'TN') group by rollup (i_item_id, s_state) order by i_item_id ,s_state limit 100"
+}

@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-09-11T08:07:52.329651",
+  "query_hash": "9756dc2bf6d5",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 58892.1,
+  "reasoning_trace": "<think>\nWe are given a query that is a single-row query from the `reason` table, but it uses correlated subqueries on the `store_sales` table.\n\nThe query structure is:\n\nselect case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 1071 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 1 and 20) end bucket1 , ... from reason where r_reason_sk = 1\n\nThe `reason` table has only one row (r_reason_sk = 1) because the condition `r_reason_sk = 1` is a constant. So the main query is effectively:\n\nselect ... from reason where r_reason_sk = 1\n\nBut the correlated subqueries are the expensive parts.\n\nEach subquery is of the form:\n\n  (select count(*) from store_sales where ss_quantity between 1 and 20)\n\nand\n\n  (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20)\n\nand similarly for other ranges.\n\nThese subqueries are being executed multiple times (once for each bucket) and each one is a full table scan on `store_sales` because there is no index.\n\nThe `store_sales` table has 57,598,932 rows.\n\nThe condition in the subqueries is:\n\n  ss_quantity between 1 and 20\n\nThis condition is a range condition on `ss_quantity`. Since there is no index on `ss_quantity`, the planner must do a sequential scan for each subquery.\n\nThere are 5 buckets, so 5 subqueries for count and 5 for avg (if the condition in the case is true, then one avg, else the other). But note: the condition in the case is comparing the count to a threshold. However, the condition for the avg is the same as the condition for the count (i.e., the same range). So each bucket requires two subqueries (one for count and one for avg) but note that the condition for the avg is the same as the condition for the count. However, the planner might optimize the two subqueries for the same condition to one, but it's not guaranteed.\n\nBut regardless, the main issue is that the `store_sales` table is being scanned multiple times (at least 5 times, but likely more because of the two subqueries per bucket) and each time the entire table is scanned.\n\nTherefore, the primary candidate for an index is the `ss_quantity` column in the `store_sales` table.\n\nWe are to suggest an index on `store_sales` for the column `ss_quantity`.\n\nSince the condition is a range condition (between 1 and 20), a B-tree index would be appropriate.\n\nWe are not told if there are any existing indexes on `store_sales`. The problem states that the `store_sales` table has no indexes.\n\nWe are to return an index suggestion for `store_sales` on `ss_quantity`.\n\nWe note that the condition is a range condition, so a B-tree index is suitable.\n\nWe are to use the following JSON structure:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"<table_name>\",\n      \"property\": \"<column_name>\",\n      \"index_type\": \"<index type>\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"<why these indexes were chosen, or why no index is possible>\"\n}\n\nWe are to set `partial_predicate` to null because the condition is on the same table.\n\nThe estimated_benefit: We are to say what the index would eliminate and on how many rows. Since the condition is a range condition, the index would allow the planner to use an index range scan. The number of rows that would be scanned by the condition `ss_quantity between 1 and 20` is not known exactly, but we can say that it would eliminate the sequential scan of the entire table (57 million rows) and instead scan only the rows that fall in the range [1,20] for `ss_quantity`.\n\nBut note: the condition is a range condition, so the index would help. However, the exact number of rows is not known without statistics, but we can say that the index would reduce the number of rows scanned from 57 million to the number of rows with `ss_quantity` between 1 and 20.\n\nWe are to return only the JSON.\n\nLet's write the JSON:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_quantity\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan of 57,598,932 rows by using an index range scan on ss_quantity between 1 and 20, reducing the number of rows scanned to the number of rows with ss_quantity in [1,20].\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query contains multiple correlated subqueries on the store_sales table that filter by a range condition on ss_quantity. Since there is no index on ss_quantity, the planner must perform a sequential scan for each subquery, which is very expensive. An index on ss_quantity would allow the planner to use an index range scan, significantly reducing the number of rows scanned.\"\n}\n\nHowever, note that the query is being executed for one row in the `reason` table, but the subqueries are not correlated with the outer query (they are all independent and use the same condition). So the same condition is used multiple times. But the index would help for each of these conditions.\n\nBut wait: the condition in the subqueries is the same for each bucket? Actually, no. The condition for the count and avg in each bucket is the same as the bucket's range. So we have:\n\n  bucket1: condition [1,20]\n  bucket2: condition [21,40]\n  bucket3: condition [41,60]\n  bucket4: condition [61,80]\n  bucket5: condition [81,100]\n\nSo we have 5 different ranges. The index on `ss_quantity` would help for each of these ranges.\n\nBut note: the condition in the subqueries is not the same for every bucket. So we would need an index that can handle multiple ranges. However, a B-tree index on `ss_quantity` would allow the planner to quickly find the rows in any range.\n\nBut the problem is that the query is written with multiple independent subqueries, each with a different range. The index would help for each one.\n\nHowever, the problem states that the query cannot be improved by SQL rewriting. So we are only allowed to suggest indexes.\n\nWe are to suggest one index for the `store_sales` table on `ss_quantity` because that is the common column in all the conditions.\n\nBut note: the condition in the subqueries is a range condition, and the index type is B-tree, which is efficient for range conditions.\n\nWe are not told about the distribution of `ss_quantity`. But even if the values are sparse, a B-tree index would still help.\n\nWe are to return one index.\n\nBut note: the query has two types of aggregations (count and avg) and the condition is the same for both. The index would help for both.\n\nWe are to return the index for `store_sales` on `ss_quantity`.\n\nWe are to set `partial_predicate` to null because the condition is entirely on the `store_sales` table.\n\nWe are to set `no_index_possible` to false because we are suggesting an index.\n\nWe are to write an explanation.\n\nLet's write the JSON accordingly.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_quantity\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan of 57,598,932 rows by using an index range scan on ss_quantity between 1 and 20, reducing the number of rows scanned to the number of rows with ss_quantity in [1,20].\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query contains multiple correlated subqueries on the store_sales table that filter by a range condition on ss_quantity. Since there is no index on ss_quantity, the planner must perform a sequential scan for each subquery, which is very expensive. An index on ss_quantity would allow the planner to use an index range scan, significantly reducing the number of rows scanned.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_quantity",
+      "index_type": "btree",
+      "estimated_benefit_pct": 28.5,
+      "validation": "executed",
+      "measured_read_benefit_pct": 32.4,
+      "baseline_exec_ms": 17154.445,
+      "optimized_exec_ms": 11599.926,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2957282.5,
+          "cost_with_index": 2957294.95,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1949303.83,
+          "cost_with_index": 1949317.6,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371550.11,
+          "cost_with_index": 1371560.57,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 811042.7,
+          "cost_with_index": 811064.29,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117944.74,
+          "cost_with_index": 117944.99,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018442.97,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 127436.71,
+          "cost_with_index": 127436.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179473.59,
+          "cost_with_index": 179473.59,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81242.7,
+          "cost_with_index": 81242.83,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712177.86,
+          "cost_with_index": 3712191.82,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135058.01,
+          "cost_with_index": 135058.01,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 219583.57,
+          "cost_with_index": 219583.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345198.17,
+          "cost_with_index": 1345208.17,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342725.05,
+          "cost_with_index": 1342735.09,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

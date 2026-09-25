@@ -1,0 +1,303 @@
+{
+  "timestamp": "2026-09-13T04:45:10.055395",
+  "query_hash": "7b1907e24d00",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 161383.2,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user is asking for index suggestions to reduce the execution cost of a complex SQL query that aggregates sales data across different channels (store, catalog, web). The query involves multiple subqueries (ssr, csr, wsr) that combine data from various tables like store_sales, store_returns, catalog_sales, etc., and then aggregates by channel and ID.\n\nFirst, I need to understand the structure of the query. The main part is the three CTEs (ssr, csr, wsr) which each process data from different channels. Each CTE uses a UNION ALL of two tables (e.g., store_sales and store_returns for ssr), then joins with date_dim and another table (store, catalog_page, web_site). The final step aggregates the results.\n\nThe user mentioned that the tables involved (like store_returns, store_sales, etc.) have no indexes. The task is to identify which indexes would most help, given that SQL rewriting isn't possible.\n\nLooking at the execution plan, the main issue is likely Seq Scans on large tables. The query is doing a lot of joins and aggregations, so indexes on the join conditions and filter columns would help.\n\nLet's break down each CTE:\n\n1. **ssr (Store Channel):**\n   - Combines store_sales and store_returns.\n   - Joins with date_dim on date_sk = d_date_sk.\n   - Filters dates between '2000-08-19' and '2000-09-02'.\n   - Joins with store on store_sk = s_store_sk.\n   - The date_dim join is on date_sk and d_date_sk. Since date_dim has no indexes, a B-tree index on d_date_sk would help. Also, the date filter is on d_date, so an index on d_date might speed up the date_dim scan.\n\n2. **csr (Catalog Channel):**\n   - Combines catalog_sales and catalog_returns.\n   - Joins with date_dim on date_sk = d_date_sk.\n   - Filters dates similarly.\n   - Joins with catalog_page on page_sk = cp_catalog_page_sk.\n   - Again, date_dim's d_date_sk and d_date would benefit from indexes. Also, the catalog_page join on page_sk would need an index on cp_catalog_page_sk.\n\n3. **wsr (Web Channel):**\n   - Combines web_sales and web_returns.\n   - Joins with date_dim on date_sk = d_date_sk.\n   - Filters dates.\n   - Joins with web_site on wsr_web_site_sk = web_site_sk.\n   - The web_site table is small (28 rows), so maybe not a big issue, but the date_dim and web_returns/web_sales joins would benefit from indexes.\n\nLooking at the tables involved:\n\n- **store_sales** has 57 million rows. The query joins it with date_dim and store. The date_sk is used in the join with date_dim. An index on date_sk would help filter the date range quickly. Also, the store_sk join with store (which has no indexes) might be a bottleneck if store_sk isn't indexed. Wait, store has no indexes, but store_sk is the PK. Wait, the schema says store has no indexes, but the primary key is s_store_sk. So, the store table's primary key is already indexed. However, the join condition is store_sk = s_store_sk, which is the PK, so that's already covered. But the date_dim join is on date_sk = d_date_sk. Since date_dim has no indexes, an index on d_date_sk would help.\n\n- **store_returns** has 5.7 million rows. The join with date_dim on sr_returned_date_sk = d_date_sk. An index on sr_returned_date_sk would help. Also, the date filter on d_date would benefit from an index on d_date.\n\n- **catalog_sales** has 28 million rows. The date_sk join with date_dim would need an index on date_sk. The join with catalog_page on page_sk would need an index on cp_catalog_page_sk.\n\n- **catalog_returns** has 2.8 million rows. Similarly, date_sk and page_sk joins would need indexes.\n\n- **web_sales** has 14 million rows. The date_sk join with date_dim would need an index on date_sk. The join with web_site on web_site_sk would need an index on web_site_sk (which is the PK, so already indexed).\n\n- **web_returns** has 1.4 million rows. The date_sk join with date_dim would need an index on date_sk. Also, the join with web_sales (if any) would need indexes on wr_item_sk and wr_order_number, but the query has a left outer join on those columns. However, the query's wsr CTE has a left outer join between web_returns and web_sales on wr_item_sk = ws_item_sk and wr_order_number = ws_order_number. So, indexes on those columns in web_returns and web_sales would help, but since the user hasn't mentioned indexes on those tables, maybe that's a consideration. However, the user's schema says web_sales has no indexes, so adding an index on (wr_item_sk, wr_order_number) in web_returns might help.\n\nBut the user's instruction says to focus on the tables mentioned in the schema (store_returns, store, etc.) and their existing indexes. The tables listed have no indexes, so the main issue is the date_dim table's lack of indexes on d_date_sk and d_date.\n\nWait, the user's schema says date_dim has no indexes. So, for all the joins with date_dim, the date_sk and d_date_sk columns are being used. An index on date_dim.d_date_sk would speed up the join. Also, the date filter is on d_date, so an index on d_date would help.\n\nBut the query has three separate CTEs, each joining with date_dim. So, adding indexes on date_dim's d_date_sk and d_date would help each of these joins.\n\nAdditionally, for the store_returns table, the join with date_dim is on sr_returned_date_sk = d_date_sk. So, an index on sr_returned_date_sk would help. Similarly, for catalog_returns, cr_returned_date_sk would need an index. Same for web_returns' wr_returned_date_sk.\n\nAlso, the store_sales and catalog_sales tables are joined with date_dim on date_sk. So, indexes on date_sk for those tables would help.\n\nMoreover, the store_sales is joined with store on store_sk = s_store_sk. Since store has no indexes, but store_sk is the PK, that's already indexed. However, if the store table is small (only 44 rows), the join is fast regardless.\n\nBut the main issue is the date_dim table's lack of indexes. So, adding indexes on date_dim.d_date_sk and d_date would help all the date joins.\n\nAnother point: the web_returns has a left outer join with web_sales on wr_item_sk and wr_order_number. If those columns are indexed in web_returns, it would speed up the join. But since the user hasn't mentioned indexes on web_returns, maybe adding a composite index on (wr_item_sk, wr_order_number) would help.\n\nBut the user's schema says web_returns has no indexes. So, the main candidates are:\n\n1. Index on date_dim.d_date_sk (to speed up joins with date_sk from other tables).\n2. Index on date_dim.d_date (to speed up the date filter).\n3. Indexes on the date_sk columns of the large tables (store_sales, catalog_sales, store_returns, catalog_returns, web_returns, web_sales) to speed up their joins with date_dim.\n4. Indexes on the foreign keys used in joins, like store_sk in store_sales, page_sk in catalog_sales, etc.\n\nBut the user's instruction says to focus on the tables listed in the schema (store_returns, store, etc.) and their existing indexes. The tables listed have no indexes, so the main issue is the date_dim table's lack of indexes. However, the user's schema says date_dim has no indexes. So, adding indexes on date_dim's d_date_sk and d_date would help.\n\nBut the query's main problem is the date joins. For example, in the ssr CTE, the date_dim is joined on date_sk = d_date_sk, and filtered by d_date between two dates. So, an index on date_dim.d_date_sk would help the join, and an index on d_date would help the filter.\n\nSimilarly, for the other CTEs, the same applies. So, the first index to consider is on date_dim.d_date_sk and d_date.\n\nBut the user's schema says date_dim has no indexes. So, adding indexes on date_dim's d_date_sk and d_date would be beneficial.\n\nAnother point: the store_returns table is joined with date_dim on sr_returned_date_sk = d_date_sk. So, an index on sr_returned_date_sk would help. Similarly for other tables.\n\nBut the user's schema says store_returns has no indexes. So, adding an index on sr_returned_date_sk would help.\n\nSimilarly, for catalog_returns, cr_returned_date_sk, and web_returns, wr_returned_date_sk.\n\nAlso, the store_sales and catalog_sales tables are joined with date_dim on date_sk. So, indexes on date_sk for those tables would help.\n\nBut the user's schema says store_sales has no indexes. So, adding an index on date_sk for store_sales would help.\n\nSame for catalog_sales.\n\nAdditionally, the web_sales table is joined with date_dim on date_sk, so an index on date_sk for web_sales would help.\n\nBut the user's schema says web_sales has no indexes. So, adding an index on date_sk for web_sales would help.\n\nMoreover, the store_sales is joined with store on store_sk = s_store_sk. Since store has no indexes, but store_sk is the PK, that's already indexed. However, if the store table is small, the join is fast.\n\nBut the main issue is the date joins. So, the primary indexes to add would be on date_dim's d_date_sk and d_date, and on the date_sk columns of the large tables (store_sales, catalog_sales, etc.).\n\nBut the user's instruction says to focus on the tables listed in the schema (store_returns, store, etc.) and their existing indexes. The tables listed have no indexes, so the main candidates are:\n\n- date_dim: add indexes on d_date_sk and d_date.\n- store_sales: index on date_sk.\n- catalog_sales: index on date_sk.\n- store_returns: index on sr_returned_date_sk.\n- catalog_returns: index on cr_returned_date_sk.\n- web_returns: index on wr_returned_date_sk.\n- web_sales: index on date_sk.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step.\n\nHowever, the user's query has three CTEs, each involving a join with date_dim. So, the date_dim's indexes would benefit all three.\n\nBut the user's instruction says to prioritize the largest tables first. The store_sales has 57 million rows, which is the largest. So, adding an index on date_sk for store_sales would help. Similarly for catalog_sales (28 million rows), store_returns (5.7 million), etc.\n\nBut the user's schema says all these tables have no indexes. So, the main indexes to add would be:\n\n1. date_dim: indexes on d_date_sk and d_date.\n2. store_sales: index on date_sk.\n3. catalog_sales: index on date_sk.\n4. store_returns: index on sr_returned_date_sk.\n5. catalog_returns: index on cr_return, etc.\n6. web_returns: index on wr_returned_date_sk.\n7. web_sales: index on date_sk.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step. Then, the other tables' date_sk or relevant columns.\n\nBut the user's query has a date filter on d_date between two dates. So, an index on date_dim.d_date would allow the query to quickly find the date range, reducing the number of rows scanned.\n\nAdditionally, the joins between the large tables and date_dim are on date_sk = d_date_sk. An index on date_dim.d_date_sk would speed up these joins.\n\nSo, the first index to suggest is on date_dim.d_date_sk and d_date.\n\nBut the user's schema says date_dim has no indexes. So, adding indexes on date_dim's d_date_sk and d_date would be the first step.\n\nThen, for the large tables, adding indexes on their date_sk columns would help.\n\nBut the user's instruction says to prioritize the largest tables first. The store_sales has 57 million rows, which is the largest. So, adding an index on date_sk for store_sales would help.\n\nSimilarly, catalog_sales (28 million rows) would benefit from an index on date_sk.\n\nBut the user's schema says these tables have no indexes. So, the indexes would be:\n\n- date_dim: indexes on d_date_sk and d_date.\n- store_sales: index on date_sk.\n- catalog_sales: index on date_sk.\n- store_returns: index on sr_returned_date_sk.\n- catalog_returns: index on cr_returned_date_sk.\n- web_returns: index on wr_returned_date_sk.\n- web_sales: index on date_sk.\n\nBut the user's query also has joins between the tables and other tables like store, catalog_page, web_site. For example, store_sales is joined with store on store_sk = s_store_sk. Since store has no indexes, but store_sk is the PK, that's already indexed. However, if the store table is small (44 rows), the join is fast.\n\nSimilarly, catalog_sales is joined with catalog_page on page_sk = cp_catalog_page_sk. Since catalog_page has no indexes, but page_sk is the PK, that's already indexed. However, the catalog_page table has 11,718 rows, so the join might be a bottleneck if the page_sk isn't indexed. Wait, the schema says catalog_page has no indexes, but the primary key is cp_catalog_page_sk. So, the PK is already indexed. So, the join on page_sk = cp_catalog_page_sk would use the PK index.\n\nBut the main issue is the date joins. So, the primary indexes to add are on date_dim's d_date_sk and d_date, and on the date_sk columns of the large tables.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. The store_sales has 57 million rows, so an index on date_sk would help reduce the rows scanned during the join with date_dim.\n\nSo, the indexes to suggest would be:\n\n1. date_dim: index on d_date_sk (to speed up joins) and d_date (to speed up the date filter).\n2. store_sales: index on date_sk.\n3. catalog_sales: index on date_sk.\n4. store_returns: index on sr_returned_date_sk.\n5. catalog_returns: index on cr_returned_date_sk.\n6. web_returns: index on wr_returned_date_sk.\n7. web_sales: index on date_sk.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step. Then, the other tables' date_sk or relevant columns.\n\nBut the user's query has three CTEs, each involving a join with date_dim. So, the date_dim indexes would benefit all three.\n\nTherefore, the main indexes to suggest are:\n\n- date_dim: indexes on d_date_sk and d_date.\n- store_sales: index on date_sk.\n- catalog_sales: index on date_sk.\n- store_returns: index on sr_returned_date_sk.\n- catalog_returns: index on cr_returned_date_sk.\n- web_returns: index on wr_returned_date_sk.\n- web_sales: index on date_sk.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. The store_sales has 57 million rows, so the index on date_sk for store_sales would be the first. Then catalog_sales (28 million), then store_returns (5.7 million), etc.\n\nBut the user's schema says all these tables have no indexes. So, the indexes would be:\n\n1. store_sales: index on date_sk.\n2. catalog_sales: index on date_sk.\n3. store_returns: index on sr_returned_date_sk.\n4. catalog_returns: index on cr_returned_date_sk.\n5. web_returns: index on wr_returned_date_sk.\n6. web_sales: index on date_sk.\n7. date_dim: indexes on d_date_sk and d_date.\n\nBut the user's query also has joins with other tables like store, catalog_page, web_site. For example, store_sales is joined with store on store_sk = s_store_sk. Since store has no indexes, but store_sk is the PK, that's already indexed. However, if the store table is small (44 rows), the join is fast. Similarly for catalog_page and web_site.\n\nSo, the main indexes to add are on the date columns for the large tables and date_dim.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. So, the first index would be on store_sales.date_sk (57 million rows), then catalog_sales.date_sk (28 million), then store_returns.sr_returned_date_sk (5.7 million), etc.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step. However, the date_dim is used in all three CTEs, so the date_dim indexes would benefit all.\n\nBut the user's query has a date filter on d_date between two dates. So, an index on date_dim.d_date would allow the query to quickly find the date range, reducing the number of rows scanned.\n\nTherefore, the indexes to suggest are:\n\n1. date_dim: index on d_date_sk (to speed up joins) and d_date (to speed up the date filter).\n2. store_sales: index on date_sk.\n3. catalog_sales: index on date_sk.\n4. store_returns: index on sr_returned_date_sk.\n5. catalog_returns: index on cr_returned_date_sk.\n6. web_returns: index on wr_returned_date_sk.\n7. web_sales: index on date_sk.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step. Then, the other tables' date_sk or relevant columns.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. The store_sales has 57 million rows, so the index on date_sk for store_sales would be the first. Then catalog_sales (28 million), then store_returns (5.7 million), etc.\n\nBut the user's query also has joins with date_dim, which is a common table. So, the date_dim indexes would be the first to add.\n\nBut the user's schema says date_dim has no indexes. So, the first index to add is on date_dim.d_date_sk and d_date.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. The date_dim has 73,049 rows, which is much smaller than the other tables. So, the indexes on the large tables would have a larger impact.\n\nTherefore, the indexes to suggest are:\n\n1. store_sales: index on date_sk.\n2. catalog_sales: index on date_sk.\n3. store_returns: index on sr_returned_date_sk.\n4. catalog_returns: index on cr_returned_date_sk.\n5. web_returns: index on wr_returned_date_sk.\n6. web_sales: index on date_sk.\n7. date_dim: indexes on d_date_sk and d_date.\n\nBut the user's schema says date_dim has no indexes, so adding indexes on date_dim's d_date_sk and d_date would be the first step. However, the user's instruction says to prioritize the largest tables first. So, the indexes on the large tables (store_sales, catalog_sales, etc.) would be the first.\n\nBut the user's query has three CTEs, each involving a join with date_dim. So, the date_dim indexes would be the first to add.\n\nBut the user's instruction says to return the indexes in order of the number of rows scanned, largest first. The store_sales has 57 million rows, so the index on date_sk for store_sales would be the first.\n\nSo, the final answer would include indexes on the date_sk columns of the large tables and date_dim's d_date_sk and d_date.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on date_dim for 73,049 rows\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on date_dim for 73,049 rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales for 57,598,932 rows\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for 28,803,583 rows\"\n    },\n    {\n      \"target\": \"store_returns\",\n      \"property\": \"sr_returned_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_returns for 5,755,095 rows\"\n    },\n    {\n      \"target\": \"catalog_returns\",\n      \"property\": \"cr_returned_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_returns for 2,882,133 rows\"\n    },\n    {\n      \"target\": \"web_returns\",\n      \"property\": \"wr_returned_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on web_returns for 1,439,266 rows\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Elimina",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.8,
+      "baseline_exec_ms": 12143.033,
+      "optimized_exec_ms": 12042.012,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1436000.97,
+          "cost_with_index": 1436000.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2959195.43,
+          "cost_with_index": 2959195.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1935178.25,
+          "cost_with_index": 1935178.25,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370230.83,
+          "cost_with_index": 1370230.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 819530.05,
+          "cost_with_index": 819530.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118445.82,
+          "cost_with_index": 118445.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29016674.34,
+          "cost_with_index": 29016674.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129311.48,
+          "cost_with_index": 129311.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.49,
+          "cost_with_index": 1210560.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4070188.05,
+          "cost_with_index": 4070188.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937593.92,
+          "cost_with_index": 937593.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179529.66,
+          "cost_with_index": 179529.66,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 82257.41,
+          "cost_with_index": 82257.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906077.22,
+          "cost_with_index": 904019.52,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.86,
+          "cost_with_index": 135055.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.72,
+          "cost_with_index": 222744.72,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345157.0,
+          "cost_with_index": 1345157.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91686.28,
+          "cost_with_index": 91686.28,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "store_returns",
+      "column": "sr_returned_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.8,
+      "baseline_exec_ms": 12005.659,
+      "optimized_exec_ms": 12102.633,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 8.4,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1436000.97,
+          "cost_with_index": 1435939.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179529.66,
+          "cost_with_index": 179529.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.86,
+          "cost_with_index": 101143.34,
+          "benefit_pct": 25.1
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_returns",
+      "column": "cr_returned_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.4,
+      "baseline_exec_ms": 12102.609,
+      "optimized_exec_ms": 12048.816,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.5,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4070188.05,
+          "cost_with_index": 4032097.32,
+          "benefit_pct": 0.9
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906077.22,
+          "cost_with_index": 906077.22,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_returns",
+      "column": "wr_returned_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.7,
+      "baseline_exec_ms": 11986.436,
+      "optimized_exec_ms": 12067.186,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.49,
+          "cost_with_index": 1210560.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91686.28,
+          "cost_with_index": 91686.28,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,331 @@
+{
+  "timestamp": "2026-09-15T10:27:52.898141",
+  "query_hash": "3505b74fb5bb",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 302730.5,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables (with no existing indexes). We are to recommend indexes that would most reduce the execution cost.\n\nThe query is:\n\n```sql\nselect c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt \nfrom (\n    select ss_ticket_number ,ss_customer_sk ,count(*) cnt \n    from store_sales, date_dim, store, household_demographics \n    where \n        store_sales.ss_sold_date_sk = date_dim.d_date_sk \n        and store_sales.ss_store_sk = store.s_store_sk \n        and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk \n        and date_dim.d_dom between 1 and 2 \n        and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') \n        and household_demographics.hd_vehicle_count > 0 \n        and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 \n        and date_dim.d_year in (2000,2000+1,2000+2) \n        and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') \n    group by ss_ticket_number, ss_customer_sk\n) dj, customer \nwhere ss_customer_sk = c_customer_sk \nand cnt between 1 and 5 \norder by cnt desc, c_last_name asc\n```\n\nThe relevant tables are:\n- customer (266,000 rows, no indexes)\n- household_demographics (7,200 rows, no indexes)\n- store (44 rows, no indexes)\n- store_sales (57,598,932 rows, no indexes)\n- date_dim (73,049 rows, no indexes)\n\nWe are to look for Seq Scans on large tables and suggest indexes on columns that are used in joins or filters.\n\nLet's break down the query:\n\nThe main query is selecting from two tables: the derived table (let's call it `dj`) and `customer`. The derived table is built from a join of four tables: `store_sales`, `date_dim`, `store`, and `household_demographics`.\n\nThe conditions in the derived table (subquery) are:\n\n1. `store_sales.ss_sold_date_sk = date_dim.d_date_sk`\n2. `store_sales.ss_store_sk = store.s_store_sk`\n3. `store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk`\n4. `date_dim.d_dom between 1 and 2`\n5. `household_demographics.hd_buy_potential` is either '1001-5000' or '5001-10000'\n6. `household_demographics.hd_vehicle_count > 0`\n7. A condition that uses `hd_vehicle_count` and `hd_dep_count` (if `hd_vehicle_count` > 0, then `hd_dep_count / hd_vehicle_count > 1`)\n8. `date_dim.d_year` in (2000, 2001, 2002)\n9. `store.s_county` in ('Williamson County') (note: repeated four times, but it's the same value)\n\nThen, the derived table groups by `ss_ticket_number` and `ss_customer_sk` and counts the number of rows.\n\nThen, the outer query joins the derived table with `customer` on `ss_customer_sk = c_customer_sk` and filters `cnt` between 1 and 5, then orders by `cnt` descending and `c_last_name` ascending.\n\nNow, let's look for the most expensive parts (Seq Scans) in the query:\n\n1. The derived table is joining four tables. The largest table is `store_sales` (57 million rows). The other tables are small (date_dim: 73k, store: 44, household_demographics: 7.2k). \n\n   The joins are:\n   - `store_sales` to `date_dim` on `ss_sold_date_sk = d_date_sk`\n   - `store_sales` to `store` on `ss_store_sk = s_store_sk`\n   - `store_sales` to `household_demographics` on `ss_hdemo_sk = hd_demo_sk`\n\n   The conditions on `date_dim` are:\n   - `d_dom` between 1 and 2 (very few rows, because `d_dom` is the day of the month, so only 2 days per month)\n   - `d_year` in (2000,2001,2002) (three years)\n\n   The conditions on `household_demographics` are:\n   - `hd_buy_potential` in two specific strings\n   - `hd_vehicle_count > 0`\n   - `hd_dep_count / hd_vehicle_count > 1` (if `hd_vehicle_count` > 0)\n   - The table `household_demographics` has only 7,200 rows, so a condition on it might not be the bottleneck.\n\n   The condition on `store` is:\n   - `s_county` in ('Williamson County') (very specific, so likely few rows)\n\n   The main bottleneck is likely the `store_sales` table and the joins and conditions on it.\n\n2. The outer query then joins the derived table with `customer` on `ss_customer_sk = c_customer_sk`. The derived table has a group by and count, so it's a derived table with one row per `ss_ticket_number` and `ss_customer_sk` (but note: the grouping is by `ss_ticket_number` and `ss_customer_sk`, so one row per ticket and customer combination). The `customer` table has 266,000 rows.\n\n   The condition in the outer query is `cnt between 1 and 5`, which is a filter on the count. This might be a small fraction of the derived table.\n\n   The ordering is by `cnt` (descending) and then `c_last_name` (ascending). This might require a sort.\n\nNow, let's think about indexes:\n\nWe are to recommend indexes that would help the query. We cannot change the SQL, so we must rely on indexing.\n\nThe derived table (subquery) is the main bottleneck because it involves a large table (`store_sales`). We should look for columns that are used in joins and filters.\n\nIn the derived table:\n\n- `store_sales` is joined with `date_dim` on `ss_sold_date_sk = d_date_sk`. We can index `store_sales.ss_sold_date_sk` and `date_dim.d_date_sk` (but note: `date_dim` is small, so indexing it might not help much, but we are only allowed to index the tables we are given. We are to index the columns in the tables that are part of the query. However, note that the instructions say to look at the table and column that is causing the scan. We are allowed to index any table in the query, but we must specify the table and column.\n\nLet's break down the joins and conditions:\n\n1. `store_sales` to `date_dim`:\n   - Condition: `store_sales.ss_sold_date_sk = date_dim.d_date_sk`\n   - We can index `store_sales.ss_sold_date_sk` (which is a foreign key to `date_dim.d_date_sk`). Also, we can index `date_dim.d_date_sk` but note that `date_dim` is small (73k rows) and already has a primary key on `d_date_sk` (if we are to index, we can only index the columns we are allowed to change, but the problem says the tables have no indexes, so we can suggest any index). However, note that the condition also has `date_dim.d_dom` and `date_dim.d_year`. We might want to index `date_dim` on `d_dom` and `d_year`? But note: the condition on `d_dom` is between 1 and 2, which is a small range, and `d_year` is in (2000,2001,2002). We can create a composite index on `date_dim` for `(d_year, d_dom)`? But note: the condition is on two columns, but they are from the same table. However, the condition is `d_dom` and `d_year` separately. We might consider a composite index on `(d_year, d_dom)` for the condition `d_year in (2000,2001,2002) and d_dom between 1 and 2`. But note: the condition is an AND, so a composite index on `(d_year, d_dom)` would be useful.\n\n   However, note that the condition on `date_dim` is:\n   - `d_dom` between 1 and 2 (which is two days, so very selective)\n   - `d_year` in (2000,2001,2002) (three years, so not very selective)\n\n   We can index `date_dim` on `d_year` and `d_dom` to help the condition.\n\n   But note: the condition is `d_year in (2000,2001,2002) and d_dom between 1 and 2`. We can create a composite index on `(d_year, d_dom)` and then the condition would be covered.\n\n   However, the condition is two separate conditions. But note: the condition is an AND, so the composite index would be used for both.\n\n   But note: the condition on `d_year` is a range (three years) and `d_dom` is a range (two days). The composite index `(d_year, d_dom)` would allow the query to quickly find the rows with `d_year` in (2000,2001,2002) and then filter by `d_dom` in the same index.\n\n   However, the condition on `d_year` is a list of three years, which is not a contiguous range. But PostgreSQL can use the index to jump to the years and then filter by `d_dom`.\n\n   Alternatively, we could index `date_dim` on `d_year` and `d_dom` separately, but a composite index is more efficient.\n\n   But note: the condition is `d_year in (2000,2001,2002) and d_dom between 1 and 2`. We can also consider a composite index on `(d_year, d_dom)`.\n\n   However, the condition on `d_year` is a list of three years, which is not a contiguous range, so a B-tree index on `d_year` would be efficient for the list condition. But note: the condition on `d_dom` is a range, so we want to combine both.\n\n   Let's create an index on `date_dim` for `(d_year, d_dom)`.\n\n2. `store_sales` to `store`:\n   - Condition: `store_sales.ss_store_sk = store.s_store_sk`\n   - We can index `store_sales.ss_store_sk` and `store.s_store_sk` (which is the primary key). But note: `store` is small (44 rows) so indexing `store` might not be necessary, but we can index `store_sales` on `ss_store_sk`.\n\n3. `store_sales` to `household_demographics`:\n   - Condition: `store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk`\n   - We can index `store_sales.ss_hdemo_sk` and `household_demographics.hd_demo_sk` (which is the primary key). But note: `household_demographics` is small (7.2k rows) so indexing it might not be necessary, but we can index `store_sales` on `ss_hdemo_sk`.\n\n4. Conditions on `store_sales`:\n   - There are no conditions on `store_sales` other than the joins and the fact that it is the main table.\n\n   But note: the condition on `store_sales` is also used in the grouping and the count. We are grouping by `ss_ticket_number` and `ss_customer_sk`. We might want to consider an index on `store_sales` for the columns used in the grouping? But note: the grouping is done after the joins and conditions, so the index on the join columns might help to reduce the number of rows.\n\n   Also, note that the condition on `store_sales` is only the joins and the conditions from the other tables. There are no direct conditions on `store_sales` other than the joins.\n\n   However, note that the condition on `store_sales` is also used in the grouping, so we might want to consider an index that helps with the grouping? But the grouping is by two columns, and we are counting. We might want to consider a covering index for the grouping columns? But note: the query is a join and then grouping, so the index on the join columns might help to reduce the number of rows to group.\n\n   We are going to focus on the joins and the conditions that are filtering.\n\n   The main bottleneck is the `store_sales` table. We are joining it with three other tables and filtering by conditions that are not very selective (except for the `d_dom` condition, which is very selective).\n\n   We can create an index on `store_sales` for the columns used in the joins and conditions. But note: the condition on `store_sales` is only the join conditions and no direct condition. However, the condition on `store_sales` is also used in the grouping, so we might want to consider an index that includes the grouping columns? But note: the grouping is done after the joins, so the index on the join columns might help to reduce the number of rows.\n\n   We can create a composite index on `store_sales` for `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)` because these are the columns used in the joins and the condition on `ss_sold_date_sk` is from the `date_dim` condition.\n\n   But note: the condition on `date_dim` is `d_dom` and `d_year`, which are linked to `ss_sold_date_sk`. We are already planning to index `date_dim` on `(d_year, d_dom)`. Then, the join condition `store_sales.ss_sold_date_sk = date_dim.d_date_sk` would be efficient because `date_dim` is now indexed and small, so the join would be a small number of rows from `date_dim` and then we can use an index on `store_sales` for `ss_sold_date_sk` to quickly find the matching rows.\n\n   Alternatively, we can index `store_sales` on `ss_sold_date_sk` to help the join with `date_dim`.\n\n   Let's break down the derived table:\n\n   The condition on `date_dim` is very selective (only two days in three years). So, if we index `date_dim` on `(d_year, d_dom)`, then the condition `date_dim.d_year in (2000,2001,2002) and d_dom between 1 and 2` would return a very small number of rows (at most 3 years * 2 days = 6 days, but note: the condition is `d_dom` between 1 and 2, so two days per month, and three years, so 36 days? Actually, the condition is `d_dom` between 1 and 2, which is two days per month, so 3 years * 12 months * 2 days = 72 days? But note: the condition is `d_dom` (day of month) between 1 and 2, so it's the 1st and 2nd of every month. So, 3 years * 12 months * 2 days = 72 days. But note: the `date_dim` table has one row per day, so 72 days is 72 rows. This is very selective.\n\n   Then, the join condition `store_sales.ss_sold_date_sk = date_dim.d_date_sk` would then only consider 72 rows from `date_dim` and then look up `store_sales` for those 72 `d_date_sk` values. So, we can index `store_sales` on `ss_sold_date_sk` to quickly find the matching rows.\n\n   Similarly, the condition on `store` is `s_county` in ('Williamson County') which is very selective (only one county, and the table has 44 rows). So, we can index `store` on `s_county`? But note: `store` is small, so a sequential scan might be faster. However, we are allowed to index it.\n\n   But note: the condition on `store` is used in the join `store_sales.ss_store_sk = store.s_store_sk`. We can index `store` on `s_store_sk` (which is the primary key) and `s_county`? But note: the condition on `store` is `s_county`, so we can create an index on `store` for `(s_county, s_store_sk)` to help the join and the condition.\n\n   However, the condition on `store` is very selective, so we can also index `store` on `s_county` to quickly find the matching rows.\n\n   Similarly, the condition on `household_demographics` is:\n   - `hd_buy_potential` in two specific strings\n   - `hd_vehicle_count > 0`\n   - `hd_dep_count / hd_vehicle_count > 1` (if `hd_vehicle_count` > 0)\n\n   We can index `household_demographics` on `hd_buy_potential` and `hd_vehicle_count` and `hd_dep_count`? But note: the condition is a combination of these. We can create a composite index on `(hd_buy_potential, hd_vehicle_count, hd_dep_count)`? But note: the condition is an OR on `hd_buy_potential` and then a condition on `hd_vehicle_count` and then a condition on `hd_dep_count` and `hd_vehicle_count`. We can break it down:\n\n   - `hd_buy_potential` in ('1001-5000', '5001-10000') -> two specific values, so we can index `hd_buy_potential` separately.\n   - `hd_vehicle_count > 0` -> we can index `hd_vehicle_count` (but note: it's a condition that is true for most rows, so not very selective)\n   - The condition `hd_dep_count / hd_vehicle_count > 1` is only applied when `hd_vehicle_count > 0`. We can index `hd_vehicle_count` and `hd_dep_count` together? But note: the condition is a division, so it's not a direct comparison.\n\n   Alternatively, we can index `household_demographics` on `hd_buy_potential` and then use a condition on `hd_vehicle_count` and `hd_dep_count` in the same index? But note: the condition on `hd_vehicle_count` is not very selective, so we might not need an index for that.\n\n   However, the condition on `hd_buy_potential` is very selective (only two out of the total bands). We can create an index on `household_demographics` for `hd_buy_potential` to quickly filter.\n\n   Also, note that the join condition is `store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk`. We can index `household_demographics` on `hd_demo_sk` (which is the primary key) and `hd_buy_potential`? But note: the condition on `hd_buy_potential` is in the derived table, so we can index `household_demographics` on `hd_buy_potential` to help the condition.\n\n   But note: the condition on `household_demographics` is in the derived table, so we can index `household_demographics` on `hd_buy_potential` and `hd_demo_sk` (composite) to help the join and the condition.\n\n   However, the condition on `household_demographics` is a combination of `hd_buy_potential` and the other conditions. We can create a composite index on `(hd_buy_potential, hd_vehicle_count, hd_dep_count)`? But note: the condition is an OR on `hd_buy_potential` and then a condition on `hd_vehicle_count` and then a condition on `hd_dep_count` and `hd_vehicle_count`. We can break it down:\n\n   - The condition `hd_buy_potential` in two specific values is very selective, so we can index `hd_buy_potential` separately.\n\n   Let's list the index candidates:\n\n   1. Index on `date_dim` for `(d_year, d_dom)` to help the condition `d_year in (2000,2001,2002) and d_dom between 1 and 2`.\n   2. Index on `store_sales` for `ss_sold_date_sk` to help the join with `date_dim`.\n   3. Index on `store` for `s_county` to help the condition `s_county in ('Williamson County')`.\n   4. Index on `household_demographics` for `hd_buy_potential` to help the condition `hd_buy_potential` in two specific values.\n   5. Index on `store_sales` for `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)` to help the joins and conditions.\n\n   But note: the condition on `store_sales` is also used in the grouping. We are grouping by `ss_ticket_number` and `ss_customer_sk`. We might want to consider an index on `store_sales` for `(ss_customer_sk, ss_ticket_number)` to help the grouping? But note: the grouping is done after the joins, so the index on the join columns might be more important.\n\n   However, the condition on `store_sales` is only the joins and no direct condition. The grouping is done on two columns that are not used in the joins. We might not need an index for the grouping.\n\n   Let's focus on the most expensive part: the `store_sales` table. We are joining it with three tables and filtering by conditions that are not very selective (except for the `date_dim` condition). We can create a composite index on `store_sales` for `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)` to cover the joins and the condition from `date_dim`.\n\n   But note: the condition from `date_dim` is very selective, so we can first filter by `date_dim` and then by `store` and `household_demographics`. We are indexing `date_dim` and `store` and `household_demographics` separately.\n\n   Now, let's consider the order of the joins. The condition on `date_dim` is very selective, so we can do the `date_dim` condition first, then the `store` condition, then the `household_demographics` condition, then the `store_sales` table.\n\n   We are going to recommend:\n\n   - Index on `date_dim` for `(d_year, d_dom)`\n   - Index on `store_sales` for `ss_sold_date_sk`\n   - Index on `store` for `s_county`\n   - Index on `household_demographics` for `hd_buy_potential`\n   - Index on `store_sales` for `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)`\n\n   But note: the condition on `store_sales` is also the join with `store` and `household_demographics`. We can also index `store_sales` on `ss_store_sk` and `ss_hdemo_sk` separately, but a composite index might be better.\n\n   However, note that the condition on `store_sales` is only the joins and no direct condition. The condition on `store_sales` is the same as the join conditions.\n\n   We are going to recommend the following indexes:\n\n   1. `date_dim` on `(d_year, d_dom)`\n   2. `store_sales` on `ss_sold_date_sk`\n   3. `store` on `s_county`\n   4. `household_demographics` on `hd_buy_potential`\n   5. `store_sales` on `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)`\n\n   But note: the condition on `store_sales` is also the join with `store` and `household_demographics`. We can also consider an index on `store_sales` for `(ss_store_sk, ss_hdemo_sk)`? But note: the condition on `store_sales` is the same as the join conditions.\n\n   However, the condition on `store_sales` is the same as the join conditions, so we can create a composite index on `(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)` to cover all three joins.\n\n   Now, let's write the JSON structure.\n\n   We are to return a list of indexes, each with:\n   - target: table name\n   - property: column name\n   - index_type: the type of index (e.g., btree, hash, etc. \u2014 but note: the problem does not specify, so we can use 'btree' for most cases)\n   - pa",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk, ss_store_sk, ss_hdemo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.4,
+      "baseline_exec_ms": 2451.703,
+      "optimized_exec_ms": 2460.951,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956712.17,
+          "cost_with_index": 2956646.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1941334.71,
+          "cost_with_index": 1941265.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370638.38,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793342.54,
+          "cost_with_index": 793227.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117184.59,
+          "cost_with_index": 117183.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21111425.24,
+          "cost_with_index": 21110547.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29021773.54,
+          "cost_with_index": 29018844.96,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130008.05,
+          "cost_with_index": 130008.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 179533.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81516.41,
+          "cost_with_index": 81515.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712249.15,
+          "cost_with_index": 3658257.75,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223892.01,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342789.67,
+          "cost_with_index": 1342741.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_year, d_dom",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.8,
+      "baseline_exec_ms": 2520.204,
+      "optimized_exec_ms": 2475.379,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.3,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.22,
+          "cost_with_index": 1434562.07,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956646.43,
+          "cost_with_index": 2956646.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1941265.61,
+          "cost_with_index": 1941265.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370584.93,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793227.8,
+          "cost_with_index": 788453.02,
+          "benefit_pct": 0.6
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117183.46,
+          "cost_with_index": 115806.31,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018844.96,
+          "cost_with_index": 29018844.96,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130008.04,
+          "cost_with_index": 130008.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.42,
+          "cost_with_index": 1209183.27,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4067237.38,
+          "cost_with_index": 4065860.23,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937635.55,
+          "cost_with_index": 936258.4,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 177942.23,
+          "benefit_pct": 0.9
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81515.81,
+          "cost_with_index": 80138.66,
+          "benefit_pct": 1.7
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906068.83,
+          "cost_with_index": 906068.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712182.52,
+          "cost_with_index": 3712182.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 133385.66,
+          "benefit_pct": 1.1
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223891.99,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91750.14,
+          "cost_with_index": 91750.14,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store",
+      "column": "s_county",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.8,
+      "baseline_exec_ms": 2418.035,
+      "optimized_exec_ms": 2436.864,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.22,
+          "cost_with_index": 1435939.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370584.93,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 179533.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81515.81,
+          "cost_with_index": 81515.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712182.52,
+          "cost_with_index": 3712182.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223891.99,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342741.71,
+          "cost_with_index": 1342741.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_buy_potential",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.4,
+      "baseline_exec_ms": 2448.015,
+      "optimized_exec_ms": 2437.586,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342741.71,
+          "cost_with_index": 1342741.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

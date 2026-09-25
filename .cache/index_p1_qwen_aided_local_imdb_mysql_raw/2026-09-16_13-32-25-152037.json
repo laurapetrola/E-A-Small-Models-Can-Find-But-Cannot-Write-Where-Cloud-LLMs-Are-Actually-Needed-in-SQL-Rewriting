@@ -1,0 +1,162 @@
+{
+  "timestamp": "2026-09-16T13:32:25.152021",
+  "query_hash": "839ef9da291c",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 67742.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The query is quite complex, joining several tables and applying various filters. \n\nFirst, I need to understand the query structure. The main goal is to find the minimum name (of_person) and title (biography_movie) based on certain conditions. The tables involved are aka_name, cast_info, info_type, link_type, movie_link, name, person_info, and title.\n\nLooking at the schema and existing indexes, I notice that some tables don't have indexes on columns that are used in the WHERE clause or JOIN conditions. Let's break down the query step by step.\n\nStarting with the WHERE clause:\n- an.name LIKE '%a%' \u2013 This is a pattern match on the 'name' column of the aka_name table. Since it's a LIKE with a leading wildcard, an index on 'name' might not be effective. But the existing index on person_id_aka_name is on person_id, not name. So, if there's a full table scan on aka_name here, an index on name could help, but with the leading %, it's tricky. However, maybe the query optimizer can use a prefix if the index is created with a prefix length. But the user mentioned that for TEXT/BLOB columns, a prefix length is needed. Since 'name' is TEXT, maybe creating an index with a prefix length of 255 could help. But the query uses LIKE '%a%', which might not benefit from a prefix index. Hmm, maybe this isn't the best candidate.\n\nNext, the condition n.name_pcode_cf LIKE 'D%' \u2013 The name_pcode_cf column is in the name table. The existing indexes on name are none. So, if there's a full table scan on the name table here, an index on name_pcode_cf would help. Since it's a prefix match (starts with 'D'), an index on name_pcode_cf would be useful. So, creating an index on name_pcode_cf for the name table could eliminate a full table scan here.\n\nAnother condition is pi.note = 'Volker Boehm'. The person_info table has a note column, and the existing indexes are on info_type_id and person_id. Since the note is a TEXT field and the query is looking for an exact match, an index on note might help. However, in MySQL, indexes on TEXT columns require a prefix length. But the query is using an exact string, so maybe a prefix index with a sufficient length (like 255) could work. However, the existing indexes on person_info don't include note, so this could be a candidate.\n\nLooking at the JOIN conditions:\n- n.id = an.person_id: The name table's id is joined with aka_name's person_id. The existing index on person_id_aka_name is on person_id, which is part of this join. But the name table doesn't have an index on id, which is the primary key. Wait, the name table's id is the primary key, so it's already indexed. So maybe that's not a problem.\n\n- ci.person_id = n.id: The cast_info table has an index on person_id_cast_info, which is used here. So that's already covered.\n\n- t.id = ci.movie_id: The title table's id is joined with cast_info's movie_id. The title table has an index on kind_id_title, but not on id. Since id is the primary key, it's already indexed. So that's okay.\n\n- ml.linked_movie_id = t.id: The movie_link table has an index on linked_movie_id_movie_link, which is used here. So that's covered.\n\n- lt.id = ml.link_type_id: The link_type table has no indexes. The link_type_id is part of the movie_link table's index. Since the query is filtering on lt.link = 'features', which is a condition on the link_type table. The link_type table has no indexes, so a full table scan is happening here. Creating an index on the link column (link) would help, as the condition is lt.link = 'features'.\n\nSimilarly, the info_type table has a condition it.info = 'mini biography'. The info_type table has no indexes, so a full table scan is happening. Creating an index on the info column would help here.\n\nNow, looking at the execution plan, the user mentioned that there are full table scans on large tables. The tables with large rows are aka_name (901k), cast_info (36 million), name (4 million), person_info (2.9 million), and title (2.5 million). The info_type and link_type tables are small (113 and 18 rows), but they are being scanned fully because they lack indexes on the filtered columns.\n\nSo, the main candidates for new indexes are:\n\n1. info_type.info: Since the query filters on it.info = 'mini biography', an index on info would speed up this condition. The info_type table has 113 rows, so even a full table scan is fast, but an index would make it a lookup.\n\n2. link_type.link: The query filters on lt.link = 'features', so an index on link would help here.\n\n3. name.name_pcode_cf: The condition n.name_pcode_cf LIKE 'D%' would benefit from an index on name_pcode_cf. Since it's a prefix match, the index would be effective.\n\n4. person_info.note: The condition pi.note = 'Volker Boehm' would benefit from an index on note. However, since note is TEXT, a prefix index with a sufficient length (like 255) would be needed. But the exact match might still be possible with a prefix index.\n\nWait, but the user's instructions say to set prefix_length for TEXT/BLOB columns. For the note column, which is TEXT, creating an index with a prefix length of 255 would allow the index to cover the exact string if it's within the prefix. However, if the note is longer than 255 characters, the index might not capture the entire value. But given that the query is looking for an exact match, maybe the index on note with prefix_length 255 would help. However, the user might not have specified the exact length, so perhaps it's better to suggest a prefix length of 255 here.\n\nBut looking at the existing indexes, the person_info table has indexes on info_type_id and person_id. The note column is not indexed, so adding an index on note would help.\n\nAnother point: the query has a JOIN between pi.person_id and an.person_id, and also between pi.person_id and ci.person_id. The person_info table's person_id is indexed, so that's covered.\n\nNow, considering the tables with full table scans:\n\n- info_type: No index on info. Adding an index on info would eliminate the full table scan here.\n\n- link_type: No index on link. Adding an index on link would help.\n\n- name: The condition n.name_pcode_cf LIKE 'D%' would benefit from an index on name_pcode_cf. Since it's a prefix match, the index would be effective.\n\n- person_info: The condition pi.note = 'Volker Boehm' would benefit from an index on note. However, since note is TEXT, the index would need a prefix length. Let's assume 255 as a reasonable value.\n\nBut wait, the user's query has a condition on pi.note = 'Volker Boehm'. If the note is a TEXT field, creating an index on note with a prefix length of 255 would allow the index to be used for exact matches if the string is within the prefix. However, if the note is longer than 255 characters, the index might not capture the entire value. But given that the query is looking for an exact match, the index could still be useful. However, in MySQL, when you create an index on a TEXT column with a prefix length, the index will store the first N characters. So, if the note is exactly 'Volker Boehm', and the prefix length is 255, then the index would include that value. Therefore, creating an index on note with prefix_length 255 would help.\n\nSo, the indexes to suggest are:\n\n1. info_type (info)\n2. link_type (link)\n3. name (name_pcode_cf)\n4. person_info (note with prefix_length 255)\n\nBut wait, the user's schema for the relevant tables shows that info_type has no indexes, link_type has no indexes, name has no indexes, and person_info has indexes on info_type_id and person_id. So, these four tables would benefit from the new indexes.\n\nNow, checking the existing indexes again:\n\n- The name table has no indexes. So, adding an index on name_pcode_cf would help.\n\n- The person_info table has indexes on info_type_id and person_id, but not on note. So, adding an index on note would help.\n\n- The info_type table has no indexes, so adding an index on info would help.\n\n- The link_type table has no indexes, so adding an index on link would help.\n\nTherefore, the four indexes would eliminate full table scans on these tables. The estimated benefit would be the rows scanned in each of these tables. For example, info_type has 113 rows, link_type has 18, name has 4 million, and person_info has 2.9 million. So, adding indexes on these columns would reduce the scan cost significantly.\n\nBut the user's query might have other full table scans. Let me check again. The query joins several tables, and the main ones with large rows are name (4 million), person_info (2.9 million), and maybe others. However, the key is to find where the full table scans are happening. Since the user mentioned that the physical execution plan has full table scans on large tables, and the indexes are needed for the WHERE conditions and JOINs.\n\nSo, the indexes to suggest are:\n\n- info_type.info\n- link_type.link\n- name.name_pcode_cf\n- person_info.note (with prefix_length 255)\n\nEach of these would eliminate a full table scan on their respective tables. The estimated benefit would be the number of rows in each table that are being scanned. For example, the name table's scan would be reduced from 4 million rows to an index scan on name_pcode_cf. Similarly for the others.\n\nTherefore, the JSON should list these four indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates full table scan on info_type (113 rows) for filter it.info = 'mini biography'\"\n    },\n    {\n      \"target\": \"link_type\",\n      \"property\": \"link\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates full table scan on link_type (18 rows) for filter lt.link = 'features'\"\n    },\n    {\n      \"target\": \"name\",\n      \"property\": \"name_pcode_cf\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates full table scan on name (4,167,491 rows) for filter n.name_pcode_cf LIKE 'D%'\"\n    },\n    {\n      \"target\": \"person_info\",\n      \"property\": \"note\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates full table scan on person_info (2,963,664 rows) for filter pi.note = 'Volker Boehm'\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target columns in WHERE clauses and JOIN conditions that currently cause full table scans on large tables. The info_type.info and link_type.link indexes address small tables with exact match filters. The name.name_pcode_cf index optimizes the prefix-like condition, while the person_info.note index (with prefix_length 255) handles the TEXT field equality filter.\"\n}",
+  "recommendations": [
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.2,
+      "baseline_exec_ms": 420.969,
+      "optimized_exec_ms": 419.995,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 8.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 928792.0,
+          "cost_with_index": 679027.98,
+          "benefit_pct": 26.9
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7199.43,
+          "cost_with_index": 7199.77,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 1077278.21,
+          "cost_with_index": 1180427.26,
+          "benefit_pct": -9.6
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 394671.69,
+          "cost_with_index": 266071.22,
+          "benefit_pct": 32.6
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 51245.97,
+          "cost_with_index": 54642.7,
+          "benefit_pct": -6.6
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17185.34,
+          "cost_with_index": 20176.51,
+          "benefit_pct": -17.4
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 418673.16,
+          "cost_with_index": 291915.57,
+          "benefit_pct": 30.3
+        }
+      ],
+      "workload_queries_improved": 3,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "link_type",
+      "column": "link",
+      "index_type": "btree",
+      "estimated_benefit_pct": 44.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": -3.4,
+      "baseline_exec_ms": 435.39,
+      "optimized_exec_ms": 450.278,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 715876.08,
+          "cost_with_index": 715876.08,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "name",
+      "column": "name_pcode_cf",
+      "index_type": "btree",
+      "estimated_benefit_pct": -2.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": -6.0,
+      "baseline_exec_ms": 418.138,
+      "optimized_exec_ms": 443.019,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.8,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 24322301.65,
+          "cost_with_index": 24722379.37,
+          "benefit_pct": -1.6
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7170.96,
+          "cost_with_index": 7261.43,
+          "benefit_pct": -1.3
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17353.57,
+          "cost_with_index": 17380.13,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 426440.04,
+          "cost_with_index": 426984.11,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2520900.09,
+          "cost_with_index": 2539619.09,
+          "benefit_pct": -0.7
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "person_info",
+      "column": "note",
+      "index_type": "btree",
+      "estimated_benefit_pct": 98.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": 99.4,
+      "baseline_exec_ms": 448.704,
+      "optimized_exec_ms": 2.844,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

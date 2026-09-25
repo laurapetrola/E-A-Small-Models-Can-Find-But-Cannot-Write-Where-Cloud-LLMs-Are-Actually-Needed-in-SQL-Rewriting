@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-22T02:53:52.241195",
+  "query_hash": "a5945ebaf8f0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "materialize subquery"
+  ],
+  "improvement_pct": 1.92,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 107351.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH precomputed AS MATERIALIZED (\n    SELECT\n        w_state,\n        i_item_id,\n        d_date,\n        cs_sales_price,\n        cr_refunded_cash\n    FROM catalog_sales\n    LEFT JOIN catalog_returns\n        ON cs_order_number = cr_order_number\n       AND cs_item_sk = cr_item_sk\n    JOIN warehouse\n        ON cs_warehouse_sk = w_warehouse_sk\n    JOIN item\n        ON i_item_sk = cs_item_sk\n    JOIN date_dim\n        ON cs_sold_date_sk = d_date_sk\n    WHERE i_current_price BETWEEN 0.99 AND 1.49\n      AND d_date BETWEEN cast('2001-04-02' AS date) AND cast('2001-06-01' AS date)\n)\nSELECT\n    w_state,\n    i_item_id,\n    sum(\n        CASE\n            WHEN cast(d_date AS date) < cast('2001-05-02' AS date)\n            THEN cs_sales_price - coalesce(cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_before,\n    sum(\n        CASE\n            WHEN cast(d_date AS date) >= cast('2001-05-02' AS date)\n            THEN cs_sales_price - coalesce(cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_after\nFROM precomputed\nGROUP BY w_state, i_item_id\nORDER BY w_state, i_item_id\nLIMIT 100",
+  "reached_sql": "WITH precomputed AS MATERIALIZED (\n    SELECT\n        w_state,\n        i_item_id,\n        d_date,\n        cs_sales_price,\n        cr_refunded_cash\n    FROM catalog_sales\n    LEFT JOIN catalog_returns\n        ON cs_order_number = cr_order_number\n       AND cs_item_sk = cr_item_sk\n    JOIN warehouse\n        ON cs_warehouse_sk = w_warehouse_sk\n    JOIN item\n        ON i_item_sk = cs_item_sk\n    JOIN date_dim\n        ON cs_sold_date_sk = d_date_sk\n    WHERE i_current_price BETWEEN 0.99 AND 1.49\n      AND d_date BETWEEN cast('2001-04-02' AS date) AND cast('2001-06-01' AS date)\n)\nSELECT\n    w_state,\n    i_item_id,\n    sum(\n        CASE\n            WHEN cast(d_date AS date) < cast('2001-05-02' AS date)\n            THEN cs_sales_price - coalesce(cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_before,\n    sum(\n        CASE\n            WHEN cast(d_date AS date) >= cast('2001-05-02' AS date)\n            THEN cs_sales_price - coalesce(cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_after\nFROM precomputed\nGROUP BY w_state, i_item_id\nORDER BY w_state, i_item_id\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized View - TARGET: Subquery of joined tables `(catalog_sales, catalog_returns, warehouse, item)` with the condition `i_current_price between 0.99 and 1.49` - TRANSFORMATION: Create a materialized view that pre-computes this subquery result for the given date range (`d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)`) and filters based on the price range. This will reduce the number of times the subquery needs to be executed during the main query execution.\n\n2. N. Index Scan Optimization - TARGET: `date_dim` table - TRANSFORMATION: If not already created, create an index on `(d_year, d_month_seq)` to improve the performance of the range scan for the condition `d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)`. This index will allow PostgreSQL to seek specific years and months more efficiently.\n\n3. N. Index Scan Optimization - TARGET: `warehouse` table - TRANSFORMATION: If not already created, create an index on `(cs_warehouse_sk)` to improve the performance of the join with the `catalog_sales` table.\n\n4. N. Hash Join - TARGET: Materialized view and `date_dim` table - TRANSFORMATION: Use a hash join instead of a nested loop join for the join between the materialized view and the `date_dim` table, as the former is more efficient when dealing with large result sets.\n\n5. N. Sort-Merge Join - TARGET: Materialized view and `warehouse` table - TRANSFORMATION: Use a sort-merge join instead of a nested loop join for the join between the materialized view and the `warehouse` table, as the former is more efficient when dealing with large result sets.\n\n6. N. Sort-Merge Join - TARGET: Final join between the sorted materialized view and the sorted `item` table - TRANSFORMATION: Use a sort-merge join for the final join between the sorted materialized view and the sorted `item` table, as the former is more efficient when dealing with large result sets.\n\n7. N. Index Scan Optimization - TARGET: Materialized view's index on `(w_state, i_item_id)` - TRANSFORMATION: If not already created, create an index on the materialized view on `(w_state, i_item_id)` to improve the performance of the group by and order by operations.\n\n8. N. Limit Optimization - TARGET: Final query's `LIMIT 100` clause - TRANSFORMATION: If possible, move the `LIMIT 100` operation as close as possible to the source of the data (i.e., the materialized view) to reduce the amount of data that needs to be processed by subsequent operations.\n\n9. N. Index Scan Optimization - TARGET: Materialized view's index on `(cs_warehouse_sk, cs_item_sk)` - TRANSFORMATION: If not already created, create an index on the materialized view on `(cs_warehouse_sk, cs_item_sk)` to improve the performance of the join with the `catalog_returns` table.\n\nThese optimizations are ordered from the one that removes the most rows/cost to the least, and they aim to minimize the number of disk reads, improve join performance, and reduce the overall query execution time. The main difference compared to the previous strategy is the creation of a materialized view for the subquery with the price range condition, which should further reduce the number of times the subquery needs to be executed during the main query execution.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 1710.001,
+      "optimized_ms": 1677.202,
+      "delta_ms": 32.799,
+      "improvement_pct": 1.92,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 906063.41,
+      "optimized": 912388.86,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 79303.0,
+    "index_advisor_inference_ms": 18304.4,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 9744.5,
+    "total_inference_ms": 107351.9,
+    "writer_inference_ms": 71656.8,
+    "writer_tokens_in": 5345,
+    "writer_tokens_out": 6006,
+    "writer_calls": 4
+  },
+  "errors": [],
+  "strategy": "1. N. Materialized View - TARGET: Subquery of joined tables `(catalog_sales, catalog_returns, warehouse, item)` with the condition `i_current_price between 0.99 and 1.49` - TRANSFORMATION: Create a materialized view that pre-computes this subquery result for the given date range (`d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)`) and filters based on the price range. This will reduce the number of times the subquery needs to be executed during the main query execution.\n\n2. N. Index Scan Optimization - TARGET: `date_dim` table - TRANSFORMATION: If not already created, create an index on `(d_year, d_month_seq)` to improve the performance of the range scan for the condition `d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)`. This index will allow PostgreSQL to seek specific years and months more efficiently.\n\n3. N. Index Scan Optimization - TARGET: `warehouse` table - TRANSFORMATION: If not already created, create an index on `(cs_warehouse_sk)` to improve the performance of the join with the `catalog_sales` table.\n\n4. N. Hash Join - TARGET: Materialized view and `date_dim` table - TRANSFORMATION: Use a hash join instead of a nested loop join for the join between the materialized view and the `date_dim` table, as the former is more efficient when dealing with large result sets.\n\n5. N. Sort-Merge Join - TARGET: Materialized view and `warehouse` table - TRANSFORMATION: Use a sort-merge join instead of a nested loop join for the join between the materialized view and the `warehouse` table, as the former is more efficient when dealing with large result sets.\n\n6. N. Sort-Merge Join - TARGET: Final join between the sorted materialized view and the sorted `item` table - TRANSFORMATION: Use a sort-merge join for the final join between the sorted materialized view and the sorted `item` table, as the former is more efficient when dealing with large result sets.\n\n7. N. Index Scan Optimization - TARGET: Materialized view's index on `(w_state, i_item_id)` - TRANSFORMATION: If not already created, create an index on the materialized view on `(w_state, i_item_id)` to improve the performance of the group by and order by operations.\n\n8. N. Limit Optimization - TARGET: Final query's `LIMIT 100` clause - TRANSFORMATION: If possible, move the `LIMIT 100` operation as close as possible to the source of the data (i.e., the materialized view) to reduce the amount of data that needs to be processed by subsequent operations.\n\n9. N. Index Scan Optimization - TARGET: Materialized view's index on `(cs_warehouse_sk, cs_item_sk)` - TRANSFORMATION: If not already created, create an index on the materialized view on `(cs_warehouse_sk, cs_item_sk)` to improve the performance of the join with the `catalog_returns` table.\n\nThese optimizations are ordered from the one that removes the most rows/cost to the least, and they aim to minimize the number of disk reads, improve join performance, and reduce the overall query execution time. The main difference compared to the previous strategy is the creation of a materialized view for the subquery with the price range condition, which should further reduce the number of times the subquery needs to be executed during the main query execution.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\nThe rewrite creates a materialized view for the subquery with the price range condition as specified in the strategy."
+  },
+  "raw_sql": "select w_state ,i_item_id ,sum(case when (cast(d_date as date) < cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_before ,sum(case when (cast(d_date as date) >= cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_after from catalog_sales left outer join catalog_returns on (cs_order_number = cr_order_number and cs_item_sk = cr_item_sk) ,warehouse ,item ,date_dim where i_current_price between 0.99 and 1.49 and i_item_sk = cs_item_sk and cs_warehouse_sk = w_warehouse_sk and cs_sold_date_sk = d_date_sk and d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date) group by w_state,i_item_id order by w_state,i_item_id limit 100"
+}

@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-08-28T09:19:53.661196",
+  "query_hash": "7aed0fb6af9b",
+  "suggestions": [
+    "materialize intermediate result",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches",
+    "pre-filter a large table as a CTE before the join",
+    "materialize intermediate result sets"
+  ],
+  "improvement_pct": 45.44,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 306910.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH date_window AS MATERIALIZED (\n    SELECT d_date_sk, d_moy\n    FROM date_dim\n    WHERE d_month_seq IN (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11)\n),\nitem_month_sales AS (\n    SELECT ss.ss_item_sk, dw.d_moy, SUM(ss.ss_sales_price) AS item_sum\n    FROM store_sales ss\n    JOIN date_window dw ON ss.ss_sold_date_sk = dw.d_date_sk\n    JOIN store st ON ss.ss_store_sk = st.s_store_sk\n    GROUP BY ss.ss_item_sk, dw.d_moy\n),\nmonthly_sales AS (\n    SELECT i.i_manager_id, ims.d_moy, SUM(ims.item_sum) AS sum_sales\n    FROM item_month_sales ims\n    JOIN item i ON ims.ss_item_sk = i.i_item_sk\n    WHERE ((i.i_category IN ('Books','Children','Electronics') AND i.i_class IN ('personal','portable','reference','self-help') AND i.i_brand IN ('scholaramalgamalg #14','scholaramalgamalg #7','exportiunivamalg #9','scholaramalgamalg #9'))\n        OR (i.i_category IN ('Women','Music','Men') AND i.i_class IN ('accessories','classical','fragrances','pants') AND i.i_brand IN ('amalgimporto #1','edu packscholar #1','exportiimporto #1','importoamalg #1')))\n    GROUP BY i.i_manager_id, ims.d_moy\n),\nmanager_avg AS (\n    SELECT i_manager_id, AVG(sum_sales) AS avg_monthly_sales\n    FROM monthly_sales\n    GROUP BY i_manager_id\n)\nSELECT ms.i_manager_id, ms.sum_sales, ma.avg_monthly_sales\nFROM monthly_sales ms\nJOIN manager_avg ma ON ms.i_manager_id IS NOT DISTINCT FROM ma.i_manager_id\nWHERE ma.avg_monthly_sales > 0\n  AND ABS(ms.sum_sales - ma.avg_monthly_sales) > 0.1 * ma.avg_monthly_sales\nORDER BY ms.i_manager_id, ma.avg_monthly_sales, ms.sum_sales\nLIMIT 100",
+  "reached_sql": "WITH date_window AS MATERIALIZED (\n    SELECT d_date_sk, d_moy\n    FROM date_dim\n    WHERE d_month_seq IN (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11)\n),\nitem_month_sales AS (\n    SELECT ss.ss_item_sk, dw.d_moy, SUM(ss.ss_sales_price) AS item_sum\n    FROM store_sales ss\n    JOIN date_window dw ON ss.ss_sold_date_sk = dw.d_date_sk\n    JOIN store st ON ss.ss_store_sk = st.s_store_sk\n    GROUP BY ss.ss_item_sk, dw.d_moy\n),\nmonthly_sales AS (\n    SELECT i.i_manager_id, ims.d_moy, SUM(ims.item_sum) AS sum_sales\n    FROM item_month_sales ims\n    JOIN item i ON ims.ss_item_sk = i.i_item_sk\n    WHERE ((i.i_category IN ('Books','Children','Electronics') AND i.i_class IN ('personal','portable','reference','self-help') AND i.i_brand IN ('scholaramalgamalg #14','scholaramalgamalg #7','exportiunivamalg #9','scholaramalgamalg #9'))\n        OR (i.i_category IN ('Women','Music','Men') AND i.i_class IN ('accessories','classical','fragrances','pants') AND i.i_brand IN ('amalgimporto #1','edu packscholar #1','exportiimporto #1','importoamalg #1')))\n    GROUP BY i.i_manager_id, ims.d_moy\n),\nmanager_avg AS (\n    SELECT i_manager_id, AVG(sum_sales) AS avg_monthly_sales\n    FROM monthly_sales\n    GROUP BY i_manager_id\n)\nSELECT ms.i_manager_id, ms.sum_sales, ma.avg_monthly_sales\nFROM monthly_sales ms\nJOIN manager_avg ma ON ms.i_manager_id IS NOT DISTINCT FROM ma.i_manager_id\nWHERE ma.avg_monthly_sales > 0\n  AND ABS(ms.sum_sales - ma.avg_monthly_sales) > 0.1 * ma.avg_monthly_sales\nORDER BY ms.i_manager_id, ma.avg_monthly_sales, ms.sum_sales\nLIMIT 100",
+  "reasoning_trace": "1. **AGGREGATE-PUSHDOWN** \u2014 TARGET: the `store_sales` \u00d7 `date_dim` join feeding the `i_manager_id, d_moy` GROUP BY \u2014 TRANSFORMATION: First compute `SUM(ss_sales_price)` per `(ss_item_sk, d_moy)` for only `d_month_seq` 1222\u20131233 as a compact derived result, then join that item-month aggregate to `item`, apply the category/class/brand OR-filter, and re-sum by `i_manager_id`; this shrinks the 57M-row fact input before the expensive item filter and final rollup.\n\n2. **MATERIALIZE THE 12-MONTH DATE WINDOW** \u2014 TARGET: `date_dim.d_month_seq` and `ss_sold_date_sk = d_date_sk` \u2014 TRANSFORMATION: Reduce `date_dim` to a small `(d_date_sk, d_moy)` set for `d_month_seq` 1222\u20131233 and feed that into the pre-aggregation, so `store_sales` is scanned only for the relevant dates and `d_moy` is carried without repeated `date_dim` lookups.\n\n3. **ELIMINATE THE REDUNDANT `store` JOIN** \u2014 TARGET: the `store` table join via `ss_store_sk = s_store_sk` \u2014 TRANSFORMATION: Drop the join because no `store` column is selected or filtered and the FK guarantees a matching `s_store_sk`; if null `ss_store_sk` rows must still be excluded, add an explicit `ss_store_sk IS NOT NULL` predicate to preserve inner-join semantics.\n\n4. **REPLACE THE WINDOW AGGREGATE WITH AN AGGREGATE + JOIN** \u2014 TARGET: `avg(sum(ss_sales_price)) over (partition by i_manager_id)` \u2014 TRANSFORMATION: After computing `sum_sales` per `(i_manager_id, d_moy)`, compute `avg_monthly_sales` in a separate `GROUP BY i_manager_id` over those monthly sums, then join the two small manager-level results on `i_manager_id`; this avoids the window partition/sort over the grouped result.\n\n5. **SIMPLIFY THE OUTER RATIO FILTER** \u2014 TARGET: the `CASE WHEN avg_monthly_sales > 0 THEN abs(sum_sales - avg_monthly_sales) / avg_monthly_sales ELSE NULL END > 0.1` predicate \u2014 TRANSFORMATION: Rewrite it equivalently as `avg_monthly_sales > 0 AND abs(sum_sales - avg_monthly_sales) > 0.1 * avg_monthly_sales`, eliminating the division and null branch while producing the same surviving rows.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 24554.002,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 45.44,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 221692.89,
+      "optimized": 4171297.14,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 300181.1,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 6729.4,
+    "total_inference_ms": 306910.5,
+    "writer_inference_ms": 1167714.8,
+    "writer_tokens_in": 4892,
+    "writer_tokens_out": 120098,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. **AGGREGATE-PUSHDOWN** \u2014 TARGET: the `store_sales` \u00d7 `date_dim` join feeding the `i_manager_id, d_moy` GROUP BY \u2014 TRANSFORMATION: First compute `SUM(ss_sales_price)` per `(ss_item_sk, d_moy)` for only `d_month_seq` 1222\u20131233 as a compact derived result, then join that item-month aggregate to `item`, apply the category/class/brand OR-filter, and re-sum by `i_manager_id`; this shrinks the 57M-row fact input before the expensive item filter and final rollup.\n\n2. **MATERIALIZE THE 12-MONTH DATE WINDOW** \u2014 TARGET: `date_dim.d_month_seq` and `ss_sold_date_sk = d_date_sk` \u2014 TRANSFORMATION: Reduce `date_dim` to a small `(d_date_sk, d_moy)` set for `d_month_seq` 1222\u20131233 and feed that into the pre-aggregation, so `store_sales` is scanned only for the relevant dates and `d_moy` is carried without repeated `date_dim` lookups.\n\n3. **ELIMINATE THE REDUNDANT `store` JOIN** \u2014 TARGET: the `store` table join via `ss_store_sk = s_store_sk` \u2014 TRANSFORMATION: Drop the join because no `store` column is selected or filtered and the FK guarantees a matching `s_store_sk`; if null `ss_store_sk` rows must still be excluded, add an explicit `ss_store_sk IS NOT NULL` predicate to preserve inner-join semantics.\n\n4. **REPLACE THE WINDOW AGGREGATE WITH AN AGGREGATE + JOIN** \u2014 TARGET: `avg(sum(ss_sales_price)) over (partition by i_manager_id)` \u2014 TRANSFORMATION: After computing `sum_sales` per `(i_manager_id, d_moy)`, compute `avg_monthly_sales` in a separate `GROUP BY i_manager_id` over those monthly sums, then join the two small manager-level results on `i_manager_id`; this avoids the window partition/sort over the grouped result.\n\n5. **SIMPLIFY THE OUTER RATIO FILTER** \u2014 TARGET: the `CASE WHEN avg_monthly_sales > 0 THEN abs(sum_sales - avg_monthly_sales) / avg_monthly_sales ELSE NULL END > 0.1` predicate \u2014 TRANSFORMATION: Rewrite it equivalently as `avg_monthly_sales > 0 AND abs(sum_sales - avg_monthly_sales) > 0.1 * avg_monthly_sales`, eliminating the division and null branch while producing the same surviving rows.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was AGGREGATE-PUSHDOWN and MATERIALIZE THE 12-MONTH DATE WINDOW, which the rewrite applies by pre-aggregating item-month sales and materializing the date windo"
+  },
+  "raw_sql": "select * from (select i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales from item ,store_sales ,date_dim ,store where ss_item_sk = i_item_sk and ss_sold_date_sk = d_date_sk and ss_store_sk = s_store_sk and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) or( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) group by i_manager_id, d_moy) tmp1 where case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 order by i_manager_id ,avg_monthly_sales ,sum_sales limit 100"
+}

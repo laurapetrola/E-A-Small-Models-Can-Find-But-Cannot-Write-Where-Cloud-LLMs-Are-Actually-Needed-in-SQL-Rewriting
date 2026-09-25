@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-09-03T17:05:07.625630",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "split correlated subquery into separate joins",
+    "split an aggregate operation into multiple steps with intermediate results stored in materialized CTEs"
+  ],
+  "improvement_pct": -177.04,
+  "model": "llama+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 126574.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH month_dates AS MATERIALIZED (\n    SELECT d_date_sk, d_date\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n),\nweb_cume AS MATERIALIZED (\n    SELECT ws.ws_item_sk AS item_sk,\n           md.d_date AS d_date,\n           SUM(SUM(ws.ws_sales_price)) OVER (\n               PARTITION BY ws.ws_item_sk\n               ORDER BY md.d_date\n               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n           ) AS cume_sales\n    FROM month_dates md\n    JOIN web_sales ws\n      ON ws.ws_sold_date_sk = md.d_date_sk\n     AND ws.ws_item_sk IS NOT NULL\n    GROUP BY ws.ws_item_sk, md.d_date\n),\nstore_cume AS MATERIALIZED (\n    SELECT ss.ss_item_sk AS item_sk,\n           md.d_date AS d_date,\n           SUM(SUM(ss.ss_sales_price)) OVER (\n               PARTITION BY ss.ss_item_sk\n               ORDER BY md.d_date\n               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n           ) AS cume_sales\n    FROM month_dates md\n    JOIN store_sales ss\n      ON ss.ss_sold_date_sk = md.d_date_sk\n     AND ss.ss_item_sk IS NOT NULL\n    GROUP BY ss.ss_item_sk, md.d_date\n),\ncombined_daily AS MATERIALIZED (\n    SELECT item_sk,\n           d_date,\n           MAX(web_sales) AS web_sales,\n           MAX(store_sales) AS store_sales\n    FROM (\n        SELECT item_sk,\n               d_date,\n               cume_sales AS web_sales,\n               NULL AS store_sales\n        FROM web_cume\n        UNION ALL\n        SELECT item_sk,\n               d_date,\n               NULL AS web_sales,\n               cume_sales AS store_sales\n        FROM store_cume\n    ) sales_rows\n    GROUP BY item_sk, d_date\n),\nfinal_window AS (\n    SELECT item_sk,\n           d_date,\n           web_sales,\n           store_sales,\n           MAX(web_sales) OVER w AS web_cumulative,\n           MAX(store_sales) OVER w AS store_cumulative\n    FROM combined_daily\n    WINDOW w AS (\n        PARTITION BY item_sk\n        ORDER BY d_date\n        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )\n)\nSELECT item_sk,\n       d_date,\n       web_sales,\n       store_sales,\n       web_cumulative,\n       store_cumulative\nFROM final_window\nWHERE web_cumulative > store_cumulative\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reasoning_trace": "Here is an alternative optimization strategy:\n\n1. **Push down filters**: TARGET: `ws_item_sk` and `ss_item_sk` filters in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Push down the filters on `ws_item_sk` and `ss_item_sk` to the join between `date_dim` and `web_sales`/`store_sales`, as this will reduce the number of rows being joined.\n\n2. **Use efficient window functions**: TARGET: Window functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use more efficient window function variants, such as using a single `SUM` with an aggregate over a partition instead of multiple `SUM`s with overlapping partitions.\n\n3. **Avoid repeated scans of the same table**: TARGET: `date_dim` table in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use a common table expression (CTE) or a derived table to materialize the result of joining `date_dim` with `web_sales`/`store_sales`, instead of scanning it multiple times.\n\n4. **Optimize join order**: TARGET: Join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Reorder the join to reduce the number of rows being joined, as the current order may lead to a large intermediate result set.\n\n5. **Use efficient aggregation**: TARGET: Aggregation in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use more efficient aggregation variants, such as using a single `SUM` with an aggregate over a partition instead of multiple `SUM`s with overlapping partitions.\n\n6. **Limit intermediate results**: TARGET: Intermediate result set from the join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Apply the filter on `web_cumulative > store_cumulative` as early as possible, to limit the number of rows being processed in the final aggregation step.\n\n7. **Materialize intermediate results**: TARGET: Intermediate result set from the join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Materialize the intermediate result set by using a CTE or derived table, instead of re-scanning it multiple times.\n\n8. **Use index on date_dim.d_month_seq**: TARGET: Join between `date_dim` and `web_sales`/`store_sales` tables \u2014 TRANSFORMATION: Create an index on `date_dim.d_month_seq` to speed up the join operation.\n\n9. **Avoid using full outer join**: TARGET: Full outer join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use a left outer join instead, as it will reduce the number of rows being joined.\n\n10. **Use efficient data types**: TARGET: Data types used in aggregation functions \u2014 TRANSFORMATION: Use more efficient data types, such as `BIGINT` or `DECIMAL`, to reduce the overhead of arithmetic operations.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 14879.809,
+      "optimized_ms": 41223.531,
+      "delta_ms": -26343.722,
+      "improvement_pct": -177.04,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1922929.69,
+      "optimized": 7568652.59,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 83808.0,
+    "index_advisor_inference_ms": 12984.0,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 29782.7,
+    "total_inference_ms": 126574.7,
+    "writer_inference_ms": 1638631.9,
+    "writer_tokens_in": 13481,
+    "writer_tokens_out": 222910,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1922929.69 \u2192 optimized=7568652.59 (+293.6%)",
+    "Execution time regression: 14879.809ms \u2192 41223.531ms"
+  ],
+  "strategy": "Here is an alternative optimization strategy:\n\n1. **Push down filters**: TARGET: `ws_item_sk` and `ss_item_sk` filters in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Push down the filters on `ws_item_sk` and `ss_item_sk` to the join between `date_dim` and `web_sales`/`store_sales`, as this will reduce the number of rows being joined.\n\n2. **Use efficient window functions**: TARGET: Window functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use more efficient window function variants, such as using a single `SUM` with an aggregate over a partition instead of multiple `SUM`s with overlapping partitions.\n\n3. **Avoid repeated scans of the same table**: TARGET: `date_dim` table in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use a common table expression (CTE) or a derived table to materialize the result of joining `date_dim` with `web_sales`/`store_sales`, instead of scanning it multiple times.\n\n4. **Optimize join order**: TARGET: Join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Reorder the join to reduce the number of rows being joined, as the current order may lead to a large intermediate result set.\n\n5. **Use efficient aggregation**: TARGET: Aggregation in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use more efficient aggregation variants, such as using a single `SUM` with an aggregate over a partition instead of multiple `SUM`s with overlapping partitions.\n\n6. **Limit intermediate results**: TARGET: Intermediate result set from the join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Apply the filter on `web_cumulative > store_cumulative` as early as possible, to limit the number of rows being processed in the final aggregation step.\n\n7. **Materialize intermediate results**: TARGET: Intermediate result set from the join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Materialize the intermediate result set by using a CTE or derived table, instead of re-scanning it multiple times.\n\n8. **Use index on date_dim.d_month_seq**: TARGET: Join between `date_dim` and `web_sales`/`store_sales` tables \u2014 TRANSFORMATION: Create an index on `date_dim.d_month_seq` to speed up the join operation.\n\n9. **Avoid using full outer join**: TARGET: Full outer join between `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Use a left outer join instead, as it will reduce the number of rows being joined.\n\n10. **Use efficient data types**: TARGET: Data types used in aggregation functions \u2014 TRANSFORMATION: Use more efficient data types, such as `BIGINT` or `DECIMAL`, to reduce the overhead of arithmetic operations.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT\n\nThe rewrite applies the strategy's main technique of materializing intermediate results (transformation #7) by using MATERIALIZED common table expressions (CTEs) to store the results of subq"
+  },
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

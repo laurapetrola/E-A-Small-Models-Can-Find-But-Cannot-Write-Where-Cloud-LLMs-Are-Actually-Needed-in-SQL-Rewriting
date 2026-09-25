@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-08-27T12:26:37.728960",
+  "query_hash": "8ebe2727407b",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "materialize intermediate results",
+    "reorder joins to reduce intermediate rows",
+    "split aggregate calculations into pre-aggregated CTE",
+    "materialize subquery into CTE",
+    "convert an IN subquery to a semi-join",
+    "materialize a subquery for intermediate aggregation"
+  ],
+  "improvement_pct": -523.7,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "equivalence_failed_structural",
+  "used_fallback": true,
+  "inference_ms": 704049.2,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_dim_2001 AS MATERIALIZED (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2001\n),\ncd1_filtered AS MATERIALIZED (\n    SELECT cd_demo_sk, cd_dep_count\n    FROM customer_demographics\n    WHERE cd_gender = 'F'\n      AND cd_education_status = 'Primary'\n),\ncustomer_filtered AS MATERIALIZED (\n    SELECT customer.c_customer_sk, customer.c_birth_year, customer_address.ca_country, customer_address.ca_state, customer_address.ca_county\n    FROM customer\n    JOIN customer_address ON customer.c_current_addr_sk = customer_address.ca_address_sk\n    WHERE customer.c_current_cdemo_sk IS NOT NULL\n      AND customer.c_birth_month IN (1,3,7,11,10,4)\n      AND customer_address.ca_state IN ('AL','MO','TN','GA','MT','IN','CA')\n),\nbase_agg AS MATERIALIZED (\n    SELECT\n        item.i_item_id,\n        customer_filtered.ca_country,\n        customer_filtered.ca_state,\n        customer_filtered.ca_county,\n        COUNT(CAST(catalog_sales.cs_quantity AS decimal(12,2))) AS cnt_qty,\n        SUM(CAST(catalog_sales.cs_quantity AS decimal(12,2))) AS sum_qty,\n        COUNT(CAST(catalog_sales.cs_list_price AS decimal(12,2))) AS cnt_list,\n        SUM(CAST(catalog_sales.cs_list_price AS decimal(12,2))) AS sum_list,\n        COUNT(CAST(catalog_sales.cs_coupon_amt AS decimal(12,2))) AS cnt_coupon,\n        SUM(CAST(catalog_sales.cs_coupon_amt AS decimal(12,2))) AS sum_coupon,\n        COUNT(CAST(catalog_sales.cs_sales_price AS decimal(12,2))) AS cnt_sales,\n        SUM(CAST(catalog_sales.cs_sales_price AS decimal(12,2))) AS sum_sales,\n        COUNT(CAST(catalog_sales.cs_net_profit AS decimal(12,2))) AS cnt_profit,\n        SUM(CAST(catalog_sales.cs_net_profit AS decimal(12,2))) AS sum_profit,\n        COUNT(CAST(customer_filtered.c_birth_year AS decimal(12,2))) AS cnt_birth,\n        SUM(CAST(customer_filtered.c_birth_year AS decimal(12,2))) AS sum_birth,\n        COUNT(CAST(cd1_filtered.cd_dep_count AS decimal(12,2))) AS cnt_dep,\n        SUM(CAST(cd1_filtered.cd_dep_count AS decimal(12,2))) AS sum_dep\n    FROM catalog_sales\n    JOIN date_dim_2001 ON catalog_sales.cs_sold_date_sk = date_dim_2001.d_date_sk\n    JOIN cd1_filtered ON catalog_sales.cs_bill_cdemo_sk = cd1_filtered.cd_demo_sk\n    JOIN customer_filtered ON catalog_sales.cs_bill_customer_sk = customer_filtered.c_customer_sk\n    JOIN item ON catalog_sales.cs_item_sk = item.i_item_sk\n    GROUP BY item.i_item_id, customer_filtered.ca_country, customer_filtered.ca_state, customer_filtered.ca_county\n)\nSELECT\n    i_item_id,\n    ca_country,\n    ca_state,\n    ca_county,\n    SUM(sum_qty) / NULLIF(SUM(cnt_qty), 0) AS agg1,\n    SUM(sum_list) / NULLIF(SUM(cnt_list), 0) AS agg2,\n    SUM(sum_coupon) / NULLIF(SUM(cnt_coupon), 0) AS agg3,\n    SUM(sum_sales) / NULLIF(SUM(cnt_sales), 0) AS agg4,\n    SUM(sum_profit) / NULLIF(SUM(cnt_profit), 0) AS agg5,\n    SUM(sum_birth) / NULLIF(SUM(cnt_birth), 0) AS agg6,\n    SUM(sum_dep) / NULLIF(SUM(cnt_dep), 0) AS agg7\nFROM base_agg\nGROUP BY ROLLUP (i_item_id, ca_country, ca_state, ca_county)\nORDER BY ca_country, ca_state, ca_county, i_item_id\nLIMIT 100",
+  "reasoning_trace": "1. FILTER-PUSHED MATERIALIZED DIMENSION SETS \u2014 TARGET: the `catalog_sales` scan and its filters on `date_dim.d_year`, `customer_demographics cd1` (`cd_gender='F'`, `cd_education_status='Primary'`), `customer.c_birth_month`, and `customer_address.ca_state` \u2014 TRANSFORMATION: Materialize once the small 2001 `date_dim` key set, the filtered `cd1` set that also keeps `cd_dep_count`, and the filtered `customer`\u00d7`customer_address` set that keeps `c_customer_sk`, `c_birth_year`, and `ca_country`/`ca_state`/`ca_county`; join `catalog_sales` to these compact sets so the 28.8M fact rows are reduced before aggregation.\n\n2. LOWEST-GRANULARITY PRE-AGGREGATION \u2014 TARGET: the detail-row `GROUP BY ROLLUP (i_item_id, ca_country, ca_state, ca_county)` and the seven averaged inputs `cs_quantity`, `cs_list_price`, `cs_coupon_amt`, `cs_sales_price`, `cs_net_profit`, `c_birth_year`, `cd1.cd_dep_count` \u2014 TRANSFORMATION: First aggregate the filtered join stream by exactly `(i_item_id, ca_country, ca_state, ca_county)`, storing `SUM` and a per-measure non-null `COUNT` for every averaged expression; then run `ROLLUP` on that compact base aggregate and reconstruct each `AVG` as weighted `SUM`/`COUNT`, using `NULLIF` for zero counts to preserve the original null-averaging semantics.\n\n3. FK-BASED JOIN ELIMINATION \u2014 TARGET: the second `customer_demographics` alias `cd2` joined via `c_current_cdemo_sk = cd2.cd_demo_sk` \u2014 TRANSFORMATION: Remove that join entirely because `cd2` contributes no selected column and no predicate; since `c_current_cdemo_sk` is a foreign key to `cd_demo_sk`, keep only the equivalent guard `c_current_cdemo_sk IS NOT NULL` on `customer` so the original inner-join row set is unchanged.\n\n4. TOP-N SORT ON POST-ROLLUP OUTPUT \u2014 TARGET: the final `ORDER BY ca_country, ca_state, ca_county, i_item_id LIMIT 100` \u2014 TRANSFORMATION: Apply the sort and limit only to the small rollup result produced from the base aggregate, so no detail row or large intermediate participates in the top-100 ordering.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2500.384,
+      "optimized_ms": 15594.945,
+      "delta_ms": -13094.561,
+      "improvement_pct": -523.7,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 937761.85,
+      "optimized": 3863689.28,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 649006.9,
+    "index_advisor_inference_ms": 47297.3,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 7745.0,
+    "total_inference_ms": 704049.2,
+    "writer_inference_ms": 2728874.6,
+    "writer_tokens_in": 11598,
+    "writer_tokens_out": 320716,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=937761.85 \u2192 optimized=3863689.28 (+312.0%)",
+    "Execution time regression: 2500.384ms \u2192 15594.945ms",
+    "Data_Loss_Detected: filter 'c_current_cdemo_sk = cd2.cd_demo_sk' was removed or altered"
+  ],
+  "strategy": "1. FILTER-PUSHED MATERIALIZED DIMENSION SETS \u2014 TARGET: the `catalog_sales` scan and its filters on `date_dim.d_year`, `customer_demographics cd1` (`cd_gender='F'`, `cd_education_status='Primary'`), `customer.c_birth_month`, and `customer_address.ca_state` \u2014 TRANSFORMATION: Materialize once the small 2001 `date_dim` key set, the filtered `cd1` set that also keeps `cd_dep_count`, and the filtered `customer`\u00d7`customer_address` set that keeps `c_customer_sk`, `c_birth_year`, and `ca_country`/`ca_state`/`ca_county`; join `catalog_sales` to these compact sets so the 28.8M fact rows are reduced before aggregation.\n\n2. LOWEST-GRANULARITY PRE-AGGREGATION \u2014 TARGET: the detail-row `GROUP BY ROLLUP (i_item_id, ca_country, ca_state, ca_county)` and the seven averaged inputs `cs_quantity`, `cs_list_price`, `cs_coupon_amt`, `cs_sales_price`, `cs_net_profit`, `c_birth_year`, `cd1.cd_dep_count` \u2014 TRANSFORMATION: First aggregate the filtered join stream by exactly `(i_item_id, ca_country, ca_state, ca_county)`, storing `SUM` and a per-measure non-null `COUNT` for every averaged expression; then run `ROLLUP` on that compact base aggregate and reconstruct each `AVG` as weighted `SUM`/`COUNT`, using `NULLIF` for zero counts to preserve the original null-averaging semantics.\n\n3. FK-BASED JOIN ELIMINATION \u2014 TARGET: the second `customer_demographics` alias `cd2` joined via `c_current_cdemo_sk = cd2.cd_demo_sk` \u2014 TRANSFORMATION: Remove that join entirely because `cd2` contributes no selected column and no predicate; since `c_current_cdemo_sk` is a foreign key to `cd_demo_sk`, keep only the equivalent guard `c_current_cdemo_sk IS NOT NULL` on `customer` so the original inner-join row set is unchanged.\n\n4. TOP-N SORT ON POST-ROLLUP OUTPUT \u2014 TARGET: the final `ORDER BY ca_country, ca_state, ca_county, i_item_id LIMIT 100` \u2014 TRANSFORMATION: Apply the sort and limit only to the small rollup result produced from the base aggregate, so no detail row or large intermediate participates in the top-100 ordering.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was pre-aggregation with rollup, and the rewrite applies this by first aggregating the filtered join stream and then running ROLLUP on the compact base aggrega"
+  },
+  "raw_sql": "select i_item_id, ca_country, ca_state, ca_county, avg( cast(cs_quantity as decimal(12,2))) agg1, avg( cast(cs_list_price as decimal(12,2))) agg2, avg( cast(cs_coupon_amt as decimal(12,2))) agg3, avg( cast(cs_sales_price as decimal(12,2))) agg4, avg( cast(cs_net_profit as decimal(12,2))) agg5, avg( cast(c_birth_year as decimal(12,2))) agg6, avg( cast(cd1.cd_dep_count as decimal(12,2))) agg7 from catalog_sales, customer_demographics cd1, customer_demographics cd2, customer, customer_address, date_dim, item where cs_sold_date_sk = d_date_sk and cs_item_sk = i_item_sk and cs_bill_cdemo_sk = cd1.cd_demo_sk and cs_bill_customer_sk = c_customer_sk and cd1.cd_gender = 'F' and cd1.cd_education_status = 'Primary' and c_current_cdemo_sk = cd2.cd_demo_sk and c_current_addr_sk = ca_address_sk and c_birth_month in (1,3,7,11,10,4) and d_year = 2001 and ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA') group by rollup (i_item_id, ca_country, ca_state, ca_county) order by ca_country, ca_state, ca_county, i_item_id limit 100"
+}

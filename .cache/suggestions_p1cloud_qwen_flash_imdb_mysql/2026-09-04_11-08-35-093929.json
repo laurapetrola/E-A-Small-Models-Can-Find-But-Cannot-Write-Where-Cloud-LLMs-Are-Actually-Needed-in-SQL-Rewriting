@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-09-04T11:08:35.093903",
+  "query_hash": "48fbb3e8a39d",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split a join condition into separate CTEs",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 11.79,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 144486.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "mysql",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH release_movies AS (\n    SELECT DISTINCT mi.movie_id\n    FROM movie_info AS mi\n    JOIN info_type AS it2 ON it2.id = mi.info_type_id\n    WHERE it2.info = 'release dates'\n),\nrating_movies AS (\n    SELECT miidx.movie_id,\n           MIN(miidx.info) AS info\n    FROM movie_info_idx AS miidx\n    JOIN info_type AS it ON it.id = miidx.info_type_id\n    WHERE it.info = 'rating'\n    GROUP BY miidx.movie_id\n),\nproduction_movies AS (\n    SELECT mc.movie_id,\n           MIN(cn.name) AS name\n    FROM movie_companies AS mc\n    JOIN company_name AS cn ON cn.id = mc.company_id\n    JOIN company_type AS ct ON ct.id = mc.company_type_id\n    WHERE cn.country_code = '[us]'\n      AND ct.kind = 'production companies'\n    GROUP BY mc.movie_id\n)\nSELECT MIN(production_movies.name) AS producing_company,\n       MIN(rating_movies.info) AS rating,\n       MIN(t.title) AS movie\nFROM title AS t\nJOIN kind_type AS kt ON kt.id = t.kind_id\nJOIN release_movies ON release_movies.movie_id = t.id\nJOIN rating_movies ON rating_movies.movie_id = t.id\nJOIN production_movies ON production_movies.movie_id = t.id\nWHERE kt.kind = 'movie'",
+  "reached_sql": "WITH release_movies AS (\n    SELECT DISTINCT mi.movie_id\n    FROM movie_info AS mi\n    JOIN info_type AS it2 ON it2.id = mi.info_type_id\n    WHERE it2.info = 'release dates'\n),\nrating_movies AS (\n    SELECT miidx.movie_id,\n           MIN(miidx.info) AS info\n    FROM movie_info_idx AS miidx\n    JOIN info_type AS it ON it.id = miidx.info_type_id\n    WHERE it.info = 'rating'\n    GROUP BY miidx.movie_id\n),\nproduction_movies AS (\n    SELECT mc.movie_id,\n           MIN(cn.name) AS name\n    FROM movie_companies AS mc\n    JOIN company_name AS cn ON cn.id = mc.company_id\n    JOIN company_type AS ct ON ct.id = mc.company_type_id\n    WHERE cn.country_code = '[us]'\n      AND ct.kind = 'production companies'\n    GROUP BY mc.movie_id\n)\nSELECT MIN(production_movies.name) AS producing_company,\n       MIN(rating_movies.info) AS rating,\n       MIN(t.title) AS movie\nFROM title AS t\nJOIN kind_type AS kt ON kt.id = t.kind_id\nJOIN release_movies ON release_movies.movie_id = t.id\nJOIN rating_movies ON rating_movies.movie_id = t.id\nJOIN production_movies ON production_movies.movie_id = t.id\nWHERE kt.kind = 'movie'",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user has already tried some strategies, and now I need to come up with a different approach. Let me start by understanding the original query and the previous attempts.\n\nThe original query is selecting MIN values from several tables, joining them based on various conditions. The goal is to find the minimum producing company name, rating, and movie title that meet certain criteria. The previous strategies focused on indexing, reducing joins, and materializing subqueries. Now, I need to think of another technique.\n\nLooking at the query, there are multiple joins between tables like movie_companies, movie_info, movie_info_idx, etc. One thing I notice is that the same movie_id is joined multiple times with different tables. For example, mi.movie_id = t.id, miidx.movie_id = t.id, mc.movie_id = t.id. This might lead to Cartesian products if not handled properly, increasing the cost.\n\nWait, maybe there's a way to reduce the number of rows early by filtering more aggressively. The previous attempt mentioned filtering early with indexes, but perhaps there's a way to pre-filter the movie_info and movie_info_idx tables based on the info_type conditions. Since the query has it.info = 'rating' and it2.info = 'release dates', maybe those conditions can be applied earlier to reduce the number of rows in those tables before joining.\n\nAnother thought: the query has multiple MIN aggregations. If we can ensure that the joins are done on smaller datasets, the aggregation would be faster. For example, if we can filter the movie_info and movie_info_idx tables to only include the necessary info_type rows, that could reduce the number of rows joined with the title table.\n\nAlso, looking at the joins, there are several conditions that link movie_info and movie_info_idx to the same movie_id. Maybe combining these into a single subquery or CTE that filters both info_type conditions first would help. That way, we process the info_type filters before joining with the title table, reducing the number of rows involved in subsequent joins.\n\nAnother angle: the query has multiple tables joined with title (t). If we can find a way to precompute the necessary info from movie_info and movie_info_idx for each movie, that might reduce the number of rows to join with the title table. For example, using subqueries to get the rating and release date info for each movie, then joining those with the title table.\n\nWait, the user mentioned that the previous strategy of materializing subqueries didn't work. But maybe there's a way to structure the query to use derived tables or CTEs that pre-filter the info_type conditions. For instance, creating a derived table for movie_info that only includes the 'rating' info_type and another for movie_info_idx that includes 'release dates', then joining those with the title table. This would reduce the number of rows in those tables before joining, which could speed up the overall query.\n\nAlso, checking the indexes: the previous strategy suggested indexing on join columns, but maybe there are other columns that could benefit from indexes. For example, the info_type tables have the 'info' column, which is used in the WHERE clause. If those columns are indexed, it could speed up filtering the info_type rows.\n\nAnother possibility is that the query has redundant conditions. For example, mi.movie_id = miidx.movie_id and mi.movie_id = mc.movie_id and miidx.movie_id = mc.movie_id. These are all ensuring that the movie_id is the same across these tables. Maybe combining these into a single condition or ensuring that the joins are done in a way that minimizes redundant checks.\n\nWait, perhaps the main cost is in joining multiple tables with the title table. If we can reduce the number of tables joined with title, that would help. For example, if we can get the necessary info (rating and release dates) from movie_info and movie_info_idx in a way that doesn't require joining all those tables with title, but instead, first filter those tables and then join with title.\n\nSo, the key idea here is to pre-filter the movie_info and movie_info_idx tables to only include the necessary info_type rows, then join those filtered results with the title table. This would reduce the number of rows in those tables before joining, which could significantly lower the overall cost.\n\nTherefore, the optimization strategy could involve creating derived tables or CTEs that filter the movie_info and movie_info_idx tables based on the info_type conditions. This way, the joins with the title table are done on smaller datasets, reducing the number of rows processed and improving performance.\n\n</think>\n\n1. **Pre-filter Info Tables with Derived Tables** \u2014 TARGET: `movie_info` and `movie_info_idx` \u2014 TRANSFORMATION: Replace inline joins with derived tables that pre-filter `movie_info` for `it.id = mi.info_type_id` and `movie_info_idx` for `it2.id = miidx.info_type_id`, reducing row counts before joining with `title`.  \n2. **Collapse Redundant Movie_ID Joins** \u2014 TARGET: `mi.movie_id = miidx.movie_id`, `mi.movie_id = mc.movie_id`, `miidx.movie_id = mc.movie_id` \u2014 TRANSFORMATION: Use a single `movie_id` filter in a subquery to ensure all joins reference the same filtered set, avoiding redundant cross-checks.  \n3. **Index Info-Type Filters** \u2014 TARGET: `info_type.info` in `info_type` tables \u2014 TRANSFORMATION: Add functional indexes on `info_type.info` to accelerate filtering for `'rating'` and `'release dates'` in the WHERE clause.  \n4. **Early Aggregation on Filtered Sets** \u2014 TARGET: `MIN(cn.name)`, `MIN(miidx.info)`, `MIN(t.title)` \u2014 TRANSFORMATION: Apply aggregation after filtering and joining to minimize the dataset size before computing MIN values.  \n5. **Optimize Join Order for Title Table** \u2014 TARGET: `title` as the central join point \u2014 TRANSFORMATION: Reorder joins to process `movie_companies`, `movie_info`, and `movie_info_idx` first, then join with `title` to reduce the number of rows in the final join step.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 23895.0,
+      "optimized_ms": 21078.0,
+      "delta_ms": 2817.0,
+      "improvement_pct": 11.79,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 929050.04,
+      "optimized": 2636425.05,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 87553.4,
+    "index_advisor_inference_ms": 51710.3,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 5222.4,
+    "total_inference_ms": 144486.1,
+    "writer_inference_ms": 450225.8,
+    "writer_tokens_in": 2154,
+    "writer_tokens_out": 64971,
+    "writer_calls": 2
+  },
+  "errors": [],
+  "strategy": "1. **Pre-filter Info Tables with Derived Tables** \u2014 TARGET: `movie_info` and `movie_info_idx` \u2014 TRANSFORMATION: Replace inline joins with derived tables that pre-filter `movie_info` for `it.id = mi.info_type_id` and `movie_info_idx` for `it2.id = miidx.info_type_id`, reducing row counts before joining with `title`.  \n2. **Collapse Redundant Movie_ID Joins** \u2014 TARGET: `mi.movie_id = miidx.movie_id`, `mi.movie_id = mc.movie_id`, `miidx.movie_id = mc.movie_id` \u2014 TRANSFORMATION: Use a single `movie_id` filter in a subquery to ensure all joins reference the same filtered set, avoiding redundant cross-checks.  \n3. **Index Info-Type Filters** \u2014 TARGET: `info_type.info` in `info_type` tables \u2014 TRANSFORMATION: Add functional indexes on `info_type.info` to accelerate filtering for `'rating'` and `'release dates'` in the WHERE clause.  \n4. **Early Aggregation on Filtered Sets** \u2014 TARGET: `MIN(cn.name)`, `MIN(miidx.info)`, `MIN(t.title)` \u2014 TRANSFORMATION: Apply aggregation after filtering and joining to minimize the dataset size before computing MIN values.  \n5. **Optimize Join Order for Title Table** \u2014 TARGET: `title` as the central join point \u2014 TRANSFORMATION: Reorder joins to process `movie_companies`, `movie_info`, and `movie_info_idx` first, then join with `title` to reduce the number of rows in the final join step.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to pre-filter info tables with derived tables (derived tables for `movie_info` and `movie_info_idx`), and the rewrite applies this by using CTEs to filter "
+  },
+  "raw_sql": "SELECT MIN(cn.name) AS producing_company, MIN(miidx.info) AS rating, MIN(t.title) AS movie FROM company_name AS cn, company_type AS ct, info_type AS it, info_type AS it2, kind_type AS kt, movie_companies AS mc, movie_info AS mi, movie_info_idx AS miidx, title AS t WHERE cn.country_code ='[us]' AND ct.kind ='production companies' AND it.info ='rating' AND it2.info ='release dates' AND kt.kind ='movie' AND mi.movie_id = t.id AND it2.id = mi.info_type_id AND kt.id = t.kind_id AND mc.movie_id = t.id AND cn.id = mc.company_id AND ct.id = mc.company_type_id AND miidx.movie_id = t.id AND it.id = miidx.info_type_id AND mi.movie_id = miidx.movie_id AND mi.movie_id = mc.movie_id AND miidx.movie_id = mc.movie_id"
+}

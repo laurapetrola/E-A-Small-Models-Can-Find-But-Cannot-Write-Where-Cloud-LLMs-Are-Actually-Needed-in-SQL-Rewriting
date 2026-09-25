@@ -1,0 +1,320 @@
+{
+  "timestamp": "2026-07-30T09:29:50.411097",
+  "query_hash": "2971a965ef2e",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 263992.4,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes to reduce execution cost.\n\nThe query structure is:\n\n1. A Common Table Expression (CTE) named `customer_total_return` that computes the total return amount for each customer and state for the year 2000.\n   - It joins `web_returns`, `date_dim`, and `customer_address`.\n   - It groups by `wr_returning_customer_sk` and `ca_state`.\n   - It filters by `d_year = 2000` and `wr_returning_addr_sk = ca_address_sk`.\n\n2. The main query then uses the CTE to get customer details and the total return amount, and filters by:\n   - `ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state)`\n   - `ca_address_sk = c_current_addr_sk`\n   - `ca_state = 'AR'`\n   - `ctr1.ctr_customer_sk = c_customer_sk`\n\n   Then it orders by several columns and limits to 100 rows.\n\nThe physical execution plan is not provided, but we can analyze the query structure.\n\nPotential bottlenecks:\n\n1. The CTE `customer_total_return`:\n   - It involves a join between `web_returns` (1.4M rows) and `date_dim` (73K rows) and `customer_address` (133K rows).\n   - Without indexes, these joins might be done via sequential scans, which is expensive.\n\n2. The main query:\n   - It uses a correlated subquery (the average calculation) which might be executed for each row of the outer query.\n   - The outer query also does a join between the CTE and `customer` and `customer_address` (again, without indexes, this might be expensive).\n\nGiven that the tables involved in the CTE and the main query do not have indexes, we should focus on indexing the tables that are being scanned.\n\nLet's break down the tables and the operations:\n\n1. `web_returns` (1.4M rows) is joined with `date_dim` (73K rows) and `customer_address` (133K rows) in the CTE.\n   - The join condition for `date_dim` is `wr_returned_date_sk = d_date_sk` and `d_year = 2000`. We can index `web_returns.wr_returned_date_sk` and `date_dim.d_date_sk` to speed up this join.\n   - The join condition for `customer_address` is `wr_returning_addr_sk = ca_address_sk`. We can index `web_returns.wr_returning_addr_sk` and `customer_address.ca_address_sk`.\n\n2. The main query:\n   - The CTE is used in the main query via a join on `ctr1.ctr_customer_sk = c_customer_sk` and `ca_address_sk = c_current_addr_sk`. We can index `customer.c_customer_sk` and `customer.c_current_addr_sk` (which is a foreign key to `customer_address.ca_address_sk`).\n\nAdditionally, the correlated subquery in the main query might be a bottleneck. We can consider materializing the CTE or indexing the CTE table (if it were materialized) but since it's a CTE, we cannot. However, we can try to optimize the subquery by precomputing the average for each state and then joining with the CTE. But the problem states that we cannot rewrite the SQL, so we must stick to indexing.\n\nBut note: the problem says the query cannot be improved by SQL rewriting alone, so we are only allowed to suggest indexes.\n\nLet's consider the following:\n\n- The CTE is computed once and then used in the main query. The CTE is a sequential scan on `web_returns` and then joins with two other tables. We can create indexes on `web_returns` to speed up the joins.\n\n- The main query then does a join between the CTE and `customer` and `customer_address`. We can index `customer` on `c_customer_sk` and `c_current_addr_sk`.\n\nBut note: the CTE is defined as:\n\n```sql\ncustomer_total_return as (\n  select \n    wr_returning_customer_sk as ctr_customer_sk,\n    ca_state as ctr_state,\n    sum(wr_return_amt) as ctr_total_return \n  from web_returns, date_dim, customer_address \n  where \n    wr_returned_date_sk = d_date_sk \n    and d_year = 2000 \n    and wr_returning_addr_sk = ca_address_sk \n  group by wr_returning_customer_sk, ca_state\n)\n```\n\nWe can break down the CTE:\n\n- The condition `wr_returned_date_sk = d_date_sk` and `d_year = 2000` can be optimized by having an index on `web_returns.wr_returned_date_sk` and `date_dim.d_date_sk` (and also on `date_dim.d_year` but note `d_year` is a derived column from `d_date`, so it might be better to index `web_returns` on `wr_returned_date_sk` and then use an index on `date_dim` for `d_date_sk` and `d_year`? But note: `d_year` is a column in `date_dim` and we are filtering by `d_year=2000`. We can index `date_dim` on `d_year` and `d_date_sk`? But note the join condition is `wr_returned_date_sk = d_date_sk` and then `d_year=2000`. We can also index `web_returns` on `wr_returned_date_sk` and then use a condition on `date_dim.d_year=2000`? Alternatively, we can create a composite index on `date_dim` for `(d_date_sk, d_year)`.\n\nBut note: the CTE is grouping by `wr_returning_customer_sk` and `ca_state`. We can also consider an index on `web_returns` for the grouping columns? But the grouping is done after the join, so we need to first join and then group.\n\nAlternatively, we can consider creating a covering index on `web_returns` for the columns used in the CTE: `wr_returned_date_sk`, `wr_returning_addr_sk`, and `wr_return_amt` (for the sum). But note: the CTE also uses `date_dim` and `customer_address`. We can index `web_returns` on `wr_returned_date_sk` and `wr_returning_addr_sk` to speed up the joins.\n\nLet's propose:\n\n1. Index on `web_returns` for `wr_returned_date_sk` and `wr_returning_addr_sk` (composite index or two separate indexes? Since the join with `date_dim` uses `wr_returned_date_sk` and the join with `customer_address` uses `wr_returning_addr_sk`, two separate indexes might be better).\n\n2. Index on `date_dim` for `d_date_sk` and `d_year` (composite index) to speed up the join and the filter.\n\n3. Index on `customer_address` for `ca_address_sk` (since it is used in the CTE and in the main query).\n\n4. In the main query, the join between the CTE and `customer` uses `ctr1.ctr_customer_sk = c_customer_sk`. We can index `customer` on `c_customer_sk`.\n\n5. Also, the main query joins `customer` and `customer_address` via `ca_address_sk = c_current_addr_sk`. We can index `customer` on `c_current_addr_sk`.\n\nBut note: the CTE is computed once and then used in the main query. The CTE is a temporary table, so we cannot index it. We must index the base tables.\n\nNow, let's consider the order of index creation:\n\n- The CTE is executed first and is the most expensive part. We should prioritize indexing the tables used in the CTE.\n\n- The main query then uses the CTE and does additional joins. We should index the `customer` table for the joins and the condition.\n\nHowever, note that the CTE is a join of three tables. The `web_returns` table is the largest (1.4M rows). We can create an index on `web_returns` for `wr_returned_date_sk` and `wr_returning_addr_sk` to avoid sequential scans.\n\nBut note: the CTE also has a filter on `d_year=2000`. We can index `date_dim` on `d_year` and `d_date_sk` to quickly find the rows for 2000 and then join.\n\nAlternatively, we can create a composite index on `date_dim` for `(d_year, d_date_sk)`.\n\nBut note: the condition is `wr_returned_date_sk = d_date_sk` and `d_year=2000`. We can also create a composite index on `web_returns` for `(wr_returned_date_sk, d_year)`? But `d_year` is in `date_dim`. We cannot index across tables. We must index each table separately.\n\nLet's break down the CTE:\n\n- The CTE starts with a join between `web_returns` and `date_dim` on `wr_returned_date_sk = d_date_sk` and then filters `d_year=2000`. We can create an index on `date_dim` for `(d_date_sk, d_year)` to quickly find the rows for 2000 and then join with `web_returns` on `d_date_sk`.\n\nAlternatively, we can create an index on `web_returns` for `wr_returned_date_sk` and then use a condition on `date_dim.d_year=2000`. But the join condition is `wr_returned_date_sk = d_date_sk`, so we can index `date_dim` on `d_date_sk` and then use a condition on `d_year`? But the condition on `d_year` is a filter, so we can index `date_dim` on `d_year` and then use a condition on `d_date_sk`? But the join condition is `wr_returned_date_sk = d_date_sk`, so we need to index `date_dim` on `d_date_sk` and then filter by `d_year=2000`? Or index `date_dim` on `(d_date_sk, d_year)`.\n\nGiven that the CTE is grouping by `wr_returning_customer_sk` and `ca_state`, we might also consider creating an index on `web_returns` for the grouping columns? But note: the grouping is done after the join, so we need to first join and then group. We cannot avoid the join without an index.\n\nNow, let's consider the main query:\n\n- The main query does a join between the CTE and `customer` on `ctr1.ctr_customer_sk = c_customer_sk`. We can create an index on `customer` for `c_customer_sk`.\n\n- The main query also does a join between `customer` and `customer_address` on `ca_address_sk = c_current_addr_sk`. We can create an index on `customer` for `c_current_addr_sk`.\n\nBut note: the CTE is already using `customer_address.ca_address_sk` (via `wr_returning_addr_sk = ca_address_sk`). We have already considered indexing `customer_address.ca_address_sk`.\n\nNow, let's list the indexes we propose:\n\n1. On `web_returns`:\n   - Index on `wr_returned_date_sk` (to join with `date_dim`)\n   - Index on `wr_returning_addr_sk` (to join with `customer_address`)\n\n2. On `date_dim`:\n   - Index on `d_date_sk` (for the join with `web_returns`)\n   - Index on `d_year` (for the filter condition)\n\nBut note: the condition in the CTE is `wr_returned_date_sk = d_date_sk` and `d_year=2000`. We can create a composite index on `date_dim` for `(d_year, d_date_sk)` to cover both the filter and the join condition.\n\nAlternatively, we can create two separate indexes on `date_dim` for `d_year` and `d_date_sk`? But a composite index might be more efficient.\n\n3. On `customer_address`:\n   - Index on `ca_address_sk` (for the join with `web_returns` and the join in the main query)\n\n4. On `customer`:\n   - Index on `c_customer_sk` (for the join with the CTE)\n   - Index on `c_current_addr_sk` (for the join with `customer_address`)\n\nBut note: the CTE is computed once and then used in the main query. The CTE is a temporary result set. We cannot index it, so we must index the base tables.\n\nNow, let's consider the order of the indexes by the number of rows scanned:\n\n- The CTE is the first to run and involves the largest tables: `web_returns` (1.4M), `date_dim` (73K), and `customer_address` (133K). We should prioritize indexing these.\n\n- The main query then uses the CTE and does a join with `customer` (266K rows). We should index `customer` as well.\n\nBut note: the CTE is a join of three tables. We can break down the CTE:\n\n- The join between `web_returns` and `date_dim` is done via `wr_returned_date_sk = d_date_sk`. We can create an index on `web_returns.wr_returned_date_sk` and an index on `date_dim.d_date_sk`. Then, the join can be done via an index scan on `date_dim` for `d_date_sk` and then look up in `web_returns`? Or vice versa.\n\nAlternatively, we can create a composite index on `date_dim` for `(d_date_sk, d_year)` to cover the join and the filter.\n\nBut note: the condition `d_year=2000` is a filter, so we can also create a composite index on `date_dim` for `(d_year, d_date_sk)` and then use the index to find rows with `d_year=2000` and then `d_date_sk` equal to the value from `web_returns`.\n\nNow, let's write the JSON structure.\n\nWe are to return an array of indexes, each with:\n- target: table name\n- property: column name\n- index_type: the type of index (e.g., btree, hash, etc. \u2014 but PostgreSQL typically uses btree unless specified, so we can omit or set to 'btree' if necessary. However, the problem does not specify, so we can use 'btree' for most cases.)\n- partial_predicate: null (since we are not using partial indexes)\n- estimated_benefit: a string describing what the index eliminates and on how many rows.\n\nWe are also to set `no_index_possible` to false (unless we think no index is possible, which we don't).\n\nWe are to order the indexes by the number of rows scanned (largest first). The largest table is `web_returns` (1.4M rows) and then `customer_address` (133K), `date_dim` (73K), and `customer` (266K).\n\nBut note: the CTE is a join of three tables. The `web_returns` table is the largest, so we should index it first.\n\nLet's propose:\n\n1. Index on `web_returns` for `wr_returned_date_sk` (to join with `date_dim`).\n   - This will eliminate a sequential scan on `web_returns` for the join with `date_dim`.\n\n2. Index on `date_dim` for `d_date_sk` (to join with `web_returns`).\n\nBut note: the condition in the CTE is `wr_returned_date_sk = d_date_sk` and `d_year=2000`. We can also index `date_dim` on `d_year` to quickly filter by year.\n\nAlternatively, we can create a composite index on `date_dim` for `(d_year, d_date_sk)`.\n\nBut note: the join condition is `wr_returned_date_sk = d_date_sk`. We can also index `web_returns` on `wr_returned_date_sk` and `date_dim` on `d_date_sk` and `d_year`.\n\nLet's consider:\n\n- The CTE has a filter on `d_year=2000`. We can create an index on `date_dim` for `d_year` to quickly filter the rows for 2000. Then, the join condition `wr_returned_date_sk = d_date_sk` can be done by a nested loop if the index on `date_dim` is used to filter and then the join condition is checked.\n\nBut note: the `web_returns` table has 1.4M rows and `date_dim` has 73K rows. We can also create an index on `web_returns` for `wr_returned_date_sk` and then use a condition on `date_dim.d_year=2000`.\n\nAlternatively, we can create a composite index on `date_dim` for `(d_year, d_date_sk)` and then use that index to find rows with `d_year=2000` and then `d_date_sk` equal to the value from `web_returns`.\n\nBut note: the join condition is `wr_returned_date_sk = d_date_sk`. We can also create a composite index on `web_returns` for `(wr_returned_date_sk, d_year)`? But `d_year` is in `date_dim`. We cannot index across tables.\n\nWe must index each table separately.\n\nLet's propose:\n\n1. `web_returns` on `wr_returned_date_sk` (to join with `date_dim`).\n2. `date_dim` on `d_date_sk` (to join with `web_returns`).\n3. `date_dim` on `d_year` (to filter by 2000).\n4. `web_returns` on `wr_returning_addr_sk` (to join with `customer_address`).\n5. `customer_address` on `ca_address_sk` (to join with `web_returns` and in the main query).\n6. `customer` on `c_customer_sk` (for the join with the CTE).\n7. `customer` on `c_current_addr_sk` (for the join with `customer_address`).\n\nBut note: the CTE also uses `customer_address.ca_state` in the grouping. We are not indexing `customer_address` on `ca_state` because the CTE does not filter by `ca_state` (it groups by it). However, the main query does a filter by `ca_state='AR'`. We can index `customer_address` on `ca_state` to speed up the main query filter? But note: the main query does a join between `customer` and `customer_address` and then filters by `ca_state='AR'`. We can also index `customer_address` on `ca_state` for the filter.\n\nBut note: the main query condition is `ca_state='AR'` and `ca_address_sk = c_current_addr_sk`. We can index `customer_address` on `ca_state` to help the filter.\n\nNow, let's list the indexes in order of the number of rows scanned (from largest to smallest):\n\n1. `web_returns` (1.4M rows) \u2014 index on `wr_returned_date_sk` and `wr_returning_addr_sk`.\n2. `customer_address` (133K rows) \u2014 index on `ca_address_sk` and `ca_state`.\n3. `date_dim` (73K rows) \u2014 index on `d_date_sk` and `d_year`.\n4. `customer` (266K rows) \u2014 index on `c_customer_sk` and `c_current_addr_sk`.\n\nBut note: the CTE is a join of three tables. The `web_returns` table is the largest, so we should index it first.\n\nNow, let's write the JSON.\n\nWe are to return an array of indexes. We'll list them in the order of the table size (largest table first) and then by the column.\n\nBut note: the problem says to order by the number of rows scanned (largest first). The `web_returns` has 1.4M rows, then `customer_address` 133K, then `date_dim` 73K, then `customer` 266K. So we should list `web_returns` first, then `customer` (266K) and `customer_address` (133K) and `date_dim` (73K) \u2014 wait, `customer` has 266K rows and `customer_address` has 133K, so `customer` is larger than `customer_address`. So the order should be:\n\n1. `web_returns`\n2. `customer`\n3. `customer_address`\n4. `date_dim`\n\nBut note: the CTE uses `date_dim` and `customer_address` and `web_returns`. The main query uses `customer` and `customer_address` and `date_dim` (via the CTE). We should index `web_returns` first because it is the largest and is used in the CTE.\n\nNow, let's write the JSON.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    { ... },\n    { ... }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"...\"\n}\n\nWe'll create:\n\n1. Index on `web_returns` for `wr_returned_date_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on web_returns for the join with date_dim, reducing the cost from 1.4M rows to a smaller number.\n\n2. Index on `web_returns` for `wr_returning_addr_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on web_returns for the join with customer_address.\n\n3. Index on `date_dim` for `d_date_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on date_dim for the join with web_returns.\n\n4. Index on `date_dim` for `d_year` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on date_dim for the filter condition d_year=2000.\n\n5. Index on `customer_address` for `ca_address_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on customer_address for the join with web_returns and in the main query.\n\n6. Index on `customer_address` for `ca_state` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on customer_address for the filter condition ca_state='AR' in the main query.\n\n7. Index on `customer` for `c_customer_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on customer for the join with the CTE.\n\n8. Index on `customer` for `c_current_addr_sk` (type: btree)\n   - Estimated benefit: Eliminates sequential scan on customer for the join with customer_address.\n\nBut note: the CTE does not filter by `ca_state`, so we don't need to index `customer_address.ca_state` for the CTE. However, the main query does, so we do.\n\nNow, let's write the JSON.\n\nHowever, note that the problem says: \"If multiple scans exist, order the indexes by the number of rows scanned \u2014 largest first.\"\n\nWe are ordering by the table size (number of rows) because the table with more rows is more likely to be scanned.\n\nBut note: the CTE is a join of three tables. The `web_returns` table is the largest, so we index it first. Then, the `customer` table is the next largest (266K rows). Then, `customer_address` (133K) and `date_dim` (73K).\n\nBut note: the CTE uses `date_dim` and `customer_address`. We are indexing `date_dim` and `customer_address` as well.\n\nNow, let's write the JSON.\n\nWe are to return only the JSON structure.\n\nBut note: the problem says to return only the JSON structure.\n\nWe'll create an array of indexes.\n\nWe are to use the following format for each index:\n\n{\n  \"target\": \"<table_name>\",\n  \"property\": \"<column_name>\",\n  \"index_type\": \"<index type>\",\n  \"partial_predicate\": null,\n  \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n}\n\nWe'll set `index_type` to 'btree' for all, unless we have a reason to use another.\n\nWe'll set `partial_predicate` to null for all.\n\nNow, let's write the JSON.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"web_returns\",\n      \"property\": \"wr_returned_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on web_returns for join with date_dim, reducing cost from 1.4M rows to index scan.\"\n    },\n    {\n      \"target\": \"web_returns\",\n      \"property\": \"wr_returning_addr_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on web_returns for join with customer_address, reducing cost from 1.4M rows to ",
+  "recommendations": [
+    {
+      "table": "web_returns",
+      "column": "wr_returned_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712121.16,
+          "cost_with_index": 3712121.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91547.72,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_returns",
+      "column": "wr_returning_addr_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712121.16,
+          "cost_with_index": 3712121.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91547.72,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.2,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.4,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1428791.07,
+          "cost_with_index": 1426857.17,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2951378.17,
+          "cost_with_index": 2951378.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931082.63,
+          "cost_with_index": 1931082.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369636.19,
+          "cost_with_index": 1369636.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803965.07,
+          "cost_with_index": 797520.03,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118361.23,
+          "cost_with_index": 116427.33,
+          "benefit_pct": 1.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037851.43,
+          "cost_with_index": 29037851.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130277.21,
+          "cost_with_index": 130277.21,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833949.87,
+          "cost_with_index": 3832015.97,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 936264.05,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178654.28,
+          "cost_with_index": 176550.38,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81711.29,
+          "cost_with_index": 79777.39,
+          "benefit_pct": 2.4
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906041.29,
+          "cost_with_index": 906041.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712121.16,
+          "cost_with_index": 3712121.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134874.74,
+          "cost_with_index": 132832.6,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.18,
+          "cost_with_index": 224465.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345329.29,
+          "cost_with_index": 1343173.49,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91577.27,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_address_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.2,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803965.07,
+          "cost_with_index": 803292.35,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833949.87,
+          "cost_with_index": 3833230.4,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 937511.14,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91138.33,
+          "benefit_pct": 0.4
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer",
+      "column": "c_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer",
+      "column": "c_current_addr_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1428791.07,
+          "cost_with_index": 1428791.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2951378.17,
+          "cost_with_index": 2951378.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803965.07,
+          "cost_with_index": 803965.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037851.43,
+          "cost_with_index": 29037851.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833949.87,
+          "cost_with_index": 3833949.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 938197.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345329.29,
+          "cost_with_index": 1345329.29,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,161 @@
+{
+  "timestamp": "2026-07-30T06:01:55.608178",
+  "query_hash": "f6be26408cf5",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 210941.1,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify indexes to reduce cost.\n\nThe query is:\n```sql\nselect i_item_id, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 \nfrom store_sales, customer_demographics, date_dim, item, promotion \nwhere ss_sold_date_sk = d_date_sk \n  and ss_item_sk = i_item_sk \n  and ss_cdemo_sk = cd_demo_sk \n  and ss_promo_sk = p_promo_sk \n  and cd_gender = 'F' \n  and cd_marital_status = 'W' \n  and cd_education_status = 'College' \n  and (p_channel_email = 'N' or p_channel_event = 'N') \n  and d_year = 2001 \ngroup by i_item_id \norder by i_item_id \nlimit 100\n```\n\nThe relevant tables and their existing indexes (none) are:\n- item (28,000 rows)\n- customer_demographics (1,920,800 rows)\n- promotion (355 rows)\n- store_sales (57,598,932 rows)\n- date_dim (73,049 rows)\n\nWe are to look for Seq Scans on large tables. The tables with the most rows are:\n- store_sales (57.6 million rows)\n- customer_demographics (1.92 million rows)\n- date_dim (73,049 rows)\n- item (28,000 rows)\n- promotion (355 rows)\n\nThe query does a cross join between all tables and then filters. However, note that the query uses multiple joins (via conditions) and then filters.\n\nLet's break down the query:\n\n1. The main table is `store_sales` (57.6M rows). The other tables are joined via conditions.\n\n2. The conditions are:\n   - `ss_sold_date_sk = d_date_sk`\n   - `ss_item_sk = i_item_sk`\n   - `ss_cdemo_sk = cd_demo_sk`\n   - `ss_promo_sk = p_promo_sk`\n\n3. Then there are filters on:\n   - `cd_gender = 'F'`\n   - `cd_marital_status = 'W'`\n   - `cd_education_status = 'College'`\n   - `(p_channel_email = 'N' or p_channel_event = 'N')`\n   - `d_year = 2001`\n\nSince the query is doing an implicit cross join (using old-style join) and then filtering, the planner might be doing a lot of scanning.\n\nWe are to look for Seq Scans on large tables. The physical execution plan is not provided, but we can infer from the query structure.\n\nThe tables that are likely to be scanned sequentially are:\n- `customer_demographics` (1.92M rows) because it is being joined and filtered by multiple conditions.\n- `store_sales` (57.6M rows) because it is the largest table and is being joined and filtered.\n\nBut note: the query is grouping by `i_item_id` and limiting to 100 rows. This might be a small result set, but the intermediate steps might be expensive.\n\nLet's consider the joins and filters:\n\n1. `store_sales` is the main table. We have to filter by `d_year = 2001` and then join with `date_dim` (which has 73K rows). Then we join with `item` (28K rows) and `customer_demographics` (1.92M rows) and `promotion` (355 rows).\n\n2. The filters on `customer_demographics` are:\n   - `cd_gender = 'F'`\n   - `cd_marital_status = 'W'`\n   - `cd_education_status = 'College'`\n\n   This is a very selective filter because we are looking for a specific combination of attributes. However, without an index, the planner might do a sequential scan on `customer_demographics` and then join with `store_sales` via `ss_cdemo_sk = cd_demo_sk`.\n\n3. Similarly, the filter on `promotion` is:\n   - `(p_channel_email = 'N' or p_channel_event = 'N')`\n\n   This is also a filter that might be selective. Since `promotion` has only 355 rows, a sequential scan might be acceptable, but if we can index the columns used in the join and filter, it might help.\n\n4. The `date_dim` table is being joined via `ss_sold_date_sk = d_date_sk` and then filtered by `d_year = 2001`. Since `date_dim` has 73K rows, and the filter by year is very selective (only one year), we might want to index `d_date_sk` or `d_year` to avoid a sequential scan on `date_dim` and then a join.\n\nHowever, note that the query is using old-style joins (comma separated) and the planner might be using a different strategy.\n\nBut the problem states that the query cannot be improved by SQL rewriting, so we must focus on indexing.\n\nLet's think about the bottlenecks:\n\n- The `store_sales` table is the largest. We are filtering by `d_year = 2001` (which is a condition on `date_dim`), so we need to join with `date_dim` and then filter. Without an index on `ss_sold_date_sk`, the planner might do a sequential scan on `store_sales` and then join with `date_dim` (which is 73K rows). Alternatively, it might do a nested loop join if it finds a good index.\n\n- The `customer_demographics` table is being joined via `ss_cdemo_sk` and then filtered by three conditions. Without an index, the planner might do a sequential scan on `customer_demographics` for each row of `store_sales` (if using a nested loop) or a hash join with a sequential scan on `customer_demographics` (if using hash join). But note that the filter on `customer_demographics` is very selective, so the planner might use an index to quickly find the matching rows.\n\n- The `promotion` table is being joined via `ss_promo_sk` and then filtered by two conditions. Since `promotion` is small, a sequential scan might be acceptable, but if we can index the join column and the filter columns, it might help.\n\nBut note: the query is grouping by `i_item_id` and then limiting to 100 rows. This might be a small result set, but the intermediate steps might be expensive.\n\nWe are to recommend indexes that would most reduce execution cost.\n\nLet's consider:\n\n1. Index on `store_sales` for the join condition with `date_dim` (ss_sold_date_sk) and the filter condition (d_year=2001). But note: the filter condition is on `date_dim`, so we might want to index `date_dim` for the year condition.\n\n   However, the condition `d_year = 2001` is on `date_dim`. We can create an index on `date_dim` for `d_year` to quickly find the rows for 2001.\n\n   Then, we can join `store_sales` and `date_dim` using an index on `store_sales` for `ss_sold_date_sk`? But note: the condition is `ss_sold_date_sk = d_date_sk`. We can create an index on `store_sales` for `ss_sold_date_sk` to speed up the join.\n\n   But note: the query is filtering by `d_year = 2001` first? Actually, the condition is in the WHERE clause and the join condition. The planner might push the filter down.\n\n   Alternatively, we can index `store_sales` on `ss_sold_date_sk` and `d_year` is not directly on `store_sales`. So we need to index `date_dim` for `d_year` and `store_sales` for `ss_sold_date_sk`.\n\n2. For `customer_demographics`: we have a join condition `ss_cdemo_sk = cd_demo_sk` and then three conditions. We can create an index on `customer_demographics` for `cd_demo_sk` (the join column) and then the filter conditions. But note: the filter conditions are on columns that are not the join column. We can create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover the join and the filter.\n\n   However, the filter conditions are three separate conditions. We can also create a partial index if we know the values, but the values are fixed. Alternatively, we can create a composite index on `(cd_gender, cd_marital_status, cd_education_status)` and then use the join column separately? But the join is on `cd_demo_sk`. So we need to index the join column.\n\n   The best is to index `customer_demographics` on `cd_demo_sk` to speed up the join. Then, the planner can use that index to join and then filter the rows. But the filter conditions are on other columns. We can also create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover the join and the filter.\n\n3. For `promotion`: we have a join condition `ss_promo_sk = p_promo_sk` and then a filter condition `(p_channel_email = 'N' or p_channel_event = 'N')`. We can index `promotion` on `p_promo_sk` and then the filter condition. But note: the filter condition is on two columns. We can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)` or a partial index for the filter condition? But the filter condition is an OR, so it might not be very selective.\n\n   Alternatively, we can index `promotion` on `p_promo_sk` and then use a separate index for the filter condition? But the filter condition is not on the join column. We can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)`.\n\nBut note: the query is grouping by `i_item_id` and then limiting to 100 rows. This might be a small result set, but the intermediate steps might be expensive.\n\nNow, let's consider the order of the tables in the FROM clause. The query uses old-style joins, so the planner might start with the first table and then join the others. The first table is `store_sales`. We can try to index `store_sales` to reduce the number of rows it returns.\n\nBut note: the query has a filter on `d_year = 2001` which is in `date_dim`. We can also consider indexing `store_sales` on `ss_sold_date_sk` to speed up the join with `date_dim`.\n\nAlternatively, we can index `date_dim` on `d_year` to quickly find the rows for 2001.\n\nLet's think about the most expensive part: the `store_sales` table has 57.6M rows. We are filtering by `d_year=2001` (which is a condition on `date_dim`). Without an index on `date_dim.d_year`, the planner might do a sequential scan on `date_dim` and then join with `store_sales`. With an index on `date_dim.d_year`, it can quickly find the rows for 2001 and then join.\n\nBut note: the condition `ss_sold_date_sk = d_date_sk` is a join condition. We can also index `store_sales` on `ss_sold_date_sk` to speed up the join.\n\nSimilarly, the `customer_demographics` table is being joined via `ss_cdemo_sk` and then filtered by three conditions. Without an index on `customer_demographics.cd_demo_sk`, the planner might do a sequential scan on `customer_demographics` for each row of `store_sales` (if using a nested loop) or a hash join with a sequential scan (if using hash join). With an index on `customer_demographics.cd_demo_sk`, the planner can use an index scan for the join.\n\nAlso, the filter conditions on `customer_demographics` are very selective. We can create a composite index on `(cd_gender, cd_marital_status, cd_education_status)` and then use the join column separately? But note: the join is on `cd_demo_sk`. We need to index the join column.\n\nSo, let's propose:\n\n1. Index on `date_dim` for `d_year` to quickly filter by year 2001.\n   - This will reduce the number of rows in `date_dim` from 73K to about 1K (assuming one year has about 365 days, so 73K rows / 365 ~ 200 rows). Then, the join with `store_sales` will be faster.\n\n2. Index on `customer_demographics` for `cd_demo_sk` to speed up the join with `store_sales`.\n   - Then, the planner can use the index to find the matching `cd_demo_sk` in `customer_demographics` for each row of `store_sales`.\n\n3. Index on `customer_demographics` for the filter conditions (cd_gender, cd_marital_status, cd_education_status) \u2014 but note: the filter conditions are applied after the join. We can create a composite index on `(cd_gender, cd_marital_status, cd_education_status)` to help with the filter, but the join is on `cd_demo_sk`. We can create two indexes: one on `cd_demo_sk` and one on the filter columns.\n\n   However, the filter conditions are very selective, so we might want to index the filter columns to avoid a sequential scan on `customer_demographics` after the join. But note: the join is on `cd_demo_sk` and then we filter. The planner might use the index on `cd_demo_sk` to find the matching rows and then use the index on the filter columns to quickly filter the rows. But the filter conditions are fixed, so we can create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover both the join and the filter.\n\n4. Index on `promotion` for `p_promo_sk` to speed up the join with `store_sales`.\n   - Then, the planner can use the index to find the matching `p_promo_sk` in `promotion` for each row of `store_sales`.\n\nBut note: the `promotion` table is small (355 rows). A sequential scan might be acceptable, but if we are doing a hash join, an index on `p_promo_sk` might help.\n\nAlso, the filter condition on `promotion` is `(p_channel_email = 'N' or p_channel_event = 'N')`. We can create an index on `promotion` for the filter condition? But note: the condition is an OR and the values are fixed. We can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)` to cover the join and the filter.\n\nBut note: the query is grouping by `i_item_id` and then limiting to 100 rows. This might be a small result set, but the intermediate steps might be expensive.\n\nNow, let's consider the order of the tables. The query starts with `store_sales`. We can try to index `store_sales` to reduce the number of rows it returns. But the filters are on other tables. We can also consider indexing `store_sales` on the join columns and the filter columns? But the filters are on `date_dim`, `customer_demographics`, and `promotion`. We cannot index `store_sales` for columns in other tables.\n\nAlternatively, we can index the other tables to speed up the joins and filters.\n\nGiven the above, we propose:\n\n1. Index on `date_dim` for `d_year` (to filter by year 2001).\n2. Index on `customer_demographics` for `cd_demo_sk` (to join with `store_sales`).\n3. Index on `customer_demographics` for the filter columns (cd_gender, cd_marital_status, cd_education_status) \u2014 but note: the filter is applied after the join. We can create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover both the join and the filter.\n4. Index on `promotion` for `p_promo_sk` (to join with `store_sales`).\n5. Index on `promotion` for the filter condition \u2014 but note: the filter condition is on two columns. We can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)`.\n\nBut note: the query is grouping by `i_item_id` and then limiting to 100 rows. This might be a small result set, but the intermediate steps might be expensive.\n\nHowever, the problem says to identify the index(es) that would most reduce execution cost. We must choose the ones that eliminate the most expensive Seq Scans.\n\nThe most expensive table is `store_sales` (57.6M rows). The planner might be doing a sequential scan on `store_sales` and then joining with the other tables. We can try to reduce the number of rows in `store_sales` by pushing the filter down. But the filter conditions are on other tables. We can only index the other tables to speed up the joins and filters.\n\nAlternatively, we can consider an index on `store_sales` for the join conditions and the filter conditions? But the filter conditions are on other tables. We cannot index `store_sales` for columns in other tables.\n\nSo, we focus on the other tables.\n\nLet's break down the query:\n\n- The condition `d_year = 2001` is on `date_dim`. We can index `date_dim` for `d_year`.\n- The condition `cd_gender = 'F'`, `cd_marital_status = 'W'`, `cd_education_status = 'College'` is on `customer_demographics`. We can index `customer_demographics` for these columns and the join column.\n- The condition `(p_channel_email = 'N' or p_channel_event = 'N')` is on `promotion`. We can index `promotion` for these columns and the join column.\n\nBut note: the query is joining `store_sales` with `date_dim`, `item`, `customer_demographics`, and `promotion`. The `item` table is small (28K rows) and has no filter conditions, so we don't need to index it.\n\nNow, let's consider the order of the tables. The planner might start with `store_sales` and then join the other tables. We can try to reduce the number of rows in `store_sales` by using the filter conditions from the other tables. But without indexes, the planner might not be able to use the other tables to filter `store_sales`.\n\nAlternatively, we can use the other tables to filter `store_sales` by doing a join and then filtering. But the planner might not be able to push the filters down.\n\nGiven the above, we propose the following indexes:\n\n1. On `date_dim` for `d_year` (to quickly find the rows for 2001).\n2. On `customer_demographics` for `cd_demo_sk` (to quickly join with `store_sales`).\n3. On `customer_demographics` for the filter columns (cd_gender, cd_marital_status, cd_education_status) \u2014 but note: the filter is applied after the join. We can create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover both the join and the filter.\n4. On `promotion` for `p_promo_sk` (to quickly join with `store_sales`).\n5. On `promotion` for the filter condition \u2014 but note: the filter condition is on two columns. We can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)`.\n\nBut note: the `customer_demographics` table has 1.92M rows. The filter conditions are very selective, so we might want to index the filter columns to avoid a sequential scan on `customer_demographics` after the join. However, the join is on `cd_demo_sk` and then we filter. The planner might use the index on `cd_demo_sk` to find the matching rows and then use the index on the filter columns to quickly filter the rows. But the filter columns are not the join column, so we need to index them separately.\n\nAlternatively, we can create a composite index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` to cover both the join and the filter.\n\nSimilarly, for `promotion`, we can create a composite index on `(p_promo_sk, p_channel_email, p_channel_event)`.\n\nNow, let's write the JSON structure.\n\nWe must specify:\n- target: the table name\n- property: the column(s) to index (for composite index, list the columns)\n- index_type: the type of index (e.g., btree, hash, etc. \u2014 but PostgreSQL typically uses btree for equality and range conditions, and hash for equality conditions. However, the problem does not specify, so we use 'btree' for most cases and 'partial' for partial indexes if needed.)\n- partial_predicate: null or the condition for the partial index. But note: the instructions say that the partial_predicate must reference ONLY columns of the indexed `target` table. In our case, the filter conditions are on `customer_demographics` and `promotion` tables, so we can use a partial index if we want to index only a subset of the table. But the filter conditions are fixed, so we can use a partial index to index only the rows that match the filter condition? But note: the filter condition is part of the WHERE clause, so we can also use a regular index and then the planner will use it for the join and then filter. Alternatively, we can use a partial index to index only the rows that match the filter condition, which might be fewer.\n\nBut note: the filter condition on `customer_demographics` is:\n   cd_gender = 'F' AND cd_marital_status = 'W' AND cd_education_status = 'College'\n\nWe can create a partial index on `customer_demographics` for these conditions. But note: the join condition is `ss_cdemo_sk = cd_demo_sk`. We can create a composite partial index on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` for the specific values? But the values are fixed, so we can create a partial index that only includes the rows that match the filter condition.\n\nHowever, the planner might use the index for the join and then the filter. But if we create a partial index, it might be smaller and faster.\n\nBut note: the problem says to set partial_predicate to null if not using a partial index. We are allowed to use partial indexes if they are beneficial.\n\nLet's consider:\n\nFor `customer_demographics`:\n   We can create a partial index that only includes the rows with `cd_gender = 'F'`, `cd_marital_status = 'W'`, and `cd_education_status = 'College'`. Then, the planner can use this index for the join and the filter.\n\nBut note: the join condition is `ss_cdemo_sk = cd_demo_sk`. We need to include `cd_demo_sk` in the index. So the partial index would be on `(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)` and the condition is `cd_gender = 'F' AND cd_marital_status = 'W' AND cd_education_status = 'College'`.\n\nSimilarly, for `promotion`:\n   We c",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 1.6,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.4,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1428791.07,
+          "cost_with_index": 1426857.17,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2951352.23,
+          "cost_with_index": 2951352.23,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931056.19,
+          "cost_with_index": 1931056.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369605.34,
+          "cost_with_index": 1369605.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803912.7,
+          "cost_with_index": 797467.66,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036614.28,
+          "cost_with_index": 29036614.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130277.2,
+          "cost_with_index": 130277.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1191497.02,
+          "cost_with_index": 1189563.12,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833949.87,
+          "cost_with_index": 3832015.97,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 936264.05,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178654.28,
+          "cost_with_index": 176550.38,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81715.17,
+          "cost_with_index": 79781.27,
+          "benefit_pct": 2.4
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906041.29,
+          "cost_with_index": 906041.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712101.9,
+          "cost_with_index": 3712101.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134874.74,
+          "cost_with_index": 132832.6,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.17,
+          "cost_with_index": 224465.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345303.15,
+          "cost_with_index": 1343147.35,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91577.27,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 4,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "(cd_demo_sk, cd_gender, cd_marital_status, cd_education_status)",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "promotion",
+      "column": "(p_promo_sk, p_channel_email, p_channel_event)",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

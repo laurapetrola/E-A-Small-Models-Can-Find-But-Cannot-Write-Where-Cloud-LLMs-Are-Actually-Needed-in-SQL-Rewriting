@@ -1,0 +1,175 @@
+{
+  "timestamp": "2026-09-04T00:49:06.861275",
+  "query_hash": "3505b74fb5bb",
+  "model": "deepseek-llama+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 53301.8,
+  "reasoning_trace": "<think>\nOkay, so I'm trying to help someone who's a database index advisor. They have a SQL query that can't be improved through rewriting alone, and they need to identify which indexes would most reduce the execution cost for this specific query.\n\nFirst, let me look at the query provided. It seems pretty complex with multiple joins and some conditions. The goal is to find the right indexes to add so that the query runs faster.\n\nThe database in question is PostgreSQL 16.14, and they have some extensions like hypopg and pg_trgm. I'm not entirely sure how those extensions affect indexing, but I'll keep them in mind.\n\nLooking at the query structure:\n\n1. It starts with a subquery that selects from store_sales along with date_dim, store, and household_demographics.\n2. The subquery filters on several conditions:\n   - date_dim.d_dom between 1 and 2 (so day of month is either 1 or 2)\n   - household_demographics.hd_buy_potential being either '1001-5000' or '5001-10000'\n   - household_demographics.hd_vehicle_count > 0\n   - A calculated field that's the ratio of dep_count to vehicle_count, but only if vehicle_count is positive; otherwise, it's null. This seems to be checked against a value greater than 1.\n3. It also filters on date_dim.d_year being in (2000, 2001, 2002)\n4. The store.s_county is hardcoded as 'Williamson County' four times, which might be a mistake or maybe it's supposed to be a single value.\n\nThen, the subquery groups by ss_ticket_number and ss_customer_sk, calculating a count of store_sales records for each combination.\n\nAfter that, the outer query joins this result with the customer table on ss_customer_sk. It then filters where the count (cnt) is between 1 and 5, orders by cnt descending and last name ascending.\n\nSo, the main issues here are likely the large number of rows in store_sales (57 million), the multiple joins, and the conditions that might not be efficiently handled without proper indexes.\n\nLooking at the physical execution plan note, it mentions a Seq Scan on large tables. That usually happens when there's no index on a table that's being scanned heavily. So I need to check which tables are involved in the query and see if they have existing indexes.\n\nThe relevant tables are:\n\n- customer (266k rows) \u2013 no indexes\n- household_demographics (7,200 rows) \u2013 no indexes\n- store (44 rows) \u2013 no indexes\n- store_sales (57 million rows) \u2013 no indexes\n- date_dim (73k rows) \u2013 no indexes\n\nSo, the first step is to look for Seq Scans on large tables. Since store_sales has 57 million rows and no indexes, that's a prime candidate for having a Seq Scan, which is slow.\n\nThe query uses store_sales in multiple ways: joining with date_dim, store, and household_demographics, and then again in the outer join with customer. So, any index on store_sales could help reduce the time spent on this table.\n\nNext, looking at the subquery:\n\n- It's grouping by ss_ticket_number and ss_customer_sk. The count is over store_sales, which suggests that without an index, each read of store_sales would take a lot of time.\n\nSo, adding an index on (ss_ticket_number, ss_customer_sk) in store_sales could help with both the grouping and the join operations.\n\nAnother point is the date_dim table. It's being joined multiple times, but it doesn't have any indexes. Since date_dim has 73k rows, which isn't too bad, but if the query is doing a lot of lookups on d_dom and d_year, an index could help. However, since the query uses d_dom between 1 and 2 and d_year in (2000, 2001, 2002), maybe a combined index on (d_dom, d_year) would be useful.\n\nAlso, household_demographics is being joined with store_sales on hd_demo_sk. Since household_demographics has no indexes, any join on it could benefit from an index on the columns involved in the join, which are hd_dep_count and hd_vehicle_count. But wait, in the subquery, the condition is using hd_buy_potential and hd_vehicle_count. So maybe an index on (hd_buy_potential, hd_vehicle_count) would help.\n\nBut household_demographics only has 7k rows, so even without indexes, it's not a huge problem. However, if the query is doing multiple joins or scans on this table, an index could still be beneficial.\n\nLooking at the outer join with customer, which also doesn't have any indexes. The join is on c_customer_sk, which is a foreign key in customer. So adding an index on c_customer_sk in customer would help reduce the time for that join.\n\nAdditionally, the store table has no indexes and is being joined once. Since it's only 44 rows, maybe it's not a big issue, but if the query were to grow, an index could be helpful.\n\nThe date_dim table is used multiple times with conditions on d_dom and d_year. An index on (d_dom, d_year) would allow for efficient range queries on both fields.\n\nPutting this all together:\n\n1. **store_sales**: The most significant issue is the lack of indexes here. Adding an index on (ss_ticket_number, ss_customer_sk) would help with both grouping and joining. This could reduce the Seq Scan time on store_sales.\n\n2. **customer**: Since it's being joined once on c_customer_sk, adding an index on this column would speed up that join.\n\n3. **household_demographics**: While not as critical due to its small size, if there are multiple joins or scans, an index on (hd_buy_potential, hd_vehicle_count) could help with the conditions in the subquery.\n\n4. **date_dim**: Adding an index on (d_dom, d_year) would allow for efficient filtering on both day of month and year ranges.\n\nI should also consider partial predicates if needed, but since the main columns are ss_ticket_number and ss_customer_sk in store_sales, those can be targeted for indexing without issues.\n\nSo, the indexes I'd suggest are:\n\n- On store_sales: index on (ss_ticket_number, ss_customer_sk)\n- On customer: index on c_customer_sk\n- Possibly an index on date_dim for (d_dom, d_year)\n- Maybe an index on household_demographics for (hd_buy_potential, hd_vehicle_count)\n\nBut since the user mentioned no existing indexes and to avoid suggesting duplicates, I'll focus on the most impactful ones first.\n\nThe main benefit would be from indexing store_sales and customer. These two tables are heavily involved in the query's operations.\n\n</think>\n\n```json\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_ticket_number, ss_customer_sk\",\n      \"index_type\": \"Composite Index\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales and improves join performance\"\n    },\n    {\n      \"target\": \"customer\",\n      \"property\": \"c_customer_sk\",\n      \"index_type\": \"Index on a single column\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Improves the efficiency of the outer join with customer\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The identified indexes will reduce the execution time by eliminating Seq Scans on large tables and improving join performance. The store_sales index will help with grouping and joining, while the customer index will enhance the efficiency of the outer join.\"\n}\n```",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_ticket_number, ss_customer_sk",
+      "index_type": "composite index",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -8.0,
+      "baseline_exec_ms": 2106.671,
+      "optimized_exec_ms": 2275.574,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968927.88,
+          "cost_with_index": 2968950.94,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931638.06,
+          "cost_with_index": 1931659.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368923.86,
+          "cost_with_index": 1368937.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 809703.89,
+          "cost_with_index": 809729.29,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118061.7,
+          "cost_with_index": 118054.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110223.32,
+          "cost_with_index": 21110463.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036222.36,
+          "cost_with_index": 29037021.06,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129314.2,
+          "cost_with_index": 129367.69,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179122.08,
+          "cost_with_index": 178028.81,
+          "benefit_pct": 0.6
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81930.66,
+          "cost_with_index": 81930.82,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712173.85,
+          "cost_with_index": 3712192.1,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134490.35,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.73,
+          "cost_with_index": 222840.29,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342658.34,
+          "cost_with_index": 1342671.47,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer",
+      "column": "c_customer_sk",
+      "index_type": "index on a single column",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.8,
+      "baseline_exec_ms": 2111.28,
+      "optimized_exec_ms": 2095.171,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1430890.04,
+          "cost_with_index": 1430890.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968950.94,
+          "cost_with_index": 2968950.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 809729.29,
+          "cost_with_index": 809729.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037021.06,
+          "cost_with_index": 29037021.06,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1197615.31,
+          "cost_with_index": 1197615.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4106330.53,
+          "cost_with_index": 4106330.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938064.85,
+          "cost_with_index": 938064.85,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

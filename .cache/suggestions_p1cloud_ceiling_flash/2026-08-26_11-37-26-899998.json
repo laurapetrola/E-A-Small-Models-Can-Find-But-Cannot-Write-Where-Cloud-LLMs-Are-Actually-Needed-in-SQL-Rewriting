@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-08-26T11:37:26.899319",
+  "query_hash": "dc308c52049e",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "replace INTERSECT with JOIN and IS NOT DISTINCT FROM",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "convert an INTERSECT to UNION ALL with a grouping and HAVING clause",
+    "convert an IN subquery to a semi-join",
+    "use union all to combine multiple sources",
+    "split repeated joins into separate CTEs"
+  ],
+  "improvement_pct": -34.22,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 559000.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_dates AS (\n    SELECT d_date_sk, d_date\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1189 AND 1189 + 11\n),\nstore_pairs AS (\n    SELECT DISTINCT ss_customer_sk, ss_sold_date_sk\n    FROM store_sales\n    WHERE ss_sold_date_sk IN (SELECT d_date_sk FROM filtered_dates)\n),\ncatalog_pairs AS (\n    SELECT DISTINCT cs_bill_customer_sk, cs_sold_date_sk\n    FROM catalog_sales\n    WHERE cs_sold_date_sk IN (SELECT d_date_sk FROM filtered_dates)\n),\nweb_pairs AS (\n    SELECT DISTINCT ws_bill_customer_sk, ws_sold_date_sk\n    FROM web_sales\n    WHERE ws_sold_date_sk IN (SELECT d_date_sk FROM filtered_dates)\n)\nSELECT count(*)\nFROM (\n    SELECT customer.c_last_name, customer.c_first_name, filtered_dates.d_date\n    FROM store_pairs\n    JOIN customer ON store_pairs.ss_customer_sk = customer.c_customer_sk\n    JOIN filtered_dates ON store_pairs.ss_sold_date_sk = filtered_dates.d_date_sk\n    INTERSECT\n    SELECT customer.c_last_name, customer.c_first_name, filtered_dates.d_date\n    FROM catalog_pairs\n    JOIN customer ON catalog_pairs.cs_bill_customer_sk = customer.c_customer_sk\n    JOIN filtered_dates ON catalog_pairs.cs_sold_date_sk = filtered_dates.d_date_sk\n    INTERSECT\n    SELECT customer.c_last_name, customer.c_first_name, filtered_dates.d_date\n    FROM web_pairs\n    JOIN customer ON web_pairs.ws_bill_customer_sk = customer.c_customer_sk\n    JOIN filtered_dates ON web_pairs.ws_sold_date_sk = filtered_dates.d_date_sk\n) AS hot_cust\nLIMIT 100",
+  "reasoning_trace": "1. DATE-PRESENCE PUSH-DOWN \u2014 TARGET: the `d_month_seq BETWEEN 1189 AND 1200` predicate and the three `sold_date_sk` join columns \u2014 TRANSFORMATION: Materialize the 12-month `d_date_sk` list once and apply it as an early membership filter on `ss_sold_date_sk`, `cs_sold_date_sk`, and `ws_sold_date_sk` so each fact table is reduced before any `date_dim` join.\n\n2. CUSTOMER/DATE PAIR PRE-AGGREGATION \u2014 TARGET: `store_sales(ss_customer_sk, ss_sold_date_sk)`, `catalog_sales(cs_bill_customer_sk, cs_sold_date_sk)`, `web_sales(ws_bill_customer_sk, ws_sold_date_sk)` \u2014 TRANSFORMATION: In each channel, collapse the date-filtered fact rows to distinct `(customer_sk, sold_date_sk)` pairs before joining `customer`/`date_dim`; this shrinks the 57M/28M/14M row inputs and is exact because those keys determine the output name/date.\n\n3. REMOVE REDUNDANT DISTINCT \u2014 TARGET: the three `SELECT DISTINCT c_last_name, c_first_name, d_date` subqueries \u2014 TRANSFORMATION: Drop the per-arm `DISTINCT` because `INTERSECT` already deduplicates; this eliminates three pre-intersection unique/sort passes without changing the result.\n\n4. DEFER DIMENSION JOINS \u2014 TARGET: the `customer` and `date_dim` joins inside each INTERSECT arm \u2014 TRANSFORMATION: Join the reduced pair sets to `customer` and `date_dim` only after step 2, so the 266K-row `customer` table is not joined to raw fact rows and only the final `(c_last_name, c_first_name, d_date)` projections feed the intersection.\n\n5. HASH-BASED SET INTERSECTION \u2014 TARGET: the two chained `INTERSECT` operators \u2014 TRANSFORMATION: Keep the intersection as a hash-based set operation on the three small reduced projections instead of using raw fact-row sorts or a channel-tagged `UNION ALL`, then compute `count(*)` from that reduced intersection.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 17487.845,
+      "optimized_ms": 23472.216,
+      "delta_ms": -5984.371,
+      "improvement_pct": -34.22,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 2958590.03,
+      "optimized": 16415911.94,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 514357.5,
+    "index_advisor_inference_ms": 35938.3,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 8704.2,
+    "total_inference_ms": 559000.0,
+    "writer_inference_ms": 1021374.3,
+    "writer_tokens_in": 7954,
+    "writer_tokens_out": 116474,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=2958590.03 \u2192 optimized=16415911.94 (+454.9%)",
+    "Execution time regression: 17487.845ms \u2192 23472.216ms"
+  ],
+  "strategy": "1. DATE-PRESENCE PUSH-DOWN \u2014 TARGET: the `d_month_seq BETWEEN 1189 AND 1200` predicate and the three `sold_date_sk` join columns \u2014 TRANSFORMATION: Materialize the 12-month `d_date_sk` list once and apply it as an early membership filter on `ss_sold_date_sk`, `cs_sold_date_sk`, and `ws_sold_date_sk` so each fact table is reduced before any `date_dim` join.\n\n2. CUSTOMER/DATE PAIR PRE-AGGREGATION \u2014 TARGET: `store_sales(ss_customer_sk, ss_sold_date_sk)`, `catalog_sales(cs_bill_customer_sk, cs_sold_date_sk)`, `web_sales(ws_bill_customer_sk, ws_sold_date_sk)` \u2014 TRANSFORMATION: In each channel, collapse the date-filtered fact rows to distinct `(customer_sk, sold_date_sk)` pairs before joining `customer`/`date_dim`; this shrinks the 57M/28M/14M row inputs and is exact because those keys determine the output name/date.\n\n3. REMOVE REDUNDANT DISTINCT \u2014 TARGET: the three `SELECT DISTINCT c_last_name, c_first_name, d_date` subqueries \u2014 TRANSFORMATION: Drop the per-arm `DISTINCT` because `INTERSECT` already deduplicates; this eliminates three pre-intersection unique/sort passes without changing the result.\n\n4. DEFER DIMENSION JOINS \u2014 TARGET: the `customer` and `date_dim` joins inside each INTERSECT arm \u2014 TRANSFORMATION: Join the reduced pair sets to `customer` and `date_dim` only after step 2, so the 266K-row `customer` table is not joined to raw fact rows and only the final `(c_last_name, c_first_name, d_date)` projections feed the intersection.\n\n5. HASH-BASED SET INTERSECTION \u2014 TARGET: the two chained `INTERSECT` operators \u2014 TRANSFORMATION: Keep the intersection as a hash-based set operation on the three small reduced projections instead of using raw fact-row sorts or a channel-tagged `UNION ALL`, then compute `count(*)` from that reduced intersection.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was DATE-PRESENCE PUSH-DOWN via materializing the date list and applying it as a filter. The rewrite implements this by creating `filtered_dates` and using `IN"
+  },
+  "raw_sql": "select count(*) from ( select distinct c_last_name, c_first_name, d_date from store_sales, date_dim, customer where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 intersect select distinct c_last_name, c_first_name, d_date from catalog_sales, date_dim, customer where catalog_sales.cs_sold_date_sk = date_dim.d_date_sk and catalog_sales.cs_bill_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 intersect select distinct c_last_name, c_first_name, d_date from web_sales, date_dim, customer where web_sales.ws_sold_date_sk = date_dim.d_date_sk and web_sales.ws_bill_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 ) hot_cust limit 100"
+}

@@ -1,0 +1,87 @@
+{
+  "timestamp": "2026-09-16T09:53:01.228237",
+  "query_hash": "fef1783ef8c8",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: 'mc.note LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope."
+  ],
+  "workload_aware": false,
+  "inference_ms": 41077.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting MIN values from several tables, joining them with conditions. The main tables involved are company_type, info_type, movie_companies, movie_info_idx, and title. The WHERE clause has several conditions, including some LIKE patterns on mc.note.\n\nFirst, looking at the existing indexes. The movie_companies table has indexes on company_id, company_type_id, and movie_id. The movie_info_idx has indexes on info_type_id and movie_id. The title table has an index on kind_id. However, company_type and info_type have no indexes, which might be a problem since they're used in the WHERE clause with equality checks (ct.kind = 'production companies' and it.info = 'top 250 rank'). Without indexes on these tables, the optimizer might be doing full table scans on them, which could be slow given their sizes (company_type has 4 rows, info_type has 113 rows, so maybe not a big issue, but still, indexes could help).\n\nBut the main issue seems to be with the movie_companies table. The query has conditions on mc.note LIKE '%...%' which are non-sargable because of the leading %, making full table scans unavoidable. The optimizer hints mention that a trigram/GIN index is needed for the mc.note LIKE patterns. Since the user has the pg_trgm extension installed, a GIN index on mc.note could help with these LIKE queries. However, the user mentioned that the correct response is no_change: true because the query can't be improved via SQL rewriting, and the trigram index is a DDL operation outside the current scope. But the user is asking for indexes that can be added now.\n\nWait, the user's instruction says that the query cannot be improved through SQL rewriting alone, and the optimizer hints indicate that the mc.note LIKE patterns are non-sargable with B-tree indexes, requiring a trigram/GIN index. However, the user is asking for indexes that can be added. So maybe the GIN index on mc.note is the key here. But the user's schema shows that movie_companies has indexes on company_id, company_type_id, and movie_id. The mc.note is part of the WHERE clause with LIKE conditions. So adding a GIN index on mc.note would help with those LIKE queries, especially the ones with leading %, which are not covered by B-tree indexes.\n\nAnother part of the query is the JOIN conditions. For example, t.id = mc.movie_id and t.id = mi_idx.movie_id. The title table's index on kind_id might not be relevant here since the join is on t.id, which isn't indexed. So adding an index on title.id (which is the primary key, so it's already indexed) might not be necessary. But maybe the movie_info_idx table's movie_id is already indexed, so that's covered.\n\nLooking at the movie_companies table, the conditions involve mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' and mc.note LIKE '%(co-production)%' OR mc.note LIKE '%(presents)%'. These are all on mc.note, which is a text field. Since the LIKE patterns start with %, a B-tree index won't help, but a GIN index with trigram support could. So the main index candidate here is a GIN index on mc.note.\n\nAdditionally, the query joins movie_companies with movie_info_idx on movie_id and info_type_id. The movie_info_idx has an index on info_type_id, which is used in the WHERE clause (it.id = mi_idx.info_type_id). Since info_type_id is already indexed, that's covered. The movie_id in movie_info_idx is also indexed, which is used in the join with movie_companies.\n\nThe company_type and info_type tables are small, so even without indexes, their scans are fast. But adding indexes on them for the equality conditions (ct.kind and it.info) might still be beneficial. For example, an index on company_type.kind and info_type.info would speed up those conditions. However, the user's schema shows that these tables have no indexes, and the optimizer hints mention that the mc.note LIKE is the main issue. The user's instruction says to not suggest indexes that already exist, so if company_type and info_type don't have indexes, adding them might be necessary. But the user's schema for relevant tables says company_type and info_type have no indexes. So maybe adding indexes on those tables could help.\n\nWait, the user's schema for relevant tables includes company_type (no indexes), info_type (no indexes), movie_companies (has indexes), etc. So the company_type and info_type tables are not indexed. The query has conditions on ct.kind = 'production companies' and it.info = 'top 250 rank'. Since these are equality checks, adding a B-tree index on company_type.kind and info_type.info would help. However, the user's optimizer hints mention that the mc.note LIKE is the main issue, and the correct response is no_change: true. But the user is asking for indexes that can be added now. So maybe the main index needed is on mc.note for the GIN index.\n\nBut the user's instruction says that the query cannot be improved through SQL rewriting alone, and the optimizer hints indicate that the mc.note LIKE is non-sargable, requiring a trigram/GIN index. Since the user is asking for indexes that can be added, the GIN index on mc.note is the primary candidate. However, the user's schema for movie_companies already has indexes on company_id, company_type_id, and movie_id. The mc.note is not indexed, so adding a GIN index on mc.note would help with the LIKE conditions.\n\nSo the main index to suggest is a GIN index on mc.note for the movie_companies table. That would cover the LIKE conditions, which are causing full table scans. The other tables (company_type and info_type) have small rows, so their scans are fast, but adding indexes on their relevant columns (kind and info) could also help. However, the user's optimizer hints mention that the mc.note is the main issue, so focusing on that first.\n\nTherefore, the JSON should include an index on movie_companies.note with a GIN type, as it's the main bottleneck. The other tables' indexes might not be necessary unless they are causing scans, but the user's schema shows that movie_companies has indexes on company_id, company_type_id, and movie_id, which are used in the joins. The title table's index on kind_id is already present, so that's covered.\n\nSo the final answer should be an index on movie_companies.note with GIN type, which would help with the LIKE conditions. The estimated benefit is eliminating the Seq Scan on movie_companies for those LIKE conditions, which are on a large table (2.6 million rows).\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_companies\",\n      \"property\": \"note\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on movie_companies for mc.note LIKE conditions on 2,609,129 rows\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottleneck is the non-sargable mc.note LIKE patterns on a large table. A GIN index on movie_companies.note enables efficient pattern matching for these conditions, which are critical to the query's filtering logic.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_companies",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 3.9,
+      "baseline_exec_ms": 50.565,
+      "optimized_exec_ms": 48.598,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 9.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20785.34,
+          "cost_with_index": 20785.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4796.13,
+          "cost_with_index": 4796.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55689.05,
+          "cost_with_index": 55689.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7471.98,
+          "cost_with_index": 7471.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67024.79,
+          "cost_with_index": 67024.79,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.31,
+          "cost_with_index": 1259.68,
+          "benefit_pct": 86.8
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46664.39,
+          "cost_with_index": 46664.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.48,
+          "cost_with_index": 3814.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 3856.57,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

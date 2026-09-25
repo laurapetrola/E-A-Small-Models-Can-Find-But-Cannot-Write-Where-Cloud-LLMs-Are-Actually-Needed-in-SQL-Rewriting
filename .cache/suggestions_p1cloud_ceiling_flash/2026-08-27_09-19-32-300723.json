@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-08-27T09:19:32.300662",
+  "query_hash": "cddbdcb96bc9",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "materialize a derived table for join efficiency",
+    "materialize intermediate results as CTEs",
+    "filter early in CTEs",
+    "restructure joins to use pre-filtered CTEs",
+    "materialize a derived table for early filtering"
+  ],
+  "improvement_pct": -11112.52,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "equivalence_failed_structural",
+  "used_fallback": true,
+  "inference_ms": 341408.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH dim_pairs AS MATERIALIZED (\n    SELECT i.i_item_sk, dt.d_date_sk, dt.d_year, i.i_brand_id, i.i_brand\n    FROM item i\n    JOIN date_dim dt ON TRUE\n    WHERE i.i_manufact_id = 816\n      AND dt.d_moy = 11\n)\nSELECT dp.d_year,\n       dp.i_brand_id AS brand_id,\n       dp.i_brand AS brand,\n       SUM(ss.ss_sales_price) AS sum_agg\nFROM store_sales ss\nJOIN dim_pairs dp\n  ON ss.ss_item_sk = dp.i_item_sk\n AND ss.ss_sold_date_sk = dp.d_date_sk\nGROUP BY dp.d_year, dp.i_brand_id, dp.i_brand\nORDER BY dp.d_year, sum_agg DESC, brand_id\nLIMIT 100",
+  "reasoning_trace": "1. COMPOSITE DIMENSION PAIR MATERIALIZATION \u2014 TARGET: `item` filtered by `i_manufact_id=816` cross-joined with `date_dim` filtered by `d_moy=11` \u2014 TRANSFORMATION: Build once a compact set of `(i_item_sk, d_date_sk, d_year, i_brand_id, i_brand)` from the filtered dimensions, so every allowed fact row maps directly to its final grouping attributes in one lookup.\n\n2. SINGLE COMPOSITE-KEY PROBE OF `store_sales` \u2014 TARGET: `store_sales` full scan \u2014 TRANSFORMATION: Replace the two separate joins with one hash probe of `store_sales` on `(ss_item_sk, ss_sold_date_sk)` against that composite dimension pair set, so non-November and non-manufacturer-816 rows are discarded in a single pass and no large three-way join intermediate is materialized.\n\n3. POST-JOIN HASH AGGREGATION \u2014 TARGET: the surviving `store_sales` rows after the composite-pair join \u2014 TRANSFORMATION: Apply `SUM(ss_sales_price)` grouped by `(d_year, i_brand_id, i_brand)` only after the dimension-pair probe, so aggregation runs on the drastically reduced surviving row set rather than on all 57.6M fact rows.\n\n4. TOP-N SORT ON THE GROUPED RESULT \u2014 TARGET: the final `GROUP BY d_year, item.i_brand_id, item.i_brand` output \u2014 TRANSFORMATION: Evaluate `ORDER BY d_year, sum_agg DESC, brand_id LIMIT 100` as a top-N heap over the small aggregated result, avoiding a full sort of any large intermediate.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 145.936,
+      "optimized_ms": 16363.099,
+      "delta_ms": -16217.163,
+      "improvement_pct": -11112.52,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 129316.55,
+      "optimized": 10085033.06,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 318770.3,
+    "index_advisor_inference_ms": 17058.8,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 5579.7,
+    "total_inference_ms": 341408.8,
+    "writer_inference_ms": 1429499.4,
+    "writer_tokens_in": 5761,
+    "writer_tokens_out": 166053,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=129316.55 \u2192 optimized=10085033.06 (+7698.7%)",
+    "Execution time regression: 145.936ms \u2192 16363.099ms",
+    "Cartesian_Join_Detected: 'dt' is joined without an ON condition \u2014 restore the join condition from the original WHERE clause as the ON condition for this table; if you cannot determine the correct ON condition, return the original query UNCHANGED"
+  ],
+  "strategy": "1. COMPOSITE DIMENSION PAIR MATERIALIZATION \u2014 TARGET: `item` filtered by `i_manufact_id=816` cross-joined with `date_dim` filtered by `d_moy=11` \u2014 TRANSFORMATION: Build once a compact set of `(i_item_sk, d_date_sk, d_year, i_brand_id, i_brand)` from the filtered dimensions, so every allowed fact row maps directly to its final grouping attributes in one lookup.\n\n2. SINGLE COMPOSITE-KEY PROBE OF `store_sales` \u2014 TARGET: `store_sales` full scan \u2014 TRANSFORMATION: Replace the two separate joins with one hash probe of `store_sales` on `(ss_item_sk, ss_sold_date_sk)` against that composite dimension pair set, so non-November and non-manufacturer-816 rows are discarded in a single pass and no large three-way join intermediate is materialized.\n\n3. POST-JOIN HASH AGGREGATION \u2014 TARGET: the surviving `store_sales` rows after the composite-pair join \u2014 TRANSFORMATION: Apply `SUM(ss_sales_price)` grouped by `(d_year, i_brand_id, i_brand)` only after the dimension-pair probe, so aggregation runs on the drastically reduced surviving row set rather than on all 57.6M fact rows.\n\n4. TOP-N SORT ON THE GROUPED RESULT \u2014 TARGET: the final `GROUP BY d_year, item.i_brand_id, item.i_brand` output \u2014 TRANSFORMATION: Evaluate `ORDER BY d_year, sum_agg DESC, brand_id LIMIT 100` as a top-N heap over the small aggregated result, avoiding a full sort of any large intermediate.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy called for composite dimension pair materialization and a single composite-key probe, which the rewrite implements using a CTE/MATERIALIZED clause and a single JOIN on the comp"
+  },
+  "raw_sql": "select dt.d_year ,item.i_brand_id brand_id ,item.i_brand brand ,sum(ss_sales_price) sum_agg from date_dim dt ,store_sales ,item where dt.d_date_sk = store_sales.ss_sold_date_sk and store_sales.ss_item_sk = item.i_item_sk and item.i_manufact_id = 816 and dt.d_moy=11 group by dt.d_year ,item.i_brand ,item.i_brand_id order by dt.d_year ,sum_agg desc ,brand_id limit 100"
+}

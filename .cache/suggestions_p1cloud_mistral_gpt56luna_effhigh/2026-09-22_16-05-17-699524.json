@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-22T16:05:17.699494",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate results"
+  ],
+  "improvement_pct": -196.89,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 124684.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_date_dim AS MATERIALIZED (\n    SELECT\n        d_date_sk,\n        d_date\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1212 AND 1212+11\n),\nweb_v1 AS MATERIALIZED (\n    SELECT\n        ws_item_sk AS item_sk,\n        d_date,\n        sum(sum(ws_sales_price)) OVER (\n            PARTITION BY ws_item_sk\n            ORDER BY d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM web_sales\n    JOIN filtered_date_dim\n        ON ws_sold_date_sk = d_date_sk\n    WHERE ws_item_sk IS NOT NULL\n    GROUP BY ws_item_sk, d_date\n),\nstore_v1 AS MATERIALIZED (\n    SELECT\n        ss_item_sk AS item_sk,\n        d_date,\n        sum(sum(ss_sales_price)) OVER (\n            PARTITION BY ss_item_sk\n            ORDER BY d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS cume_sales\n    FROM store_sales\n    JOIN filtered_date_dim\n        ON ss_sold_date_sk = d_date_sk\n    WHERE ss_item_sk IS NOT NULL\n    GROUP BY ss_item_sk, d_date\n),\ncombined AS MATERIALIZED (\n    SELECT\n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM web_v1 AS web\n    LEFT JOIN store_v1 AS store\n        ON web.item_sk = store.item_sk\n        AND web.d_date = store.d_date\n    UNION ALL\n    SELECT\n        COALESCE(web.item_sk, store.item_sk) AS item_sk,\n        COALESCE(web.d_date, store.d_date) AS d_date,\n        web.cume_sales AS web_sales,\n        store.cume_sales AS store_sales\n    FROM store_v1 AS store\n    LEFT JOIN web_v1 AS web\n        ON web.item_sk = store.item_sk\n        AND web.d_date = store.d_date\n    WHERE web.item_sk IS NULL\n)\nSELECT *\nFROM (\n    SELECT\n        item_sk,\n        d_date,\n        web_sales,\n        store_sales,\n        max(web_sales) OVER (\n            PARTITION BY item_sk\n            ORDER BY d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS web_cumulative,\n        max(store_sales) OVER (\n            PARTITION BY item_sk\n            ORDER BY d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS store_cumulative\n    FROM combined\n) AS y\nWHERE web_cumulative > store_cumulative\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized Views \u2014 TARGET: `web_v1`, `store_v1` \u2014 TRANSFORMATION: Create materialized views for the subqueries to avoid repeated scans and improve query performance.\n\n2. N. Filter Pushdown \u2014 TARGET: `date_dim` join conditions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Move the filtering condition (`d_month_seq between 1212 and 1212+11`) to the `date_dim` table, if possible, to reduce the number of rows returned before joining with the main tables.\n\n3. N. Indexes \u2014 TARGET: `web_v1`, `store_v1` on `item_sk` and `d_date` columns \u2014 TRANSFORMATION: Create indexes on these columns to speed up the partitioning and sorting operations in the subqueries.\n\n4. N. Partitioning \u2014 TARGET: `web_sales`, `store_sales` tables \u2014 TRANSFORMATION: Consider partitioning the tables based on the `item_sk` and `d_date` columns to improve query performance, especially for large datasets.\n\n5. N. Full Outer Join Elimination \u2014 TARGET: Full outer join in the derived table \u2014 TRANSFORMATION: If possible, replace the full outer join with separate left and right joins, as it may be more efficient when dealing with nullable columns.\n\n6. N. Sort-Merge Join \u2014 TARGET: The final join between the derived table and itself (`web_sales` and `store_sales`) \u2014 TRANSFORMATION: If possible, reorder the tables in the join to perform a sort-merge join, which can be more efficient for large datasets.\n\n7. N. Limit Pushdown \u2014 TARGET: The final `LIMIT 100` clause \u2014 TRANSFORMATION: Move the limit operation as close as possible to the source tables or subqueries to reduce the amount of data processed before applying the limit, if possible.\n\n8. N. Window Function Optimization \u2014 TARGET: The window functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Consider using recursive common table expressions (CTEs) or alternative methods to optimize the window functions, as they can be costly for large datasets.\n\n9. N. Query Rewrite \u2014 TARGET: The entire query \u2014 TRANSFORMATION: If possible, rewrite the query to avoid the use of subqueries and perform joins directly on the main tables, which may lead to better performance due to reduced complexity and improved join orderings.\n\n10. N. Aggregate Functions Optimization \u2014 TARGET: The `SUM` functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Consider using the `SUM() OVER (PARTITION BY ...)` syntax instead of multiple `GROUP BY` clauses, as it can be more efficient for large datasets.\n\n11. N. Coalesce \u2014 TARGET: The case statements in the derived table \u2014 TRANSFORMATION: Replace the case statements with the `COALESCE()` function to avoid null checks and improve query performance.\n\n12. N. Query Caching \u2014 TARGET: The entire query \u2014 TRANSFORMATION: If the query results are expected to be reused frequently, consider enabling query caching to reduce the time required for subsequent executions of the same query.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 16851.897,
+      "optimized_ms": 50031.934,
+      "delta_ms": -33180.037,
+      "improvement_pct": -196.89,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1940625.34,
+      "optimized": 143581888.15,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 76385.5,
+    "index_advisor_inference_ms": 15358.9,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 32939.7,
+    "total_inference_ms": 124684.1,
+    "writer_inference_ms": 221536.8,
+    "writer_tokens_in": 10319,
+    "writer_tokens_out": 17228,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1940625.34 \u2192 optimized=143581888.15 (+7298.7%)",
+    "Execution time regression: 16851.897ms \u2192 50031.934ms"
+  ],
+  "strategy": "1. N. Materialized Views \u2014 TARGET: `web_v1`, `store_v1` \u2014 TRANSFORMATION: Create materialized views for the subqueries to avoid repeated scans and improve query performance.\n\n2. N. Filter Pushdown \u2014 TARGET: `date_dim` join conditions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Move the filtering condition (`d_month_seq between 1212 and 1212+11`) to the `date_dim` table, if possible, to reduce the number of rows returned before joining with the main tables.\n\n3. N. Indexes \u2014 TARGET: `web_v1`, `store_v1` on `item_sk` and `d_date` columns \u2014 TRANSFORMATION: Create indexes on these columns to speed up the partitioning and sorting operations in the subqueries.\n\n4. N. Partitioning \u2014 TARGET: `web_sales`, `store_sales` tables \u2014 TRANSFORMATION: Consider partitioning the tables based on the `item_sk` and `d_date` columns to improve query performance, especially for large datasets.\n\n5. N. Full Outer Join Elimination \u2014 TARGET: Full outer join in the derived table \u2014 TRANSFORMATION: If possible, replace the full outer join with separate left and right joins, as it may be more efficient when dealing with nullable columns.\n\n6. N. Sort-Merge Join \u2014 TARGET: The final join between the derived table and itself (`web_sales` and `store_sales`) \u2014 TRANSFORMATION: If possible, reorder the tables in the join to perform a sort-merge join, which can be more efficient for large datasets.\n\n7. N. Limit Pushdown \u2014 TARGET: The final `LIMIT 100` clause \u2014 TRANSFORMATION: Move the limit operation as close as possible to the source tables or subqueries to reduce the amount of data processed before applying the limit, if possible.\n\n8. N. Window Function Optimization \u2014 TARGET: The window functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Consider using recursive common table expressions (CTEs) or alternative methods to optimize the window functions, as they can be costly for large datasets.\n\n9. N. Query Rewrite \u2014 TARGET: The entire query \u2014 TRANSFORMATION: If possible, rewrite the query to avoid the use of subqueries and perform joins directly on the main tables, which may lead to better performance due to reduced complexity and improved join orderings.\n\n10. N. Aggregate Functions Optimization \u2014 TARGET: The `SUM` functions in both `web_v1` and `store_v1` subqueries \u2014 TRANSFORMATION: Consider using the `SUM() OVER (PARTITION BY ...)` syntax instead of multiple `GROUP BY` clauses, as it can be more efficient for large datasets.\n\n11. N. Coalesce \u2014 TARGET: The case statements in the derived table \u2014 TRANSFORMATION: Replace the case statements with the `COALESCE()` function to avoid null checks and improve query performance.\n\n12. N. Query Caching \u2014 TARGET: The entire query \u2014 TRANSFORMATION: If the query results are expected to be reused frequently, consider enabling query caching to reduce the time required for subsequent executions of the same query.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\n\nThe rewrite applies the Materialized Views technique as described in the strategy. It creates materialized views for the subqueries to avoid repeated scans and improve query performance."
+  },
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

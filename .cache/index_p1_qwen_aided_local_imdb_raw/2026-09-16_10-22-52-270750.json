@@ -1,0 +1,98 @@
+{
+  "timestamp": "2026-09-16T10:22:52.270724",
+  "query_hash": "b1093534f0e1",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: 'mi.note LIKE '%internet%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope."
+  ],
+  "workload_aware": false,
+  "inference_ms": 59469.9,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The database is PostgreSQL 15.18 with extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure and the schema of the relevant tables. The query is joining several tables: complete_cast, comp_cast_type, company_name, company_type, info_type, keyword, kind_type, movie_companies, movie_info, movie_keyword, and title. The goal is to find movies that meet certain criteria, like having specific info types, keywords, and company details.\n\nLooking at the execution plan, there's a mention that the 'mi.note LIKE '%internet%'' is non-sargable, so a Seq Scan on movie_info is unavoidable. The optimizer hints suggest that a trigram/GIN index is needed for that, but it's outside the current scope. However, the user is asking for indexes that can be added now.\n\nThe relevant tables and their existing indexes are listed. Let's check each table involved in the query for potential index opportunities.\n\nStarting with the movie_info table. The query has conditions on mi.note LIKE '%internet%' and mi.info. The existing indexes are on info_type_id and movie_id. The note column is used in a LIKE with a leading '%', which can't be efficiently handled by a B-tree index. Since the user mentioned a trigram/GIN index is needed for that, but that's not allowed here. However, maybe there's another way. Wait, the query also has mi.info LIKE 'USA:% 199%' or 'USA:% 200%'. The info column is part of the WHERE clause. Since info_type_id is already indexed, but the info itself is text. Maybe an index on info could help, but the LIKE pattern here starts with 'USA:%', which might be handled by a B-tree index if the leading part is indexed. However, the current indexes on movie_info are info_type_id and movie_id. So adding an index on info might help for the LIKE conditions. But the problem is that the LIKE is on the info column with a pattern that starts with 'USA:%', which could be covered by a B-tree index if the query uses the leading part. However, the existing indexes don't cover that. So maybe an index on info would help here. But the user's hint says that the note is non-sargable, so the Seq Scan on movie_info is unavoidable. Wait, but the query also has mi.info conditions. So maybe the info column could be indexed. Let me check.\n\nAnother part of the query is the movie_keyword table. The query joins on mk.keyword_id = k.id, and there's an index on keyword_id. But the query also has conditions on mk.movie_id, which is already covered by the existing index on movie_id in movie_keyword. However, maybe there's a way to optimize the joins here.\n\nLooking at the movie_companies table, which has indexes on company_id, company_type_id, and movie_id. The query joins on mc.movie_id, which is already indexed. But the company_name and company_type are joined via mc.company_id and mc.company_type_id, which are indexed. So maybe those are already covered.\n\nThe title table has an index on kind_id, which is used in the join with kind_type. That's already covered.\n\nThe complete_cast table has an index on movie_id, which is used in the join. So that's already covered.\n\nThe problem seems to be with the movie_info table's note and info columns. The note is non-sargable, leading to a Seq Scan. The info column has conditions with LIKE 'USA:% 199%' which might be handled by an index on info. However, the existing indexes on movie_info are info_type_id and movie_id. So adding an index on info (maybe a B-tree) could help for the LIKE conditions. But the LIKE pattern starts with 'USA:%', which is a prefix. A B-tree index on info would allow the query to use the index for the LIKE 'USA:%' patterns. However, the current query has mi.info IS NOT NULL and the LIKE conditions. So an index on info would help here. But the user's hint says that the note is non-sargable, but the info might be handled with an index.\n\nAnother possible bottleneck is the movie_info table's join with other tables. Since the query has multiple joins on movie_id, and the movie_info table has a lot of rows (14 million), the joins could be slow without proper indexes. However, the existing indexes on movie_id and info_type_id might not be sufficient. \n\nWait, the query has a condition on mi.info_type_id = it1.id, which is already covered by the existing index on info_type_id. So that's okay. \n\nThe main issue is the mi.note LIKE '%internet%' which is non-sargable. The user's hint says that a trigram/GIN index is needed for that, but that's not allowed here. So maybe there's another way. Alternatively, maybe the movie_info table's note column is being scanned, leading to a Seq Scan. If we can add an index on note, but since the pattern is '%internet%', which is a leading wildcard, a B-tree index won't help. However, a GIN index with trigram support could help. But the user's hint says that's outside the current scope. So perhaps the user can't add that, so we need to look for other indexes.\n\nLooking at the movie_info table, the query also has mi.info LIKE 'USA:% 199%' or 'USA:% 200%'. The info column is text. If we create an index on info, maybe a B-tree index, that could help with these LIKE conditions. Because the pattern starts with 'USA:%', which is a prefix. The B-tree index would allow the query to use the index for these conditions. So adding an index on info (text) might help reduce the number of rows scanned in movie_info.\n\nAnother possible bottleneck is the movie_keyword table. The query joins on mk.movie_id and mk.keyword_id. The existing indexes on movie_id and keyword_id are already present. So maybe that's okay.\n\nThe company_name table is joined via cn.id = mc.company_id. Since company_name has no indexes, adding an index on cn.country_code (which is used in the WHERE clause) might help. The query has cn.country_code = '[us]', so an index on country_code would speed up that filter.\n\nSimilarly, the company_type table is joined via ct.id = mc.company_type_id. Since company_type has no indexes, adding an index on ct.id (which is the primary key) is already covered, but maybe the company_type table's kind column is used elsewhere? Wait, the query has ct.id = mc.company_type_id, which is the primary key. So maybe no need for an index there.\n\nThe info_type table is joined via it1.id = mi.info_type_id. Since info_type has no indexes, adding an index on it1.info (which is the info column) might help, but the query has it1.info = 'release dates', which is a equality condition. So an index on info would help here. However, the existing index on movie_info's info_type_id is already used for the join, but the info_type table's primary key is id, so no index is needed there.\n\nWait, the info_type table has no indexes. The query has it1.info = 'release dates', which is a condition on the info column. So adding an index on info in info_type would help. But the info_type table has only 113 rows, so even a Seq Scan is fast. So maybe not necessary.\n\nBack to the main issue: the movie_info table's note and info columns. The note is causing a Seq Scan. The info column's LIKE conditions might be helped by an index. So adding an index on movie_info.info (text) could help. Also, the mi.info IS NOT NULL condition could be covered by an index on info, but that's a filter. \n\nAnother possible index is on movie_info.movie_id and info_type_id, but those are already covered by existing indexes. \n\nSo the main candidates for indexes are:\n\n1. On movie_info.info to help with the LIKE 'USA:% 199%' and 'USA:% 200%' conditions.\n2. On company_name.country_code to speed up the filter cn.country_code = '[us]'.\n\nLet me check the tables again. The company_name table has no indexes. The query filters on country_code, so an index on country_code would help. Similarly, the movie_info's note is causing a Seq Scan, but the user's hint says that a GIN index is needed for that, which is not allowed. So maybe the next best thing is to index the info column in movie_info.\n\nSo the indexes to suggest would be:\n\n- For company_name (country_code)\n- For movie_info (info)\n\nBut the user's schema shows that the company_name table has no indexes. So adding an index on company_name.country_code would help. Similarly, adding an index on movie_info.info (text) would help with the LIKE conditions.\n\nSo the JSON should include these two indexes. Let me structure that.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"info\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"reduces rows scanned in movie_info for 'USA:% 199%' and 'USA:% 200%' patterns\"\n    },\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"reduces rows scanned in company_name for 'country_code = [us]' filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's performance is constrained by Seq Scans on movie_info (note LIKE '%internet%') and company_name (country_code filter). While note requires a GIN index (outside scope), indexing movie_info.info (B-tree) helps with the USA release date patterns. Indexing company_name.country_code (B-tree) accelerates the country_code = '[us]' filter.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.3,
+      "baseline_exec_ms": 241.635,
+      "optimized_exec_ms": 238.609,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20794.89,
+          "cost_with_index": 20794.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4796.13,
+          "cost_with_index": 4796.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.74,
+          "cost_with_index": 55684.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7472.0,
+          "cost_with_index": 7472.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 9522.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46664.39,
+          "cost_with_index": 44460.32,
+          "benefit_pct": 4.7
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.48,
+          "cost_with_index": 3814.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 3856.57,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

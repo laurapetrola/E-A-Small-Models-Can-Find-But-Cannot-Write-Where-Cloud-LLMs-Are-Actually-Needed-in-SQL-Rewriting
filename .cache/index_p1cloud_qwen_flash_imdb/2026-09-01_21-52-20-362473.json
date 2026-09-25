@@ -1,0 +1,123 @@
+{
+  "timestamp": "2026-09-01T21:52:20.362427",
+  "query_hash": "0d0160779a00",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: 'n.name LIKE '%B%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope."
+  ],
+  "workload_aware": false,
+  "inference_ms": 42188.5,
+  "reasoning_trace": "<think>\nOkay, let's break down this query and figure out the best indexes to add. The main goal is to reduce the execution cost by addressing the Seq Scans on large tables.\n\nFirst, looking at the query structure. The CTE 'relevant_movies' is joining movie_companies, company_name, movie_keyword, and keyword tables. The main query then joins cast_info, relevant_movies, title, and name tables, with a filter on n.name LIKE '%B%'.\n\nThe optimizer hints mention that the 'n.name LIKE '%B%'' is non-sargable with a leading '%', so a trigram/GIN index is needed. But the user is asking for indexes that can be added, considering the existing schema and indexes.\n\nLooking at the tables involved in the main query:\n\n1. **cast_info**: Already has indexes on movie_id, person_id, etc. The join here is on movie_id with relevant_movies, which is derived from movie_companies. The cast_info is joined with title, which has an index on kind_id. But the main issue might be the join with name where n.name is filtered.\n\n2. **name**: No indexes. The WHERE clause is n.name LIKE '%B%', which is a leading wildcard. Since there's no B-tree index on name, a Seq Scan is happening here. The hint suggests a trigram or GIN index. Since the database has pg_trgm, a GIN index on name.name would help with the LIKE pattern.\n\n3. **movie_companies**: Has indexes on company_id, company_type_id, movie_id. The CTE joins movie_companies with company_name and movie_keyword. The movie_companies is used to get the movie_ids that have the keyword 'character-name-in-title'. The join with movie_keyword is on movie_id, which is indexed. But the keyword filter is on k.keyword = 'character-name-in-title', which is a simple equality. However, the keyword table doesn't have an index. So, adding an index on keyword.keyword might help speed up that join.\n\n4. **movie_keyword**: Has indexes on keyword_id and movie_id. The join with keyword is on keyword_id, which is covered by the existing index. So maybe the keyword table's lack of index is the bottleneck here.\n\nSo, the main Seq Scans are on the name table due to the LIKE '%B%' and possibly on the keyword table for the keyword filter. Let's check:\n\n- The CTE's WHERE clause is k.keyword = 'character-name-in-title'. Since keyword has no index, a Seq Scan is happening here. Adding an index on keyword.keyword would help.\n\n- The main query's WHERE on name.name LIKE '%B%' is causing a Seq Scan on name. A GIN index on name.name would help here.\n\nBut the user's optimizer hints say that the name LIKE '%B%' can't be optimized with B-tree, so a GIN is needed. The database has pg_trgm, so a GIN index on name.name would be appropriate.\n\nSo the indexes to suggest are:\n\n1. GIN index on name.name for the LIKE '%B%' condition.\n2. B-tree index on keyword.keyword to speed up the equality filter in the CTE.\n\nBut the user's instructions say to look for Seq Scans on large tables. The name table has 4 million rows, so a Seq Scan there is a big bottleneck. The keyword table has 134k rows, so a Seq Scan there is also a problem.\n\nSo the two indexes would be:\n\n- For name.name with GIN.\n- For keyword.keyword with B-tree.\n\nBut the user's query might have other parts. Let me check the CTE again. The CTE joins movie_companies with company_name (which has no indexes) and movie_keyword (which has indexes on movie_id and keyword_id). The movie_companies has indexes on movie_id, so joining with movie_keyword on movie_id is covered. The company_name has no indexes, but the join is on cn.id = mc.company_id. Since company_name has no indexes, that could be a problem. However, the company_name table is small (234k rows), so maybe the Seq Scan isn't as bad. But if the company_name is being scanned, adding an index on company_name.name might help, but the query doesn't filter on that column. The CTE's WHERE is on k.keyword, so the main issue is the keyword table's lack of index.\n\nSo the main indexes needed are on keyword.keyword and name.name. However, the user's optimizer hints mention that the name LIKE '%B%' requires a trigram/GIN index, which is the correct approach. The keyword's equality filter would benefit from a B-tree index.\n\nSo the JSON should include these two indexes. But the user's instructions say to order by the number of rows scanned. The name table has 4 million rows, so the GIN index on name.name would eliminate the Seq Scan on that table. The keyword table has 134k rows, so the B-tree index on keyword.keyword would help there.\n\nThus, the indexes to suggest are:\n\n1. GIN on name.name for the LIKE condition.\n2. B-tree on keyword.keyword for the equality filter.\n\nBut the user's query might have other parts. Let me check the main query's joins. The main query joins cast_info with relevant_movies (which is derived from movie_companies, etc.), and then with title. The title table has an index on kind_id, which is used in the join. But the join condition is ci.movie_id = t.id, which is covered by the existing indexes on cast_info.movie_id and title.id (since title's primary key is id, so it's indexed). So no issue there.\n\nSo the main Seq Scans are on name and keyword. Hence, the two indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"name\",\n      \"property\": \"name\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on name table (4,167,491 rows) for the LIKE '%B%' filter\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on keyword table (134,170 rows) for the equality filter on k.keyword\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's performance bottleneck is the non-sargable LIKE '%B%' pattern on name.name (requiring GIN) and the lack of index on keyword.keyword (requiring B-tree). These indexes target the two Seq Scans on large tables with the highest row counts.\"\n}",
+  "recommendations": [
+    {
+      "table": "name",
+      "column": "name",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.5,
+      "baseline_exec_ms": 6126.846,
+      "optimized_exec_ms": 6037.778,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55711.2,
+          "cost_with_index": 55711.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10487.76,
+          "cost_with_index": 10487.76,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9521.83,
+          "cost_with_index": 9521.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9609.34,
+          "cost_with_index": 9609.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3817.46,
+          "cost_with_index": 3817.46,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 30.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.7,
+      "baseline_exec_ms": 6052.425,
+      "optimized_exec_ms": 6010.839,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 37.3,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7471.9,
+          "cost_with_index": 4538.64,
+          "benefit_pct": 39.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66667.0,
+          "cost_with_index": 66667.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10487.76,
+          "cost_with_index": 10379.07,
+          "benefit_pct": 1.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9521.83,
+          "cost_with_index": 8005.49,
+          "benefit_pct": 15.9
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3827.15,
+          "cost_with_index": 1209.46,
+          "benefit_pct": 68.4
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3817.46,
+          "cost_with_index": 1199.77,
+          "benefit_pct": 68.6
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3859.69,
+          "cost_with_index": 1242.01,
+          "benefit_pct": 67.8
+        }
+      ],
+      "workload_queries_improved": 6,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

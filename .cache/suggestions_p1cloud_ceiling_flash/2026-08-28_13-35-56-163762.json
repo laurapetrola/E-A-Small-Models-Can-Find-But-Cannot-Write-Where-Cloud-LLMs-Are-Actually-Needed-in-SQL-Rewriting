@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-08-28T13:35:56.163736",
+  "query_hash": "3505b74fb5bb",
+  "suggestions": [
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "materialize intermediate result as CTE",
+    "push predicate into joined subquery",
+    "replace CASE expression with direct comparison"
+  ],
+  "improvement_pct": 0.91,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 665646.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "SELECT c.c_last_name, c.c_first_name, c.c_salutation, c.c_preferred_cust_flag, dj.ss_ticket_number, dj.cnt\nFROM (\n    SELECT ss.ss_ticket_number, ss.ss_customer_sk, COUNT(*) AS cnt\n    FROM store_sales AS ss\n    WHERE ss.ss_sold_date_sk IN (\n        SELECT d.d_date_sk\n        FROM date_dim AS d\n        WHERE d.d_dom BETWEEN 1 AND 2\n          AND d.d_year IN (2000, 2000+1, 2000+2)\n    )\n      AND ss.ss_store_sk IN (\n        SELECT st.s_store_sk\n        FROM store AS st\n        WHERE st.s_county IN ('Williamson County','Williamson County','Williamson County','Williamson County')\n    )\n      AND ss.ss_hdemo_sk IN (\n        SELECT hd.hd_demo_sk\n        FROM household_demographics AS hd\n        WHERE (hd.hd_buy_potential = '1001-5000' OR hd.hd_buy_potential = '5001-10000')\n          AND hd.hd_vehicle_count > 0\n          AND hd.hd_dep_count >= 2 * hd.hd_vehicle_count\n    )\n    GROUP BY ss.ss_ticket_number, ss.ss_customer_sk\n    HAVING COUNT(*) BETWEEN 1 AND 5\n) AS dj\nJOIN customer AS c ON dj.ss_customer_sk = c.c_customer_sk\nORDER BY dj.cnt DESC, c.c_last_name ASC",
+  "reached_sql": "SELECT c.c_last_name, c.c_first_name, c.c_salutation, c.c_preferred_cust_flag, dj.ss_ticket_number, dj.cnt\nFROM (\n    SELECT ss.ss_ticket_number, ss.ss_customer_sk, COUNT(*) AS cnt\n    FROM store_sales AS ss\n    WHERE ss.ss_sold_date_sk IN (\n        SELECT d.d_date_sk\n        FROM date_dim AS d\n        WHERE d.d_dom BETWEEN 1 AND 2\n          AND d.d_year IN (2000, 2000+1, 2000+2)\n    )\n      AND ss.ss_store_sk IN (\n        SELECT st.s_store_sk\n        FROM store AS st\n        WHERE st.s_county IN ('Williamson County','Williamson County','Williamson County','Williamson County')\n    )\n      AND ss.ss_hdemo_sk IN (\n        SELECT hd.hd_demo_sk\n        FROM household_demographics AS hd\n        WHERE (hd.hd_buy_potential = '1001-5000' OR hd.hd_buy_potential = '5001-10000')\n          AND hd.hd_vehicle_count > 0\n          AND hd.hd_dep_count >= 2 * hd.hd_vehicle_count\n    )\n    GROUP BY ss.ss_ticket_number, ss.ss_customer_sk\n    HAVING COUNT(*) BETWEEN 1 AND 5\n) AS dj\nJOIN customer AS c ON dj.ss_customer_sk = c.c_customer_sk\nORDER BY dj.cnt DESC, c.c_last_name ASC",
+  "reasoning_trace": "1. BITMAP-AND FACT ACCESS \u2014 TARGET: `store_sales` filters on `ss_sold_date_sk`, `ss_store_sk`, `ss_hdemo_sk` \u2014 TRANSFORMATION: Precompute the qualifying `d_date_sk`, `s_store_sk`, and `hd_demo_sk` sets and use three narrow bitmap index scans on those `store_sales` columns, ANDing the bitmaps before aggregation so the 57M-row table is reduced to only the date/store/household intersection.\n\n2. SEMI-JOIN DIMENSION KEY SETS \u2014 TARGET: the three inner joins to `date_dim`, `store`, and `household_demographics` in the subquery \u2014 TRANSFORMATION: Replace those joins with compact existence-probe/IN-style filters against the precomputed dimension key sets, preserving the 1:1 semantics but avoiding carrying dimension columns into the aggregate and preventing any accidental row multiplication.\n\n3. PUSH THE OUTER `cnt` FILTER INTO THE AGGREGATE \u2014 TARGET: the subquery\u2019s `count(*)` / outer `cnt between 1 and 5` \u2014 TRANSFORMATION: Keep only groups whose row-count is between 1 and 5 inside the aggregate, so the subsequent `customer` join and final `ORDER BY` see only the surviving ticket/customer groups.\n\n4. REWRITE THE HOUSEHOLD_DEMOGRAPHICS DIVISION PREDICATE \u2014 TARGET: `household_demographics.hd_dep_count / hd_vehicle_count` inside the `CASE` \u2014 TRANSFORMATION: Since `hd_vehicle_count > 0` is already enforced, simplify the division/CASE to the equivalent arithmetic range `hd_dep_count >= 2 * hd_vehicle_count`; this makes the household key-set prefilter simpler and index-friendly.\n\n5. COVERING CUSTOMER LOOKUP AFTER AGGREGATION \u2014 TARGET: `customer(c_customer_sk)` and the selected `c_last_name`, `c_first_name`, `c_salutation`, `c_preferred_cust_flag` columns \u2014 TRANSFORMATION: Use a covering index on `c_customer_sk` that includes those four output columns, so the final join is index-only and the `ORDER BY c_last_name` does not require heap access.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2389.354,
+      "optimized_ms": 2367.542,
+      "delta_ms": 21.812,
+      "improvement_pct": 0.91,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1345159.91,
+      "optimized": 1345141.91,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 622260.5,
+    "index_advisor_inference_ms": 35802.8,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 7583.2,
+    "total_inference_ms": 665646.5,
+    "writer_inference_ms": 1412908.8,
+    "writer_tokens_in": 4372,
+    "writer_tokens_out": 136171,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. BITMAP-AND FACT ACCESS \u2014 TARGET: `store_sales` filters on `ss_sold_date_sk`, `ss_store_sk`, `ss_hdemo_sk` \u2014 TRANSFORMATION: Precompute the qualifying `d_date_sk`, `s_store_sk`, and `hd_demo_sk` sets and use three narrow bitmap index scans on those `store_sales` columns, ANDing the bitmaps before aggregation so the 57M-row table is reduced to only the date/store/household intersection.\n\n2. SEMI-JOIN DIMENSION KEY SETS \u2014 TARGET: the three inner joins to `date_dim`, `store`, and `household_demographics` in the subquery \u2014 TRANSFORMATION: Replace those joins with compact existence-probe/IN-style filters against the precomputed dimension key sets, preserving the 1:1 semantics but avoiding carrying dimension columns into the aggregate and preventing any accidental row multiplication.\n\n3. PUSH THE OUTER `cnt` FILTER INTO THE AGGREGATE \u2014 TARGET: the subquery\u2019s `count(*)` / outer `cnt between 1 and 5` \u2014 TRANSFORMATION: Keep only groups whose row-count is between 1 and 5 inside the aggregate, so the subsequent `customer` join and final `ORDER BY` see only the surviving ticket/customer groups.\n\n4. REWRITE THE HOUSEHOLD_DEMOGRAPHICS DIVISION PREDICATE \u2014 TARGET: `household_demographics.hd_dep_count / hd_vehicle_count` inside the `CASE` \u2014 TRANSFORMATION: Since `hd_vehicle_count > 0` is already enforced, simplify the division/CASE to the equivalent arithmetic range `hd_dep_count >= 2 * hd_vehicle_count`; this makes the household key-set prefilter simpler and index-friendly.\n\n5. COVERING CUSTOMER LOOKUP AFTER AGGREGATION \u2014 TARGET: `customer(c_customer_sk)` and the selected `c_last_name`, `c_first_name`, `c_salutation`, `c_preferred_cust_flag` columns \u2014 TRANSFORMATION: Use a covering index on `c_customer_sk` that includes those four output columns, so the final join is index-only and the `ORDER BY c_last_name` does not require heap access.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy called for SEMI-JOIN DIMENSION KEY SETS (replacing joins with IN-style filters), and the rewrite uses IN subqueries to filter the dimension keys, matching this technique."
+  },
+  "raw_sql": "select c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt from (select ss_ticket_number ,ss_customer_sk ,count(*) cnt from store_sales,date_dim,store,household_demographics where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_store_sk = store.s_store_sk and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk and date_dim.d_dom between 1 and 2 and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') and household_demographics.hd_vehicle_count > 0 and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 and date_dim.d_year in (2000,2000+1,2000+2) and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') group by ss_ticket_number,ss_customer_sk) dj,customer where ss_customer_sk = c_customer_sk and cnt between 1 and 5 order by cnt desc, c_last_name asc"
+}

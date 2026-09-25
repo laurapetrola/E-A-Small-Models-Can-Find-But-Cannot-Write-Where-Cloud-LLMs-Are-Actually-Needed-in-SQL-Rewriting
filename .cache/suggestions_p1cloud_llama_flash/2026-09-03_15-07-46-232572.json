@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-03T15:07:46.232506",
+  "query_hash": "dc308c52049e",
+  "suggestions": [
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": -3632.51,
+  "model": "llama+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 85805.4,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "SELECT COUNT(*)\nFROM (\n    SELECT 1\n    FROM (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN store_sales\n          ON store_sales.ss_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS store_channel\n    JOIN (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN catalog_sales\n          ON catalog_sales.cs_bill_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON catalog_sales.cs_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS catalog_channel\n      ON store_channel.c_last_name IS NOT DISTINCT FROM catalog_channel.c_last_name\n     AND store_channel.c_first_name IS NOT DISTINCT FROM catalog_channel.c_first_name\n     AND store_channel.d_date IS NOT DISTINCT FROM catalog_channel.d_date\n    JOIN (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN web_sales\n          ON web_sales.ws_bill_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON web_sales.ws_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS web_channel\n      ON store_channel.c_last_name IS NOT DISTINCT FROM web_channel.c_last_name\n     AND store_channel.c_first_name IS NOT DISTINCT FROM web_channel.c_first_name\n     AND store_channel.d_date IS NOT DISTINCT FROM web_channel.d_date\n) AS hot_cust\nLIMIT 100",
+  "reached_sql": "SELECT COUNT(*)\nFROM (\n    SELECT 1\n    FROM (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN store_sales\n          ON store_sales.ss_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS store_channel\n    JOIN (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN catalog_sales\n          ON catalog_sales.cs_bill_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON catalog_sales.cs_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS catalog_channel\n      ON store_channel.c_last_name IS NOT DISTINCT FROM catalog_channel.c_last_name\n     AND store_channel.c_first_name IS NOT DISTINCT FROM catalog_channel.c_first_name\n     AND store_channel.d_date IS NOT DISTINCT FROM catalog_channel.d_date\n    JOIN (\n        SELECT customer.c_last_name, customer.c_first_name, date_dim.d_date\n        FROM customer\n        JOIN web_sales\n          ON web_sales.ws_bill_customer_sk = customer.c_customer_sk\n        JOIN date_dim\n          ON web_sales.ws_sold_date_sk = date_dim.d_date_sk\n         AND date_dim.d_month_seq BETWEEN 1189 AND 1189 + 11\n        GROUP BY customer.c_last_name, customer.c_first_name, date_dim.d_date\n    ) AS web_channel\n      ON store_channel.c_last_name IS NOT DISTINCT FROM web_channel.c_last_name\n     AND store_channel.c_first_name IS NOT DISTINCT FROM web_channel.c_first_name\n     AND store_channel.d_date IS NOT DISTINCT FROM web_channel.d_date\n) AS hot_cust\nLIMIT 100",
+  "reasoning_trace": "Here is an alternative optimization strategy:\n\n1. **Push down filters to earlier stages** \u2014 TARGET: `d_month_seq between 1189 and 1189 + 11` filter \u2014 TRANSFORMATION: move this filter to the earliest possible stage, i.e., apply it to each subquery before joining them together.\n2. **Rewrite subqueries as joins** \u2014 TARGET: `intersect` clauses \u2014 TRANSFORMATION: rewrite each intersect clause as a join with the main query, using the same conditions.\n3. **Apply index on date_dim table** \u2014 TARGET: `date_dim.d_date_sk` column \u2014 TRANSFORMATION: create an index on the `d_date_sk` column of the `date_dim` table to speed up the joins and filters involving this column.\n4. **Use efficient join order** \u2014 TARGET: joins between `store_sales`, `catalog_sales`, and `web_sales` tables \u2014 TRANSFORMATION: reorder the joins to minimize the number of rows being joined, e.g., start with the smallest table (`customer`) and then join with the larger tables.\n5. **Apply distinct aggregation early** \u2014 TARGET: `distinct` clauses in subqueries \u2014 TRANSFORMATION: apply the `distinct` aggregation as soon as possible, i.e., after each subquery is evaluated, to reduce the number of rows being joined together.\n\nHowever, I would like to propose an additional strategy:\n\n6. **Eliminate unnecessary columns** \u2014 TARGET: `c_last_name`, `c_first_name`, and `d_date` columns in the main query \u2014 TRANSFORMATION: remove these columns from the main query since they are not used in the final result set, which only returns a count of distinct customers.\n\nThis strategy focuses on reducing the amount of data being processed by eliminating unnecessary columns. By removing these columns, we can reduce the number of rows being joined together and improve the overall performance of the query.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 932.874,
+      "optimized_ms": 34819.639,
+      "delta_ms": -33886.765,
+      "improvement_pct": -3632.51,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": "SF1"
+    },
+    "planner_cost": {
+      "original": 2951252.08,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 57976.7,
+    "index_advisor_inference_ms": 21811.5,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 6017.2,
+    "total_inference_ms": 85805.4,
+    "writer_inference_ms": 808996.9,
+    "writer_tokens_in": 5546,
+    "writer_tokens_out": 110960,
+    "writer_calls": 4
+  },
+  "errors": [],
+  "strategy": "Here is an alternative optimization strategy:\n\n1. **Push down filters to earlier stages** \u2014 TARGET: `d_month_seq between 1189 and 1189 + 11` filter \u2014 TRANSFORMATION: move this filter to the earliest possible stage, i.e., apply it to each subquery before joining them together.\n2. **Rewrite subqueries as joins** \u2014 TARGET: `intersect` clauses \u2014 TRANSFORMATION: rewrite each intersect clause as a join with the main query, using the same conditions.\n3. **Apply index on date_dim table** \u2014 TARGET: `date_dim.d_date_sk` column \u2014 TRANSFORMATION: create an index on the `d_date_sk` column of the `date_dim` table to speed up the joins and filters involving this column.\n4. **Use efficient join order** \u2014 TARGET: joins between `store_sales`, `catalog_sales`, and `web_sales` tables \u2014 TRANSFORMATION: reorder the joins to minimize the number of rows being joined, e.g., start with the smallest table (`customer`) and then join with the larger tables.\n5. **Apply distinct aggregation early** \u2014 TARGET: `distinct` clauses in subqueries \u2014 TRANSFORMATION: apply the `distinct` aggregation as soon as possible, i.e., after each subquery is evaluated, to reduce the number of rows being joined together.\n\nHowever, I would like to propose an additional strategy:\n\n6. **Eliminate unnecessary columns** \u2014 TARGET: `c_last_name`, `c_first_name`, and `d_date` columns in the main query \u2014 TRANSFORMATION: remove these columns from the main query since they are not used in the final result set, which only returns a count of distinct customers.\n\nThis strategy focuses on reducing the amount of data being processed by eliminating unnecessary columns. By removing these columns, we can reduce the number of rows being joined together and improve the overall performance of the query.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT\n\nThe rewrite applies the strategy's main technique of \"Push down filters to earlier stages\" (strategy #1), by moving the filter `d_month_seq between 1189 and 1189 + 11` to the earliest possib"
+  },
+  "raw_sql": "select count(*) from ( select distinct c_last_name, c_first_name, d_date from store_sales, date_dim, customer where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 intersect select distinct c_last_name, c_first_name, d_date from catalog_sales, date_dim, customer where catalog_sales.cs_sold_date_sk = date_dim.d_date_sk and catalog_sales.cs_bill_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 intersect select distinct c_last_name, c_first_name, d_date from web_sales, date_dim, customer where web_sales.ws_sold_date_sk = date_dim.d_date_sk and web_sales.ws_bill_customer_sk = customer.c_customer_sk and d_month_seq between 1189 and 1189 + 11 ) hot_cust limit 100"
+}

@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-08-29T07:47:20.291379",
+  "query_hash": "9756dc2bf6d5",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 44969.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of their SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting several cases based on subqueries that count and average certain columns from the store_sales table, filtered by ss_quantity ranges. The main table involved here is store_sales, and the reason table is just used for a condition (r_reason_sk = 1), which is a small table with no indexes.\n\nFirst, looking at the query structure. The main query is a SELECT from the reason table where r_reason_sk = 1. The reason table has no indexes, but since it's a small table (36 rows), a sequential scan is probably fast enough. The real issue is the subqueries in the CASE statements.\n\nEach subquery in the CASE is a COUNT(*) and an AVG() on store_sales where ss_quantity is in a specific range. For example, the first subquery checks if the count of store_sales with ss_quantity between 1 and 20 is greater than 1071. If so, it takes the average of ss_ext_tax for that range; otherwise, it uses ss_net_paid_inc_tax.\n\nSince these subqueries are repeated for different quantity ranges, the main bottleneck is the repeated scanning of the store_sales table for each range. Without indexes, each of these subqueries would perform a sequential scan on store_sales, which is a large table (57 million rows). That's going to be very slow, especially since there are five such subqueries.\n\nNow, the task is to find indexes that can speed up these subqueries. Let's think about the columns involved. The key column here is ss_quantity, which is used in the BETWEEN conditions. If we can create an index on ss_quantity, that would allow the database to quickly find the rows where ss_quantity is between the specified values.\n\nBut wait, the query has multiple ranges: 1-20, 21-40, etc. Each of these ranges is a separate condition. An index on ss_quantity would help with range queries. However, since the query is using BETWEEN, which is a range condition, a B-tree index on ss_quantity would be effective here. \n\nAdditionally, the subqueries also involve aggregating (COUNT and AVG) on ss_ext_tax and ss_net_paid_inc_tax. So, if we have an index that includes ss_quantity and the columns used in the aggregates, that could help. However, in PostgreSQL, a standard B-tree index on ss_quantity would allow the query to quickly locate the rows in the specified ranges, and then the aggregates can be computed. \n\nBut wait, the subqueries are separate. Each one is a separate scan. So, if we have an index on ss_quantity, each subquery can use that index to quickly find the rows in their respective ranges. That would reduce the number of rows scanned for each subquery, thereby improving performance.\n\nAnother thing to consider: the query has multiple subqueries, each with their own BETWEEN conditions. If we can create an index on ss_quantity, then each of these subqueries can leverage that index. \n\nBut what about the columns used in the aggregates? The COUNT(*) is straightforward, but the AVG(ss_ext_tax) and AVG(ss_net_paid_inc_tax) would require the database to scan the relevant rows and compute the average. However, with an index on ss_quantity, the database can quickly find the rows in the range, and then compute the average. \n\nWait, but the average calculation would still require accessing the actual data. However, if the index includes the ss_ext_tax and ss_net_paid_inc_tax columns, then the database could compute the average without hitting the heap. But in PostgreSQL, a standard B-tree index on ss_quantity wouldn't include those columns. To include them, we'd need a composite index on (ss_quantity, ss_ext_tax, ss_net_paid_inc_tax). However, that might be overkill. \n\nAlternatively, since the query is using BETWEEN on ss_quantity, a B-tree index on ss_quantity would allow the database to quickly find the rows in the range. The COUNT and AVG operations would then be performed on those rows. \n\nSo, the main index needed here is on ss_quantity. Let me check the existing indexes. The user mentioned that the store_sales table has no indexes. So, creating an index on ss_quantity would be beneficial.\n\nBut wait, the query has multiple subqueries, each with different ranges. Each of these would benefit from an index on ss_quantity. Therefore, the index on ss_quantity would be the primary candidate.\n\nAnother thing to consider: the query is using BETWEEN, which is a range condition. A B-tree index on ss_quantity would be the best choice here. Since the query is checking for ranges, the index would allow the database to quickly locate the rows in those ranges, reducing the number of rows scanned for each subquery.\n\nTherefore, the optimal index would be a B-tree index on ss_quantity. This would allow each of the subqueries to quickly find the rows in their respective quantity ranges, thereby reducing the execution time.\n\nSo, the index to create is on store_sales(ss_quantity). This would eliminate the sequential scans on store_sales for each subquery, replacing them with index scans, which are much faster.\n\nAnother thing to check: are there any other columns that could be indexed? The subqueries also involve COUNT(*) and AVG on specific columns. However, without knowing the distribution of the data, it's hard to say. But given the query structure, the main bottleneck is the range condition on ss_quantity. Therefore, the index on ss_quantity is the most impactful.\n\nSo, the final answer is to create a B-tree index on store_sales(ss_quantity). This would significantly reduce the execution cost by allowing each subquery to quickly find the relevant rows.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_quantity\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates 5 sequential scans on store_sales (57.6M rows) for range-based filters on ss_quantity\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query contains 5 identical subquery patterns filtering store_sales by ss_quantity ranges. Without indexes, each subquery performs a full table scan on 57.6M rows. A B-tree index on ss_quantity would enable efficient range scans for all quantity filters (1-20, 21-40, etc.), dramatically reducing the number of rows scanned for each subquery.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_quantity",
+      "index_type": "btree",
+      "estimated_benefit_pct": 28.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": 36.6,
+      "baseline_exec_ms": 16033.032,
+      "optimized_exec_ms": 10168.96,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2971575.36,
+          "cost_with_index": 2971584.06,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933426.79,
+          "cost_with_index": 1933435.65,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369603.29,
+          "cost_with_index": 1369610.42,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 785438.74,
+          "cost_with_index": 785447.07,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 119407.05,
+          "cost_with_index": 119407.22,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018634.62,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130279.87,
+          "cost_with_index": 130279.88,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179349.44,
+          "cost_with_index": 179349.44,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81756.32,
+          "cost_with_index": 81756.4,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712181.8,
+          "cost_with_index": 3712191.44,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135056.01,
+          "cost_with_index": 135056.01,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.17,
+          "cost_with_index": 224465.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345153.01,
+          "cost_with_index": 1345159.91,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342654.64,
+          "cost_with_index": 1342661.57,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

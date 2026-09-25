@@ -1,0 +1,186 @@
+{
+  "timestamp": "2026-09-16T14:20:57.081726",
+  "query_hash": "7f35567e583c",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 46925.9,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The query is a bit complex with multiple joins and conditions. Let me break it down step by step.\n\nFirst, I need to understand the query. The goal is to find the minimum actor pseudonym (from aka_name) and the minimum title (from title) where certain conditions are met. The conditions include country code being 'us', keyword 'character-name-in-title', and episode numbers between 50 and 99. There are several joins between tables like aka_name, cast_info, company_name, keyword, movie_companies, movie_keyword, name, and title.\n\nLooking at the schema and existing indexes, I notice that some tables don't have indexes. The user mentioned that the physical execution plan isn't available, so I have to rely on the schema and the query structure.\n\nThe first thing to check is for full table scans on large tables. The tables with the most rows are cast_info (36 million), movie_companies (2.6 million), movie_keyword (4.5 million), and title (2.5 million). These are likely candidates for full table scans if they aren't properly indexed.\n\nLet me look at each table involved in the query:\n\n1. **company_name**: No indexes. The query filters on country_code = '[us]'. Since there's no index on country_code, this could be a full table scan. Adding an index on country_code would help here.\n\n2. **keyword**: No indexes. The condition is k.keyword = 'character-name-in-title'. An index on keyword would speed up this filter.\n\n3. **title**: Has an index on kind_id. The query uses t.episode_nr >= 50 and < 100. Since there's no index on episode_nr, this might be a full table scan. An index on episode_nr could help, but since the query is looking for a range, a B-tree index on episode_nr would be useful.\n\n4. **movie_companies**: Has indexes on company_id, company_type_id, and movie_id. The query joins on mc.movie_id = t.id and mc.company_id = cn.id. Since company_name is joined via mc.company_id, and company_name has no index on country_code, but the filter is on cn.country_code. However, the join between mc and cn is on mc.company_id = cn.id, so if company_name has an index on country_code, that would help. But since company_name has no indexes, maybe the join is causing a full scan.\n\nWait, the query has a condition cn.country_code = '[us]'. Since company_name has no index on country_code, that's a full table scan. So adding an index on company_name.country_code would help.\n\nAlso, the movie_keyword table has an index on keyword_id and movie_id. The query joins mk.keyword_id = k.id, which is covered by the existing index on keyword_id. But the filter on k.keyword might still need an index on keyword.\n\nLooking at the joins and conditions:\n\n- The title table is joined with movie_keyword (mk.movie_id = t.id), and the keyword table (mk.keyword_id = k.id). Since k.keyword is filtered, an index on keyword.keyword would help.\n\n- The title table's episode_nr is in a range, so an index on episode_nr would help.\n\n- The company_name table's country_code is filtered, so an index there.\n\n- The name table is joined with aka_name (an.person_id = n.id), but name has no indexes. However, the join is on n.id, which is the primary key, so maybe that's not a problem. Wait, the name table's primary key is id, so joining on n.id would be efficient. But the query might have other conditions on name? Not sure. The query's WHERE clause doesn't mention name directly, except through joins.\n\nWait, the query has an inner join between an (aka_name) and n (name) on an.person_id = n.id. Since n.id is the primary key, that join should be efficient. So maybe name doesn't need an index here.\n\nSimilarly, cast_info has indexes on movie_id and person_id, which are used in joins. The query has conditions like ci.movie_id = t.id and ci.person_id = an.person_id. Since cast_info has indexes on those columns, maybe those are already covered.\n\nBut the main issue is the tables that are being scanned due to lack of indexes. Let me list the tables that are likely causing full table scans:\n\n- company_name (no index on country_code)\n- keyword (no index on keyword)\n- title (no index on episode_nr)\n- movie_companies (maybe, but it has indexes on movie_id and company_id, which are used in joins)\n\nWait, the query has a condition on t.episode_nr between 50 and 99. Since title doesn't have an index on episode_nr, that's a full table scan. Adding an index on episode_nr would help.\n\nAlso, the keyword table's keyword column is being filtered, so an index on keyword.keyword would help.\n\nThe company_name's country_code is being filtered, so an index on that column.\n\nSo the indexes needed would be:\n\n1. company_name (country_code)\n2. keyword (keyword)\n3. title (episode_nr)\n\nBut wait, the title table's index is on kind_id. The query's condition is on episode_nr, which is not indexed. So adding an index on episode_nr for the title table would help.\n\nAdditionally, the movie_companies table is joined with company_name via mc.company_id = cn.id. Since company_name has no index on id (which is the primary key), but the join is on mc.company_id = cn.id. Since cn.id is the primary key, that join should be efficient. However, the filter on cn.country_code is causing a full scan on company_name. So the index on company_name.country_code is needed.\n\nSimilarly, the keyword table's keyword column is being filtered, so an index on keyword.keyword.\n\nThe title table's episode_nr is in a range, so an index on episode_nr.\n\nSo the indexes to suggest are:\n\n- company_name (country_code)\n- keyword (keyword)\n- title (episode_nr)\n\nBut wait, the user's schema says that the company_name table has no indexes. So adding an index on country_code for company_name.\n\nFor the keyword table, adding an index on keyword.\n\nFor the title table, adding an index on episode_nr.\n\nThese indexes would eliminate full table scans on those tables, thus improving the query's performance.\n\nNow, checking if these indexes are already present. According to the schema, the existing indexes are:\n\n- company_name has no indexes.\n- keyword has no indexes.\n- title has an index on kind_id.\n\nSo the three indexes I mentioned are not present, so they are candidates.\n\nTherefore, the JSON should list these three indexes with their respective columns and index types. The estimated benefit would be the elimination of full table scans on those tables, which are large (company_name has 234k rows, keyword 134k, title 2.5 million). So the estimated benefit would be the rows scanned in those tables.\n\nSo the final answer should include these three indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_name (234,997 rows) via country_code filter\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on keyword (134,170 rows) via keyword filter\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title (2,528,312 rows) via episode_nr range filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query requires filtering on company_name.country_code, keyword.keyword, and title.episode_nr. These columns lack indexes and are subject to full table scans. Adding BTREE indexes on these columns would eliminate the scans and improve join efficiency.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": -138.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": -8.8,
+      "baseline_exec_ms": 1044.537,
+      "optimized_exec_ms": 1136.281,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -18.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 891793.43,
+          "cost_with_index": 2197644.55,
+          "benefit_pct": -146.4
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 11693322.71,
+          "cost_with_index": 11686438.67,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 6748.91,
+          "cost_with_index": 6736.67,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 733767.72,
+          "cost_with_index": 729017.67,
+          "benefit_pct": 0.6
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49792.15,
+          "cost_with_index": 51316.79,
+          "benefit_pct": -3.1
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 362149.21,
+          "cost_with_index": 362839.51,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6319.9,
+          "cost_with_index": 6293.57,
+          "benefit_pct": 0.4
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 1914370.77,
+          "cost_with_index": 1923452.16,
+          "benefit_pct": -0.5
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 2,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": -3.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 9.6,
+      "baseline_exec_ms": 858.212,
+      "optimized_exec_ms": 776.141,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -4.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 894309.68,
+          "cost_with_index": 904588.6,
+          "benefit_pct": -1.1
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 11701707.62,
+          "cost_with_index": 11701175.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 5637.87,
+          "cost_with_index": 5625.83,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 2070878.37,
+          "cost_with_index": 2072924.28,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 733504.31,
+          "cost_with_index": 749937.36,
+          "benefit_pct": -2.2
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49873.12,
+          "cost_with_index": 58791.31,
+          "benefit_pct": -17.9
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17124.5,
+          "cost_with_index": 18200.02,
+          "benefit_pct": -6.3
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 364087.1,
+          "cost_with_index": 379519.24,
+          "benefit_pct": -4.2
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 465318.36,
+          "cost_with_index": 684968.77,
+          "benefit_pct": -47.2
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 18806.4,
+          "cost_with_index": 12734.07,
+          "benefit_pct": 32.3
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 5275.34,
+          "cost_with_index": 5304.95,
+          "benefit_pct": -0.6
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 1913147.46,
+          "cost_with_index": 1936585.73,
+          "benefit_pct": -1.2
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 8,
+      "status": null
+    }
+  ]
+}

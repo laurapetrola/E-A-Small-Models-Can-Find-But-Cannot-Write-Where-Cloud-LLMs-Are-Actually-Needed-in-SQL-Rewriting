@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-08-28T14:19:02.385598",
+  "query_hash": "a614cd11c21c",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 607053.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT r.r_reason_desc, ws.ws_quantity, wr.wr_refunded_cash, wr.wr_fee FROM ws_snapshot AS ws JOIN web_returns AS wr ON ws.ws_order_number = wr.wr_order_number AND ws.ws_item_sk = wr.wr_item_sk JOIN web_page AS wp ON ws.ws_web_page_sk = wp.wp_web_page_sk JOIN cd_prof AS cd1 ON cd1.cd_demo_sk = wr.wr_refunded_cdemo_sk AND cd1.profile_id = 3 JOIN cd_prof AS cd2 ON cd2.cd_demo_sk = wr.wr_returning_cdemo_sk AND cd2.profile_id = 3 JOIN reason AS r ON r.r_reason_sk = wr.wr_reason_sk WHERE ws.ws_sales_price BETWEEN 150.00 AND 200.00 AND ws.ws_net_profit BETWEEN 150 AND 300 AND EXISTS(SELECT 1 FROM allowed_addr AS a WHERE a.ca_address_sk = wr.wr_refunded_addr_sk AND a.ca_state IN ('WI', 'WV', 'GA')) ORDER BY SUBSTRING(r_reason_desc FROM 1 FOR 20), AVG(ws_quantity), AVG(wr_refunded_cash), AVG(wr_fee) LIMIT 100",
+  "reasoning_trace": "1. FACT-SNAPSHOT MATERIALIZATION \u2014 TARGET: `web_sales` (`ws_sold_date_sk`, `ws_sales_price`, `ws_net_profit`) \u2014 TRANSFORMATION: Materialize one reduced copy of `web_sales` containing only 1998 date keys, `ws_sales_price BETWEEN 50 AND 200`, and `ws_net_profit BETWEEN 50 AND 300`, so all later branch scans read this small snapshot instead of the full 14.4M-row table.\n\n2. UNION-ALL OR DECOMPOSITION \u2014 TARGET: the two OR predicate groups (`cd1`/`cd2` + `ws_sales_price`, and `ca_state` + `ws_net_profit`) \u2014 TRANSFORMATION: Split the query into 9 disjoint conjunctive branches, one per (demographic/price, address/profit) combination, each with only equality and range predicates; the branches are disjoint by distinct marital/education pair and state list, so UNION ALL preserves the exact result multiset.\n\n3. DEMOGRAPHIC PROFILE JOIN \u2014 TARGET: `customer_demographics cd1` and `customer_demographics cd2` \u2014 TRANSFORMATION: Build a 3-row profile of the allowed `(cd_marital_status, cd_education_status)` pairs, join `wr_refunded_cdemo_sk` and `wr_returning_cdemo_sk` to prefiltered demographics carrying that profile_id, and require profile_id equality; this avoids two full 1.92M-row demographics joins and repeated OR equality checks.\n\n4. ADDRESS SEMI-JOIN PUSHDOWN \u2014 TARGET: the `customer_address` join (`ca_address_sk = wr_refunded_addr_sk`) with `ca_country`/`ca_state` OR \u2014 TRANSFORMATION: Replace the address join with a compact semi-join on `wr_refunded_addr_sk` against the precomputed set of addresses with `ca_country = 'United States'` and the nine allowed states, reducing `web_returns` before the fact-to-fact join.\n\n5. REDUNDANT DIMENSION REMOVAL \u2014 TARGET: the `web_page` join (`ws_web_page_sk = wp_web_page_sk`) \u2014 TRANSFORMATION: Drop the `web_page` table entirely and keep only `ws_web_page_sk IS NOT NULL`; the FK guarantees every non-null `ws_web_page_sk` matches `web_page`, and no `web_page` column is selected or filtered.\n\n6. INDEX-ONLY RETURN PROBE \u2014 TARGET: `web_returns` (`wr_order_number`, `wr_item_sk`, `wr_refunded_cdemo_sk`, `wr_returning_cdemo_sk`, `wr_refunded_addr_sk`, `wr_reason_sk`, `wr_refunded_cash`, `wr_fee`) \u2014 TRANSFORMATION: Add a covering btree index on the join key plus all return columns used, so probing `web_returns` from a `web_sales` row is an index-only scan and supplies the AVG inputs without heap accesses.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 502.034,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 91808.57,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 556780.2,
+    "index_advisor_inference_ms": 40308.7,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 9964.4,
+    "total_inference_ms": 607053.3,
+    "writer_inference_ms": 2007252.7,
+    "writer_tokens_in": 22176,
+    "writer_tokens_out": 227711,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Optimized query references unknown sources: {'cd_prof', 'allowed_addr', 'ws_snapshot'}",
+    "Optimized query execution error: (psycopg2.errors.UndefinedTable) relation \"ws_snapshot\" does not exist\nLINE 1: ....ws_quantity, wr.wr_refunded_cash, wr.wr_fee FROM ws_snapsho...\n                                                             ^\n\n[SQL: SELECT * FROM (SELECT r.r_reason_desc, ws.ws_quantity, wr.wr_refunded_cash, wr.wr_fee FROM ws_snapshot AS ws JOIN web_returns AS wr ON ws.ws_order_number = wr.wr_order_number AND ws.ws_item_sk = wr.wr_item_sk JOIN web_page AS wp ON ws.ws_web_page_sk = wp.wp_web_page_sk JOIN cd_prof AS cd1 ON cd1.cd_demo_sk = wr.wr_refunded_cdemo_sk AND cd1.profile_id = 3 JOIN cd_prof AS cd2 ON cd2.cd_demo_sk = wr.wr_returning_cdemo_sk AND cd2.profile_id = 3 JOIN reason AS r ON r.r_reason_sk = wr.wr_reason_sk WHERE ws.ws_sales_price BETWEEN 150.00 AND 200.00 AND ws.ws_net_profit BETWEEN 150 AND 300 AND EXISTS(SELECT 1 FROM allowed_addr AS a WHERE a.ca_address_sk = wr.wr_refunded_addr_sk AND a.ca_state IN ('WI', 'WV', 'GA')) ORDER BY SUBSTRING(r_reason_desc FROM 1 FOR 20), AVG(ws_quantity), AVG(wr_refunded_cash), AVG(wr_fee) LIMIT 100) AS _s LIMIT 0]\n(Background on this error at: https://sqlalche.me/e/20/f405)",
+    "Data_Loss_Detected: table 'customer_address' was removed from FROM/JOIN",
+    "Data_Loss_Detected: table 'customer_demographics' was removed from FROM/JOIN",
+    "Data_Loss_Detected: table 'date_dim' was removed from FROM/JOIN",
+    "Data_Loss_Detected: table 'web_sales' was removed from FROM/JOIN"
+  ],
+  "strategy": "1. FACT-SNAPSHOT MATERIALIZATION \u2014 TARGET: `web_sales` (`ws_sold_date_sk`, `ws_sales_price`, `ws_net_profit`) \u2014 TRANSFORMATION: Materialize one reduced copy of `web_sales` containing only 1998 date keys, `ws_sales_price BETWEEN 50 AND 200`, and `ws_net_profit BETWEEN 50 AND 300`, so all later branch scans read this small snapshot instead of the full 14.4M-row table.\n\n2. UNION-ALL OR DECOMPOSITION \u2014 TARGET: the two OR predicate groups (`cd1`/`cd2` + `ws_sales_price`, and `ca_state` + `ws_net_profit`) \u2014 TRANSFORMATION: Split the query into 9 disjoint conjunctive branches, one per (demographic/price, address/profit) combination, each with only equality and range predicates; the branches are disjoint by distinct marital/education pair and state list, so UNION ALL preserves the exact result multiset.\n\n3. DEMOGRAPHIC PROFILE JOIN \u2014 TARGET: `customer_demographics cd1` and `customer_demographics cd2` \u2014 TRANSFORMATION: Build a 3-row profile of the allowed `(cd_marital_status, cd_education_status)` pairs, join `wr_refunded_cdemo_sk` and `wr_returning_cdemo_sk` to prefiltered demographics carrying that profile_id, and require profile_id equality; this avoids two full 1.92M-row demographics joins and repeated OR equality checks.\n\n4. ADDRESS SEMI-JOIN PUSHDOWN \u2014 TARGET: the `customer_address` join (`ca_address_sk = wr_refunded_addr_sk`) with `ca_country`/`ca_state` OR \u2014 TRANSFORMATION: Replace the address join with a compact semi-join on `wr_refunded_addr_sk` against the precomputed set of addresses with `ca_country = 'United States'` and the nine allowed states, reducing `web_returns` before the fact-to-fact join.\n\n5. REDUNDANT DIMENSION REMOVAL \u2014 TARGET: the `web_page` join (`ws_web_page_sk = wp_web_page_sk`) \u2014 TRANSFORMATION: Drop the `web_page` table entirely and keep only `ws_web_page_sk IS NOT NULL`; the FK guarantees every non-null `ws_web_page_sk` matches `web_page`, and no `web_page` column is selected or filtered.\n\n6. INDEX-ONLY RETURN PROBE \u2014 TARGET: `web_returns` (`wr_order_number`, `wr_item_sk`, `wr_refunded_cdemo_sk`, `wr_returning_cdemo_sk`, `wr_refunded_addr_sk`, `wr_reason_sk`, `wr_refunded_cash`, `wr_fee`) \u2014 TRANSFORMATION: Add a covering btree index on the join key plus all return columns used, so probing `web_returns` from a `web_sales` row is an index-only scan and supplies the AVG inputs without heap accesses.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy asked for FACT-SNAPSHOT MATERIALIZATION and ADDRESS SEMI-JOIN PUSHDOWN, and the rewrite uses a materialized snapshot (`ws_snapshot`) and a semi-join on allowed addresses."
+  },
+  "raw_sql": "select substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) from web_sales, web_returns, web_page, customer_demographics cd1, customer_demographics cd2, customer_address, date_dim, reason where ws_web_page_sk = wp_web_page_sk and ws_item_sk = wr_item_sk and ws_order_number = wr_order_number and ws_sold_date_sk = d_date_sk and d_year = 1998 and cd1.cd_demo_sk = wr_refunded_cdemo_sk and cd2.cd_demo_sk = wr_returning_cdemo_sk and ca_address_sk = wr_refunded_addr_sk and r_reason_sk = wr_reason_sk and ( ( cd1.cd_marital_status = 'D' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Primary' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 100.00 and 150.00 ) or ( cd1.cd_marital_status = 'S' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'College' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 50.00 and 100.00 ) or ( cd1.cd_marital_status = 'U' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Advanced Degree' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 150.00 and 200.00 ) ) and ( ( ca_country = 'United States' and ca_state in ('NC', 'TX', 'IA') and ws_net_profit between 100 and 200 ) or ( ca_country = 'United States' and ca_state in ('WI', 'WV', 'GA') and ws_net_profit between 150 and 300 ) or ( ca_country = 'United States' and ca_state in ('OK', 'VA', 'KY') and ws_net_profit between 50 and 250 ) ) group by r_reason_desc order by substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) limit 100"
+}

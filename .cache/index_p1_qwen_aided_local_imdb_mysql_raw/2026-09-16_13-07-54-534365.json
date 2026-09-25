@@ -1,0 +1,145 @@
+{
+  "timestamp": "2026-09-16T13:07:54.534343",
+  "query_hash": "b1093534f0e1",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 47772.8,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The query is quite complex, joining multiple tables and applying several filters. \n\nFirst, I need to understand the query structure. The main goal is to find movies that meet certain criteria, like having specific info in movie_info, being associated with US companies, and having certain keywords. The query joins tables like complete_cast, movie_companies, movie_info, movie_keyword, etc.\n\nLooking at the relevant tables and their existing indexes, I notice that some tables don't have indexes on columns that are used in the WHERE clauses or JOIN conditions. For example, the movie_companies table has indexes on company_id, company_type_id, and movie_id, but the query filters on cn.id = mc.company_id (company_name's id) and ct.id = mc.company_type_id (company_type's id). Since company_name and company_type are small tables, maybe the issue is with the movie_companies table's joins. Wait, no, the movie_companies table's indexes might already cover those columns. Wait, the company_id and company_type_id are indexed, so joining on those should be efficient.\n\nWait, the query has a condition on mc.company_id = cn.id. Since company_name's id is the primary key, and movie_companies has an index on company_id, that should be okay. Similarly for company_type_id. But maybe the problem is with other tables.\n\nLooking at the movie_info table, which has a lot of rows (14 million). The query filters on mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%' or 'USA:% 200%'. The existing indexes on movie_info are info_type_id and movie_id. The mi.note is a TEXT column, and the query uses a LIKE with a prefix. Since the existing indexes don't include note, a full table scan might be happening here. So, creating an index on mi.note could help, but since it's a TEXT column, we need to set a prefix length. However, the query uses LIKE with a pattern that starts with '%', which might not be efficiently covered by an index. Alternatively, maybe the info column is being filtered with LIKE 'USA:% 199%' which is a prefix. If the info column is indexed, that could help. Wait, the existing indexes on movie_info are info_type_id and movie_id. The info column is part of the WHERE clause, so an index on info would be useful. But the query has mi.info LIKE 'USA:% 199%' which is a prefix. So an index on info would help here. However, the existing indexes don't include info. So, adding an index on info might help reduce the full table scan on movie_info.\n\nAnother table is movie_keyword, which has indexes on keyword_id and movie_id. The query joins on mk.keyword_id = k.id, which is covered by the keyword_id index. But the query also has a condition on k.id = mk.keyword_id, which is already covered by the existing index. So maybe that's not the issue.\n\nLooking at the title table, which has an index on kind_id. The query joins t.kind_id = kt.id, which is covered by the existing index. But the query also has t.production_year > 1990. Since production_year is not indexed, a full table scan might occur here. So adding an index on production_year could help. However, the title table has 2.5 million rows, so an index on production_year would speed up that condition.\n\nAnother part is the movie_companies table. The query has conditions on mc.company_id and company_type_id, which are indexed. But maybe the join with company_name and company_type is causing issues. However, since those tables are small, the join might not be the problem.\n\nThe complete_cast table has an index on movie_id, which is used in the join. So that's covered.\n\nThe info_type table has no indexes, but the query filters on it with it1.info = 'release dates'. Since info_type has an index on info, but the existing schema says info_type has no indexes. Wait, the schema says info_type has no indexes. So, the query has a condition on it1.info = 'release dates', which is a small table (113 rows), so even without an index, it's manageable. But maybe the join with info_type is not the issue.\n\nThe keyword table has no indexes on keyword, but the query joins on k.id = mk.keyword_id, which is covered by the movie_keyword's keyword_id index. So that's okay.\n\nThe main tables that might be causing full table scans are movie_info and title. Let's check:\n\nFor movie_info: The query has conditions on mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%' or 'USA:% 200%'. Since the existing indexes are on info_type_id and movie_id, and the query filters on info and note, which are not indexed, a full table scan is happening here. So adding indexes on info and note would help. However, note is a TEXT column, so an index with a prefix length might be needed. For example, an index on (note(255), info) could help with the LIKE '%internet%' condition. But since the query uses LIKE with a prefix, maybe an index on info would be better for the 'USA:%' patterns.\n\nFor the title table: The condition t.production_year > 1990 is not indexed. Adding an index on production_year would help here.\n\nAnother possible candidate is the movie_companies table. The query has a join with company_name and company_type, but since those are small tables, maybe the issue is with the movie_companies table's join with other tables. However, the existing indexes on movie_companies are on company_id, company_type_id, and movie_id. The query joins on movie_id, which is indexed. So maybe that's not the problem.\n\nSo, the main candidates for indexes are:\n\n1. movie_info: index on info (to handle the LIKE 'USA:%' conditions) and note (for the LIKE '%internet%'). But since note is TEXT, we need a prefix length. However, the query's note LIKE '%internet%' is a pattern that starts with a wildcard, which might not be efficiently covered by an index. So maybe an index on info would be more beneficial for the 'USA:%' part.\n\n2. title: index on production_year to handle the t.production_year > 1990 condition.\n\nAdditionally, the movie_info table has a condition on mi.info IS NOT NULL, which is a column check, but since it's a boolean, it's likely handled by the existing indexes.\n\nSo, the indexes to suggest would be:\n\n- For movie_info: index on info (since the query uses LIKE 'USA:% 199%' and 'USA:% 200%') which are prefix patterns. An index on info would help here. Also, note is a TEXT column with a LIKE '%internet%', which might benefit from an index with a prefix length, but since the pattern starts with a wildcard, the index might not be very effective. However, adding an index on note with a prefix length could still help in some cases.\n\n- For title: index on production_year to speed up the t.production_year > 1990 condition.\n\nBut the user's schema says that movie_info has indexes on info_type_id and movie_id. So adding an index on info would be a new index. Similarly, adding an index on production_year for the title table.\n\nSo, the JSON should include indexes for movie_info.info and title.production_year.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on movie_info for 'USA:% 199%' and 'USA:% 200%' patterns on 14,835,720 rows\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title for production_year > 1990 filter on 2,528,312 rows\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query requires filtering on movie_info.info (prefix patterns) and title.production_year (range condition) which are not indexed. These columns are part of critical WHERE clauses and JOIN conditions, making them high-impact candidates for new indexes.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": -10.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": -76.9,
+      "baseline_exec_ms": 2447.803,
+      "optimized_exec_ms": 4330.64,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -26.9,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 770128.3,
+          "cost_with_index": 884187.05,
+          "benefit_pct": -14.8
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7375.54,
+          "cost_with_index": 7398.66,
+          "benefit_pct": -0.3
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 379524.25,
+          "cost_with_index": 733939.04,
+          "benefit_pct": -93.4
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 355425.63,
+          "cost_with_index": 352705.59,
+          "benefit_pct": 0.8
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 2,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": -19.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 32.2,
+      "baseline_exec_ms": 5686.674,
+      "optimized_exec_ms": 3855.095,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 874099.73,
+          "cost_with_index": 880038.71,
+          "benefit_pct": -0.7
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 24172150.05,
+          "cost_with_index": 24187894.12,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7378.4,
+          "cost_with_index": 7391.09,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 2089169.89,
+          "cost_with_index": 2090473.34,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 726460.16,
+          "cost_with_index": 743262.75,
+          "benefit_pct": -2.3
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16964.19,
+          "cost_with_index": 18011.14,
+          "benefit_pct": -6.2
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 361486.95,
+          "cost_with_index": 375579.24,
+          "benefit_pct": -3.9
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 814829.19,
+          "cost_with_index": 816555.93,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 18716.61,
+          "cost_with_index": 12224.45,
+          "benefit_pct": 34.7
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6943.75,
+          "cost_with_index": 7046.42,
+          "benefit_pct": -1.5
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2427783.63,
+          "cost_with_index": 2432972.88,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 4845972.65,
+          "cost_with_index": 4859484.25,
+          "benefit_pct": -0.3
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 5,
+      "status": null
+    }
+  ]
+}

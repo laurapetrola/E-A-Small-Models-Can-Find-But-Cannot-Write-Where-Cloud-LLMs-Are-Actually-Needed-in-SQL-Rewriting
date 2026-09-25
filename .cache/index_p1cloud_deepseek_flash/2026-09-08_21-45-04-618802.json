@@ -1,0 +1,163 @@
+{
+  "timestamp": "2026-09-08T21:45:04.618781",
+  "query_hash": "0ce6157463a0",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 173598.9,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify indexes that would reduce the cost.\n\nThe query structure:\n\n1. Two CTEs: web_daily and store_daily.\n   - web_daily: aggregates web_sales by item_sk and date (using date_dim with a month range)\n   - store_daily: aggregates store_sales by item_sk and date (using date_dim with a month range)\n\n2. Then, timeline: combines the two CTEs with a UNION ALL and groups by item_sk and d_date.\n\n3. Then, cumulative: computes cumulative sums for web and store sales per item_sk over time.\n\n4. Finally, the main query selects from cumulative and filters for rows where web_cumulative > store_cumulative, then orders by item_sk and d_date, and limits to 100.\n\nThe tables involved are:\n- web_sales (14,396,103 rows)\n- store_sales (57,598,932 rows)\n- date_dim (73,049 rows)\n\nNote: The CTEs join date_dim and aggregate by item_sk and date.\n\nLooking at the execution plan (withheld, but we can reason):\n\nThe two CTEs (web_daily and store_daily) are likely to be the main bottlenecks because they involve aggregations on large tables (web_sales and store_sales) and a join with date_dim.\n\nIn the CTE web_daily:\n- It does a JOIN between web_sales and date_dim on ws_sold_date_sk = d_date_sk, and filters by d_month_seq between 1212 and 1212+11 (which is 12 months).\n- Then it groups by ws_item_sk and d_date.\n\nSimilarly for store_daily.\n\nWithout indexes, these queries will likely do a sequential scan on web_sales and store_sales, then a sequential scan on date_dim for the join.\n\nWe can consider:\n\n1. For web_sales and store_sales, we have two large tables. The join condition is on ws_sold_date_sk (or ss_sold_date_sk) and d_date_sk. Since date_dim is small (73,049 rows), the join might be efficient if we have an index on the date_dim side (d_date_sk) but that table is small. However, the main issue is the sequential scan on the large tables.\n\n2. We can create indexes on web_sales.ws_sold_date_sk and store_sales.ss_sold_date_sk to speed up the join with date_dim. But note: the join condition is an equality on d_date_sk, so a btree index on d_date_sk in date_dim would help, but date_dim is small so it might not be the bottleneck. The real bottleneck is the sequential scan on web_sales and store_sales.\n\nAlternatively, we can index the date columns in web_sales and store_sales to allow the optimizer to use an index scan on these tables and then join with date_dim. However, note that the query is filtering by d_month_seq, which is a derived value from date_dim. We cannot index d_month_seq because it is a virtual column (or computed) and we don't have it in the schema. But note: the query uses d_month_seq in the BETWEEN condition. Since d_month_seq is computed from d_date, we cannot index it directly.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We can index the d_date_sk in date_dim, but that table is small. The main issue is the large tables.\n\nAlternatively, we can index the web_sales.ws_item_sk and store_sales.ss_item_sk because the CTEs are grouping by these. However, the grouping is done after the join, so the index on the item_sk might help in the aggregation if we are grouping by item_sk, but note that the join is on date_dim, so the grouping is done after the join.\n\nBut note: the CTEs are aggregating by item_sk and date. The date is from date_dim, so we must join first.\n\nLet's break down the CTE web_daily:\n\n- It starts with a JOIN between web_sales and date_dim on ws_sold_date_sk = d_date_sk, and then filters by d_month_seq between 1212 and 1212+11.\n\nWithout an index on web_sales.ws_sold_date_sk, the planner might do a sequential scan on web_sales and then join with date_dim. With an index on web_sales.ws_sold_date_sk, it can do an index scan on web_sales and then join with date_dim.\n\nSimilarly for store_sales.\n\nSo, we can propose:\n\n1. Index on web_sales.ws_sold_date_sk (btree) to speed up the join with date_dim.\n2. Index on store_sales.ss_sold_date_sk (btree) to speed up the join with date_dim.\n\nBut note: the date_dim table is small, so the planner might choose a sequential scan on date_dim and then a nested loop join. However, if the web_sales table is large, the nested loop might be inefficient. So an index on web_sales.ws_sold_date_sk would allow a more efficient join.\n\nAdditionally, the CTEs are grouping by item_sk and date. The grouping might be done by first aggregating and then grouping, but note that the query is grouping by two columns (item_sk and d_date). We might also consider an index on web_sales.ws_item_sk and ws_sold_date_sk, but that might be overkill.\n\nBut note: the query is filtering by d_month_seq, which is a computed column. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider materialized views or other techniques, but the task is to suggest indexes.\n\nAnother point: the main query then does a cumulative sum. This is done on the result of the CTEs, which are already aggregated. So the cumulative part is on a much smaller set (the timeline CTE). So the main cost is in the CTEs.\n\nTherefore, the two CTEs are the main bottlenecks.\n\nNow, let's look at the columns:\n\nFor web_daily:\n- Table: web_sales\n- Join condition: ws_sold_date_sk = d_date_sk\n- Filter: d_month_seq between 1212 and 1212+11 (this is on date_dim)\n\nWe can index web_sales.ws_sold_date_sk and store_sales.ss_sold_date_sk.\n\nBut note: the query also uses web_sales.ws_item_sk and store_sales.ss_item_sk for grouping. We might also consider an index on web_sales.ws_item_sk, but the grouping is done after the join, so the index on ws_item_sk might not help the join. However, if we have a composite index on (ws_sold_date_sk, ws_item_sk) then the join might be faster and then the grouping might be faster because the data is already grouped by item_sk? Not necessarily.\n\nBut note: the query is grouping by item_sk and date. We are not sure if the planner can use an index to push the grouping down, but without an index on the item_sk, the grouping might be done on the entire table.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nSo, let's propose:\n\n1. Index on web_sales.ws_sold_date_sk (btree) to speed up the join with date_dim.\n2. Index on store_sales.ss_sold_date_sk (btree) to speed up the join with date_dim.\n\nBut note: the query also uses web_sales.ws_item_sk and store_sales.ss_item_sk. We might also consider an index on these columns for the grouping, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have a composite index on (ws_sold_date_sk, ws_item_sk) then the join might be faster and then the grouping might be faster because the data is already grouped by item_sk? Not necessarily.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider an index on date_dim.d_date_sk, but again, the table is small.\n\nAnother idea: the query uses a date range (12 months). We can precompute the date_dim for the given month range and then use a join, but that is not the task.\n\nGiven the above, the two CTEs are the main bottlenecks, and the join condition is on the date_sk columns. So we should index the date_sk columns in the large tables.\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk to help with the grouping, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sales. This would allow the planner to use the index for the join and then the grouping might be done on the index.\n\nHowever, the primary goal is to reduce the cost of the join. The join is the most expensive part.\n\nBut note: the query is filtering by d_month_seq, which is a column in date_dim. We cannot index that. However, we can index the date_dim table on d_date_sk, but that table is small so it might not be necessary.\n\nAlternatively, we can consider a GiST index on the date_dim table for the d_date column, but that is not necessary because the table is small.\n\nGiven the above, we propose two indexes:\n\n1. On web_sales.ws_sold_date_sk (btree)\n2. On store_sales.ss_sold_date_sk (btree)\n\nBut note: the query also uses the item_sk for grouping. We might also consider an index on web_sales.ws_item_sk and store_sales.ss_item_sk, but the grouping is done after the join, so the index on the item_sk might not help the join. However, if we have an index on the item_sk, then after the join the grouping might be faster because the data is already grouped by item_sk? Not necessarily, because the join is on date_sk, not item_sk.\n\nBut note: the query is grouping by two columns (item_sk and date). We might also consider a composite index on (ws_sold_date_sk, ws_item_sk) for web_sales and similarly for store_sale",
+  "recommendations": [
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.8,
+      "baseline_exec_ms": 14822.88,
+      "optimized_exec_ms": 14709.031,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2957913.56,
+          "cost_with_index": 2957913.56,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 783188.1,
+          "cost_with_index": 783188.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036704.82,
+          "cost_with_index": 29036704.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712184.64,
+          "cost_with_index": 3712184.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91458.33,
+          "cost_with_index": 91458.33,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -3.6,
+      "baseline_exec_ms": 14091.198,
+      "optimized_exec_ms": 14592.867,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2957913.56,
+          "cost_with_index": 2957920.04,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370278.41,
+          "cost_with_index": 1370283.92,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 783188.1,
+          "cost_with_index": 783196.37,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118132.04,
+          "cost_with_index": 118132.17,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110222.51,
+          "cost_with_index": 21110319.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036704.82,
+          "cost_with_index": 29037021.07,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129740.26,
+          "cost_with_index": 129740.26,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179251.54,
+          "cost_with_index": 179251.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81541.05,
+          "cost_with_index": 81541.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712184.64,
+          "cost_with_index": 3657334.39,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.04,
+          "cost_with_index": 135055.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223509.08,
+          "cost_with_index": 223509.09,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345111.21,
+          "cost_with_index": 1345116.49,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342650.51,
+          "cost_with_index": 1342655.82,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

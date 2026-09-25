@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-08-26T18:28:32.449757",
+  "query_hash": "4d51a0b2a8bc",
+  "suggestions": [
+    "convert IN subquery to semi-join",
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 85.9,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 131468.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH date_window AS (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 3\n),\nstore_customers AS (\n    SELECT DISTINCT ss_customer_sk AS customer_sk\n    FROM store_sales\n    JOIN date_window ON ss_sold_date_sk = d_date_sk\n),\nforbidden_customers AS (\n    SELECT ws_bill_customer_sk AS customer_sk\n    FROM web_sales\n    JOIN date_window ON ws_sold_date_sk = d_date_sk\n    UNION\n    SELECT cs_ship_customer_sk AS customer_sk\n    FROM catalog_sales\n    JOIN date_window ON cs_sold_date_sk = d_date_sk\n),\nstate_customers AS (\n    SELECT c.c_customer_sk, c.c_current_cdemo_sk\n    FROM customer_address ca\n    JOIN customer c ON c.c_current_addr_sk = ca.ca_address_sk\n    WHERE ca.ca_state IN ('IL','TX','ME')\n),\neligible_customers AS (\n    SELECT sc.c_customer_sk, sc.c_current_cdemo_sk\n    FROM state_customers sc\n    JOIN store_customers stc ON sc.c_customer_sk = stc.customer_sk\n    LEFT JOIN forbidden_customers fc ON sc.c_customer_sk = fc.customer_sk\n    WHERE fc.customer_sk IS NULL\n)\nSELECT cd_gender, cd_marital_status, cd_education_status, cnt1, cd_purchase_estimate, cnt1 AS cnt2, cd_credit_rating, cnt1 AS cnt3\nFROM (\n    SELECT cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating, COUNT(*) AS cnt1\n    FROM eligible_customers ec\n    JOIN customer_demographics cd ON ec.c_current_cdemo_sk = cd.cd_demo_sk\n    GROUP BY cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating\n) AS aggregated\nORDER BY cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating\nLIMIT 100",
+  "reached_sql": "WITH date_window AS (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 3\n),\nstore_customers AS (\n    SELECT DISTINCT ss_customer_sk AS customer_sk\n    FROM store_sales\n    JOIN date_window ON ss_sold_date_sk = d_date_sk\n),\nforbidden_customers AS (\n    SELECT ws_bill_customer_sk AS customer_sk\n    FROM web_sales\n    JOIN date_window ON ws_sold_date_sk = d_date_sk\n    UNION\n    SELECT cs_ship_customer_sk AS customer_sk\n    FROM catalog_sales\n    JOIN date_window ON cs_sold_date_sk = d_date_sk\n),\nstate_customers AS (\n    SELECT c.c_customer_sk, c.c_current_cdemo_sk\n    FROM customer_address ca\n    JOIN customer c ON c.c_current_addr_sk = ca.ca_address_sk\n    WHERE ca.ca_state IN ('IL','TX','ME')\n),\neligible_customers AS (\n    SELECT sc.c_customer_sk, sc.c_current_cdemo_sk\n    FROM state_customers sc\n    JOIN store_customers stc ON sc.c_customer_sk = stc.customer_sk\n    LEFT JOIN forbidden_customers fc ON sc.c_customer_sk = fc.customer_sk\n    WHERE fc.customer_sk IS NULL\n)\nSELECT cd_gender, cd_marital_status, cd_education_status, cnt1, cd_purchase_estimate, cnt1 AS cnt2, cd_credit_rating, cnt1 AS cnt3\nFROM (\n    SELECT cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating, COUNT(*) AS cnt1\n    FROM eligible_customers ec\n    JOIN customer_demographics cd ON ec.c_current_cdemo_sk = cd.cd_demo_sk\n    GROUP BY cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating\n) AS aggregated\nORDER BY cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating\nLIMIT 100",
+  "reasoning_trace": "1. DECORRELATE STORE-SALES SEMI-JOIN \u2014 TARGET: correlated `EXISTS` over `store_sales \u22c8 date_dim` on `ss_customer_sk = c.c_customer_sk`, `d_year=2002`, `d_moy BETWEEN 1 AND 3` \u2014 TRANSFORMATION: precompute `DISTINCT ss_customer_sk` from that date-window join and inner-join it to `customer`; scan `store_sales` once instead of once per outer row.\n\n2. COMBINE WEB/CATALOG ANTI-JOINS \u2014 TARGET: `NOT EXISTS` over `web_sales/date_dim` (`ws_bill_customer_sk`) and over `catalog_sales/date_dim` (`cs_ship_customer_sk`) \u2014 TRANSFORMATION: build one `forbidden_customers` set as UNION of the two date-window distinct customer-key sets; anti-join via `LEFT JOIN ... IS NULL`, preserving the AND-of-two-NOT-EXISTS semantics.\n\n3. ADD FACT-TABLE DATE/CUSTOMER INDEXES \u2014 TARGET: `store_sales(ss_sold_date_sk, ss_customer_sk)`, `catalog_sales(cs_sold_date_sk, cs_ship_customer_sk)`, `web_sales(ws_sold_date_sk, ws_bill_customer_sk)` \u2014 TRANSFORMATION: create composite indexes (or hypopg candidates) so each fact-derived set is an index range scan on the 2002 Jan\u2013Mar window, not a full scan of 57.6M/28.8M/14.4M rows.\n\n4. RESTRICT STATE ADDRESSES FIRST \u2014 TARGET: `customer_address.ca_state IN ('IL','TX','ME')` and `c.c_current_addr_sk = ca_address_sk` \u2014 TRANSFORMATION: filter the address table to those states and join the resulting `ca_address_sk` set to `customer` before any outer join to demographics or existence checks; shrink the customer set early.\n\n5. DELAY DEMOGRAPHICS JOIN \u2014 TARGET: `customer_demographics` join on `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: after reducing `customer` keys by state and the store/web/catalog existence filters, join the survivors to `customer_demographics`; avoids carrying demographic columns through the expensive checks.\n\n6. REUSE DATE-WINDOW KEY SET \u2014 TARGET: `date_dim` predicate `d_year=2002 AND d_moy BETWEEN 1 AND 3` in all three subqueries \u2014 TRANSFORMATION: compute the `d_date_sk` set for the window once and reference it for all three fact scans, eliminating three repeated date_dim evaluations.\n\n7. USE ONE COUNT FOR ALL THREE COLUMNS \u2014 TARGET: repeated `count(*) cnt1/cnt2/cnt3` with the same GROUP BY \u2014 TRANSFORMATION: compute the group count once and assign it to cnt1, cnt2, cnt3 (they are always equal); same result with less aggregation work.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 83611.563,
+      "optimized_ms": 11791.627,
+      "delta_ms": 71819.936,
+      "improvement_pct": 85.9,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 781189.01,
+      "optimized": 3928360.9,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 125858.4,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 5609.6,
+    "total_inference_ms": 131468.0,
+    "writer_inference_ms": 334478.4,
+    "writer_tokens_in": 1335,
+    "writer_tokens_out": 35083,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. DECORRELATE STORE-SALES SEMI-JOIN \u2014 TARGET: correlated `EXISTS` over `store_sales \u22c8 date_dim` on `ss_customer_sk = c.c_customer_sk`, `d_year=2002`, `d_moy BETWEEN 1 AND 3` \u2014 TRANSFORMATION: precompute `DISTINCT ss_customer_sk` from that date-window join and inner-join it to `customer`; scan `store_sales` once instead of once per outer row.\n\n2. COMBINE WEB/CATALOG ANTI-JOINS \u2014 TARGET: `NOT EXISTS` over `web_sales/date_dim` (`ws_bill_customer_sk`) and over `catalog_sales/date_dim` (`cs_ship_customer_sk`) \u2014 TRANSFORMATION: build one `forbidden_customers` set as UNION of the two date-window distinct customer-key sets; anti-join via `LEFT JOIN ... IS NULL`, preserving the AND-of-two-NOT-EXISTS semantics.\n\n3. ADD FACT-TABLE DATE/CUSTOMER INDEXES \u2014 TARGET: `store_sales(ss_sold_date_sk, ss_customer_sk)`, `catalog_sales(cs_sold_date_sk, cs_ship_customer_sk)`, `web_sales(ws_sold_date_sk, ws_bill_customer_sk)` \u2014 TRANSFORMATION: create composite indexes (or hypopg candidates) so each fact-derived set is an index range scan on the 2002 Jan\u2013Mar window, not a full scan of 57.6M/28.8M/14.4M rows.\n\n4. RESTRICT STATE ADDRESSES FIRST \u2014 TARGET: `customer_address.ca_state IN ('IL','TX','ME')` and `c.c_current_addr_sk = ca_address_sk` \u2014 TRANSFORMATION: filter the address table to those states and join the resulting `ca_address_sk` set to `customer` before any outer join to demographics or existence checks; shrink the customer set early.\n\n5. DELAY DEMOGRAPHICS JOIN \u2014 TARGET: `customer_demographics` join on `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: after reducing `customer` keys by state and the store/web/catalog existence filters, join the survivors to `customer_demographics`; avoids carrying demographic columns through the expensive checks.\n\n6. REUSE DATE-WINDOW KEY SET \u2014 TARGET: `date_dim` predicate `d_year=2002 AND d_moy BETWEEN 1 AND 3` in all three subqueries \u2014 TRANSFORMATION: compute the `d_date_sk` set for the window once and reference it for all three fact scans, eliminating three repeated date_dim evaluations.\n\n7. USE ONE COUNT FOR ALL THREE COLUMNS \u2014 TARGET: repeated `count(*) cnt1/cnt2/cnt3` with the same GROUP BY \u2014 TRANSFORMATION: compute the group count once and assign it to cnt1, cnt2, cnt3 (they are always equal); same result with less aggregation work.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to decorrelate and precompute semi-join results (store_customers, forbidden_customers), and the rewrite applies that with CTEs and joins. It also aligns wi"
+  },
+  "raw_sql": "select cd_gender, cd_marital_status, cd_education_status, count(*) cnt1, cd_purchase_estimate, count(*) cnt2, cd_credit_rating, count(*) cnt3 from customer c,customer_address ca,customer_demographics where c.c_current_addr_sk = ca.ca_address_sk and ca_state in ('IL','TX','ME') and cd_demo_sk = c.c_current_cdemo_sk and exists (select * from store_sales,date_dim where c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and (not exists (select * from web_sales,date_dim where c.c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and not exists (select * from catalog_sales,date_dim where c.c_customer_sk = cs_ship_customer_sk and cs_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2)) group by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating order by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating limit 100"
+}

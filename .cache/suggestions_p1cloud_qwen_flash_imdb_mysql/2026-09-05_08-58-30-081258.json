@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-05T08:58:30.081234",
+  "query_hash": "7f35567e583c",
+  "suggestions": [
+    "split into CTEs for filtering and joining",
+    "reorder joins to reduce intermediate rows",
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 76.64,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 126319.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "mysql",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH us_company_movies AS (\n    SELECT mc.movie_id\n    FROM movie_companies AS mc\n    JOIN company_name AS cn ON cn.id = mc.company_id\n    WHERE cn.country_code = '[us]'\n),\ncharacter_keyword_movies AS (\n    SELECT mk.movie_id\n    FROM movie_keyword AS mk\n    JOIN keyword AS k ON k.id = mk.keyword_id\n    WHERE k.keyword = 'character-name-in-title'\n),\ncandidate_movie_ids AS (\n    SELECT DISTINCT ucm.movie_id\n    FROM us_company_movies AS ucm\n    JOIN character_keyword_movies AS ckm ON ckm.movie_id = ucm.movie_id\n),\ncandidate_titles AS (\n    SELECT t.id, t.title\n    FROM title AS t\n    JOIN candidate_movie_ids AS cm ON cm.movie_id = t.id\n    WHERE t.episode_nr >= 50 AND t.episode_nr < 100\n),\ncandidate_actor_names AS (\n    SELECT ci.movie_id, MIN(an.name) AS cool_actor_pseudonym\n    FROM cast_info AS ci\n    JOIN candidate_titles AS ct ON ct.id = ci.movie_id\n    JOIN name AS n ON n.id = ci.person_id\n    JOIN aka_name AS an ON an.person_id = n.id\n    GROUP BY ci.movie_id\n)\nSELECT\n    MIN(can.cool_actor_pseudonym) AS cool_actor_pseudonym,\n    MIN(ct.title) AS series_named_after_char\nFROM candidate_actor_names AS can\nJOIN candidate_titles AS ct ON ct.id = can.movie_id",
+  "reached_sql": "WITH us_company_movies AS (\n    SELECT mc.movie_id\n    FROM movie_companies AS mc\n    JOIN company_name AS cn ON cn.id = mc.company_id\n    WHERE cn.country_code = '[us]'\n),\ncharacter_keyword_movies AS (\n    SELECT mk.movie_id\n    FROM movie_keyword AS mk\n    JOIN keyword AS k ON k.id = mk.keyword_id\n    WHERE k.keyword = 'character-name-in-title'\n),\ncandidate_movie_ids AS (\n    SELECT DISTINCT ucm.movie_id\n    FROM us_company_movies AS ucm\n    JOIN character_keyword_movies AS ckm ON ckm.movie_id = ucm.movie_id\n),\ncandidate_titles AS (\n    SELECT t.id, t.title\n    FROM title AS t\n    JOIN candidate_movie_ids AS cm ON cm.movie_id = t.id\n    WHERE t.episode_nr >= 50 AND t.episode_nr < 100\n),\ncandidate_actor_names AS (\n    SELECT ci.movie_id, MIN(an.name) AS cool_actor_pseudonym\n    FROM cast_info AS ci\n    JOIN candidate_titles AS ct ON ct.id = ci.movie_id\n    JOIN name AS n ON n.id = ci.person_id\n    JOIN aka_name AS an ON an.person_id = n.id\n    GROUP BY ci.movie_id\n)\nSELECT\n    MIN(can.cool_actor_pseudonym) AS cool_actor_pseudonym,\n    MIN(ct.title) AS series_named_after_char\nFROM candidate_actor_names AS can\nJOIN candidate_titles AS ct ON ct.id = can.movie_id",
+  "reasoning_trace": "<think>\nOkay, let's see. The user wants me to act as an SQL optimization advisor and come up with a different strategy than the previous one. The original query is a bit complex with multiple joins and filters. Let me first understand the query structure.\n\nThe query selects the minimum actor name and title where certain conditions are met. The main tables involved are aka_name, cast_info, company_name, keyword, movie_companies, movie_keyword, name, and title. The filters include country_code = '[us]', keyword 'character-name-in-title', and episode_nr between 50 and 100.\n\nLooking at the previous strategies, they focused on filtering early, pre-filtering keywords, country code, indexing, reducing joins, etc. Now I need to think of another approach. Let me check for possible redundant joins or tables that can be eliminated.\n\nWait, the query has multiple joins between movie_companies, movie_keyword, and other tables. Maybe there's a way to combine some of these joins into a single subquery. For example, the movie_companies and movie_keyword both relate to movie_id. If I can find the intersection of movie_ids that satisfy both conditions, that might reduce the number of rows early.\n\nAnother thought: the title table is joined with movie_keyword and movie_companies. Since the title has episode_nr constraints, maybe pre-filtering the title table first would help. But the previous strategy already mentioned that. Maybe there's another way to optimize the joins between the tables.\n\nLooking at the join conditions, there are multiple instances where ci.movie_id equals mc.movie_id and mk.movie_id. Perhaps creating a derived table that combines these conditions could help. For example, selecting movie_ids that are present in both movie_companies (with the US country code) and movie_keyword (with the specific keyword) would reduce the number of rows to join with the title table.\n\nAlso, the keyword filter is on 'character-name-in-title'. If that keyword is unique or has a small number of entries, precomputing the keyword_id for that keyword and using it in the joins might help. But the previous strategy already addressed that.\n\nWait, maybe the name table (n) and aka_name (an) are joined via person_id. Since we're looking for MIN(an.name), perhaps we can precompute the names that are linked to the cast_info and then aggregate. But how?\n\nAlternatively, considering that the final result is two MINs, maybe we can split the query into two separate subqueries that compute each MIN independently, which might allow for more optimized joins. For example, first find the eligible movie_ids and then get the corresponding titles and actors.\n\nAnother angle: the title table is joined with movie_keyword and movie_companies. If we can find the movie_ids that meet both conditions (keyword and company country), then join with title to get the episode numbers. That might reduce the number of rows early.\n\nSo, perhaps creating a subquery that combines the movie_companies and movie_keyword to get the movie_ids that satisfy both, then joining with title and other tables. That way, the joins are done on a smaller dataset.\n\nAlso, checking if there are any indexes that can be leveraged. For example, on the title.episode_nr, company_name.country_code, and keyword.keyword. But the previous strategy already mentioned indexing.\n\nWait, maybe the main cost is in joining multiple tables. If we can reduce the number of tables joined at once, that might help. For example, if we first get the movie_ids from movie_companies and movie_keyword, then join with title, and then with cast_info and name, that could be more efficient.\n\nSo, the idea is to precompute the movie_ids that meet the keyword and company conditions, then use those to filter the other tables. That way, the joins are done on a smaller set of movie_ids.\n\nAnother possibility: the title table is joined with movie_keyword and movie_companies. Since both of those tables have movie_id, maybe we can use a CTE or subquery to get the movie_ids that are in both, then join with title. That would reduce the number of rows in the title table to process.\n\nSo, the optimization strategy could involve creating a derived table that combines the movie_companies and movie_keyword to get the relevant movie_ids, then using that to filter the title table and other tables. This would reduce the number of rows early in the process, making subsequent joins more efficient.\n\n</think>\n\n1. **Derived Table for Movie ID Intersection** \u2014 TARGET: `movie_companies` and `movie_keyword` \u2014 TRANSFORMATION: Create a derived table that computes the intersection of `movie_id` values from `movie_companies` (filtered by `country_code = '[us]'`) and `movie_keyword` (filtered by `keyword = 'character-name-in-title'`), then use this as the primary filter for joining with `title` and other tables.  \n2. **Precompute Title Filters** \u2014 TARGET: `title` table \u2014 TRANSFORMATION: Use the derived movie_id list to filter `title` rows with `episode_nr` range, reducing the dataset before joining with `cast_info` and `name`.  \n3. **Early Aggregation on Name** \u2014 TARGET: `cast_info` and `name` join \u2014 TRANSFORMATION: Precompute candidate actor names from `cast_info` and `name` (via `person_id`) using the filtered movie_ids, then apply `MIN(an.name)` in a subquery to minimize aggregation overhead.  \n4. **Index on Composite Key** \u2014 TARGET: `movie_companies.company_id` and `movie_companies.movie_id` \u2014 TRANSFORMATION: Ensure an index on `(company_id, movie_id)` to accelerate joins with `company_name` and reduce scan costs.  \n5. **Reduce Join Cardinality** \u2014 TARGET: `movie_companies` and `company_name` join \u2014 TRANSFORMATION: Filter `company_name` to only include rows with `country_code = '[us]'` in the derived table, eliminating redundant joins with the full `company_name` table.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 14166.0,
+      "optimized_ms": 3309.0,
+      "delta_ms": 10857.0,
+      "improvement_pct": 76.64,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 2429927.16,
+      "optimized": 3823304.62,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 120535.0,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 5784.3,
+    "total_inference_ms": 126319.3,
+    "writer_inference_ms": 603019.5,
+    "writer_tokens_in": 2215,
+    "writer_tokens_out": 71307,
+    "writer_calls": 2
+  },
+  "errors": [],
+  "strategy": "1. **Derived Table for Movie ID Intersection** \u2014 TARGET: `movie_companies` and `movie_keyword` \u2014 TRANSFORMATION: Create a derived table that computes the intersection of `movie_id` values from `movie_companies` (filtered by `country_code = '[us]'`) and `movie_keyword` (filtered by `keyword = 'character-name-in-title'`), then use this as the primary filter for joining with `title` and other tables.  \n2. **Precompute Title Filters** \u2014 TARGET: `title` table \u2014 TRANSFORMATION: Use the derived movie_id list to filter `title` rows with `episode_nr` range, reducing the dataset before joining with `cast_info` and `name`.  \n3. **Early Aggregation on Name** \u2014 TARGET: `cast_info` and `name` join \u2014 TRANSFORMATION: Precompute candidate actor names from `cast_info` and `name` (via `person_id`) using the filtered movie_ids, then apply `MIN(an.name)` in a subquery to minimize aggregation overhead.  \n4. **Index on Composite Key** \u2014 TARGET: `movie_companies.company_id` and `movie_companies.movie_id` \u2014 TRANSFORMATION: Ensure an index on `(company_id, movie_id)` to accelerate joins with `company_name` and reduce scan costs.  \n5. **Reduce Join Cardinality** \u2014 TARGET: `movie_companies` and `company_name` join \u2014 TRANSFORMATION: Filter `company_name` to only include rows with `country_code = '[us]'` in the derived table, eliminating redundant joins with the full `company_name` table.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique is creating a derived table for movie ID intersection, which the rewrite does via `candidate_movie_ids` using `JOIN` between `us_company_movies` and `character"
+  },
+  "raw_sql": "SELECT MIN(an.name) AS cool_actor_pseudonym, MIN(t.title) AS series_named_after_char FROM aka_name AS an, cast_info AS ci, company_name AS cn, keyword AS k, movie_companies AS mc, movie_keyword AS mk, name AS n, title AS t WHERE cn.country_code = '[us]' AND k.keyword = 'character-name-in-title' AND t.episode_nr >= 50 AND t.episode_nr < 100 AND an.person_id = n.id AND n.id = ci.person_id AND ci.movie_id = t.id AND t.id = mk.movie_id AND mk.keyword_id = k.id AND t.id = mc.movie_id AND mc.company_id = cn.id AND an.person_id = ci.person_id AND ci.movie_id = mc.movie_id AND ci.movie_id = mk.movie_id AND mc.movie_id = mk.movie_id"
+}

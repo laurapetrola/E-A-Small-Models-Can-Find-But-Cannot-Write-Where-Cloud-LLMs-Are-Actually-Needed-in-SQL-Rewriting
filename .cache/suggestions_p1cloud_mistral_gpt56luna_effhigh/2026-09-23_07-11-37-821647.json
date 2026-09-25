@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-09-23T07:11:37.821598",
+  "query_hash": "7aed0fb6af9b",
+  "suggestions": [
+    "Pre-filter a large table as a CTE before the join",
+    "Materialize CTEs",
+    "Reorder joins to reduce intermediate rows",
+    "Split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": -124.91,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 220070.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_item AS MATERIALIZED (\n    SELECT\n        i_manager_id,\n        i_item_sk\n    FROM item\n    WHERE\n        (\n            i_category IN ('Books', 'Children', 'Electronics')\n            AND i_class IN ('personal', 'portable', 'reference', 'self-help')\n            AND i_brand IN (\n                'scholaramalgamalg #14',\n                'scholaramalgamalg #7',\n                'exportiunivamalg #9',\n                'scholaramalgamalg #9'\n            )\n        )\n        OR (\n            i_category IN ('Women', 'Music', 'Men')\n            AND i_class IN ('accessories', 'classical', 'fragrances', 'pants')\n            AND i_brand IN (\n                'amalgimporto #1',\n                'edu packscholar #1',\n                'exportiimporto #1',\n                'importoamalg #1'\n            )\n        )\n),\nmonthly_sales AS MATERIALIZED (\n    SELECT\n        managers.i_manager_id,\n        monthly.d_moy,\n        monthly.sum_sales\n    FROM (\n        SELECT i_manager_id\n        FROM filtered_item\n        GROUP BY i_manager_id\n    ) AS managers\n    JOIN LATERAL (\n        SELECT\n            fi.i_manager_id,\n            d.d_moy,\n            SUM(ss.ss_sales_price) AS sum_sales\n        FROM filtered_item AS fi\n        JOIN store_sales AS ss\n            ON ss.ss_item_sk = fi.i_item_sk\n        JOIN date_dim AS d\n            ON ss.ss_sold_date_sk = d.d_date_sk\n            AND d.d_month_seq IN (\n                1222,\n                1222 + 1,\n                1222 + 2,\n                1222 + 3,\n                1222 + 4,\n                1222 + 5,\n                1222 + 6,\n                1222 + 7,\n                1222 + 8,\n                1222 + 9,\n                1222 + 10,\n                1222 + 11\n            )\n        JOIN store AS s\n            ON ss.ss_store_sk = s.s_store_sk\n        WHERE fi.i_manager_id IS NOT DISTINCT FROM managers.i_manager_id\n        GROUP BY fi.i_manager_id, d.d_moy\n    ) AS monthly\n        ON monthly.i_manager_id IS NOT DISTINCT FROM managers.i_manager_id\n)\nSELECT *\nFROM (\n    SELECT\n        monthly_sales.i_manager_id,\n        monthly_sales.sum_sales,\n        AVG(monthly_sales.sum_sales) OVER (\n            PARTITION BY monthly_sales.i_manager_id\n        ) AS avg_monthly_sales\n    FROM monthly_sales\n) AS tmp1\nWHERE CASE\n    WHEN avg_monthly_sales > 0\n        THEN ABS(sum_sales - avg_monthly_sales) / avg_monthly_sales\n    ELSE NULL\nEND > 0.1\nORDER BY i_manager_id, avg_monthly_sales, sum_sales\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized View - TARGET: `tmp1` and its subquery - TRANSFORMATION: Create a materialized view for the subquery to avoid repeated evaluation of the complex aggregation and filtering operations. This will reduce the number of times the subquery needs to be executed, improving performance.\n\n2. N. Index Scan - TARGET: `store_sales` - TRANSFORMATION: Ensure that an index exists on `(ss_item_sk, ss_sold_date_sk, ss_store_sk)` to speed up the join with `store_sales`. This will reduce the number of rows that need to be scanned for each join operation.\n\n3. N. Index Scan - TARGET: `item` - TRANSFORMATION: Ensure that an index exists on `(i_manager_id, i_category, i_class, i_brand)` to speed up the join with `item`. This will reduce the number of rows that need to be scanned for each join operation.\n\n4. N. Filter Pushdown - TARGET: `store` - TRANSFORMATION: Move the filter condition (`ss_store_sk = s_store_sk`) from the outer query to the join with `store`. This will reduce the number of rows that need to be processed by the subsequent joins.\n\n5. N. Partitioning - TARGET: `item` - TRANSFORMATION: Consider partitioning the `item` table based on `i_manager_id`, `i_category`, `i_class`, and `i_brand` to improve query performance. This will allow the database to quickly locate the relevant partitions during the join operations, reducing the overall cost of the query.\n\n6. N. Filter Pushdown - TARGET: `date_dim` - TRANSFORMATION: Move the filter condition (`d_month_seq in ...`) from the outer query to the join with `date_dim`. This will reduce the number of rows that need to be processed by the subsequent joins.\n\n7. N. Aggregate Functions Optimization - TARGET: Outer Query - TRANSFORMATION: Consider using a more efficient aggregate function for calculating `avg_monthly_sales`. For example, you could use `AVG(ss_sales_price) OVER (PARTITION BY i_manager_id ORDER BY d_moy RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` instead of the current formulation. This will allow the database to calculate the average more efficiently, potentially reducing the overall cost of the query.\n\n8. N. Sort Elimination - TARGET: Outer Query - TRANSFORMATION: Remove the sort operation by reordering the SELECT statement or using a different aggregation function that does not require sorting (e.g., `ROW_NUMBER()`). This will reduce the cost of the query by eliminating the need to sort the result set.\n\n9. N. Limit Pushdown - TARGET: Outer Query - TRANSFORMATION: Move the LIMIT clause as early as possible in the query execution plan to reduce the amount of data processed. This will improve performance by limiting the number of rows that need to be processed after the aggregation operations.\n\n10. N. Window Function Optimization - TARGET: Outer Query - TRANSFORMATION: Consider using a window function (e.g., `LAG()`) to calculate the running total of `sum_sales` instead of calculating it in the outer query. This will allow the database to perform the calculation more efficiently, potentially reducing the overall cost of the query.\n\n11. N. Query Rewrite - TARGET: Outer Query - TRANSFORMATION: Consider rewriting the query to use a lateral join instead of a subquery for the aggregation operations. This can improve performance by allowing the database to process the data in parallel, reducing the overall cost of the query.\n\n12. N. Caching - TARGET: `item`, `store_sales`, and related tables - TRANSFORMATION: Implement a caching strategy for frequently accessed tables (`item`, `store_sales`, and any related tables) to reduce the number of times these tables need to be scanned, improving performance.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 4685.593,
+      "optimized_ms": 10538.477,
+      "delta_ms": -5852.884,
+      "improvement_pct": -124.91,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 220635.68,
+      "optimized": 476688.1,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 83025.9,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 137044.4,
+    "total_inference_ms": 220070.3,
+    "writer_inference_ms": 332480.4,
+    "writer_tokens_in": 10825,
+    "writer_tokens_out": 31871,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=220635.68 \u2192 optimized=476688.10 (+116.1%)",
+    "Execution time regression: 4685.593ms \u2192 10538.477ms"
+  ],
+  "strategy": "1. N. Materialized View - TARGET: `tmp1` and its subquery - TRANSFORMATION: Create a materialized view for the subquery to avoid repeated evaluation of the complex aggregation and filtering operations. This will reduce the number of times the subquery needs to be executed, improving performance.\n\n2. N. Index Scan - TARGET: `store_sales` - TRANSFORMATION: Ensure that an index exists on `(ss_item_sk, ss_sold_date_sk, ss_store_sk)` to speed up the join with `store_sales`. This will reduce the number of rows that need to be scanned for each join operation.\n\n3. N. Index Scan - TARGET: `item` - TRANSFORMATION: Ensure that an index exists on `(i_manager_id, i_category, i_class, i_brand)` to speed up the join with `item`. This will reduce the number of rows that need to be scanned for each join operation.\n\n4. N. Filter Pushdown - TARGET: `store` - TRANSFORMATION: Move the filter condition (`ss_store_sk = s_store_sk`) from the outer query to the join with `store`. This will reduce the number of rows that need to be processed by the subsequent joins.\n\n5. N. Partitioning - TARGET: `item` - TRANSFORMATION: Consider partitioning the `item` table based on `i_manager_id`, `i_category`, `i_class`, and `i_brand` to improve query performance. This will allow the database to quickly locate the relevant partitions during the join operations, reducing the overall cost of the query.\n\n6. N. Filter Pushdown - TARGET: `date_dim` - TRANSFORMATION: Move the filter condition (`d_month_seq in ...`) from the outer query to the join with `date_dim`. This will reduce the number of rows that need to be processed by the subsequent joins.\n\n7. N. Aggregate Functions Optimization - TARGET: Outer Query - TRANSFORMATION: Consider using a more efficient aggregate function for calculating `avg_monthly_sales`. For example, you could use `AVG(ss_sales_price) OVER (PARTITION BY i_manager_id ORDER BY d_moy RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` instead of the current formulation. This will allow the database to calculate the average more efficiently, potentially reducing the overall cost of the query.\n\n8. N. Sort Elimination - TARGET: Outer Query - TRANSFORMATION: Remove the sort operation by reordering the SELECT statement or using a different aggregation function that does not require sorting (e.g., `ROW_NUMBER()`). This will reduce the cost of the query by eliminating the need to sort the result set.\n\n9. N. Limit Pushdown - TARGET: Outer Query - TRANSFORMATION: Move the LIMIT clause as early as possible in the query execution plan to reduce the amount of data processed. This will improve performance by limiting the number of rows that need to be processed after the aggregation operations.\n\n10. N. Window Function Optimization - TARGET: Outer Query - TRANSFORMATION: Consider using a window function (e.g., `LAG()`) to calculate the running total of `sum_sales` instead of calculating it in the outer query. This will allow the database to perform the calculation more efficiently, potentially reducing the overall cost of the query.\n\n11. N. Query Rewrite - TARGET: Outer Query - TRANSFORMATION: Consider rewriting the query to use a lateral join instead of a subquery for the aggregation operations. This can improve performance by allowing the database to process the data in parallel, reducing the overall cost of the query.\n\n12. N. Caching - TARGET: `item`, `store_sales`, and related tables - TRANSFORMATION: Implement a caching strategy for frequently accessed tables (`item`, `store_sales`, and any related tables) to reduce the number of times these tables need to be scanned, improving performance.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\n\nThe rewrite applies the Query Rewrite technique (strategy 11) by using a lateral join instead of a subquery for the aggregation operations."
+  },
+  "raw_sql": "select * from (select i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales from item ,store_sales ,date_dim ,store where ss_item_sk = i_item_sk and ss_sold_date_sk = d_date_sk and ss_store_sk = s_store_sk and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) or( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) group by i_manager_id, d_moy) tmp1 where case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 order by i_manager_id ,avg_monthly_sales ,sum_sales limit 100"
+}

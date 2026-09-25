@@ -1,0 +1,74 @@
+{
+  "timestamp": "2026-09-10T13:10:14.983045",
+  "query_hash": "092369ddef36",
+  "suggestions": [
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "split a UNION ALL into separate CTEs",
+    "split a large UNION ALL into separate CTEs",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": null,
+  "model": "llama+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "unverified",
+  "used_fallback": true,
+  "inference_ms": 406300.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT\n  s99.customer_id,\n  s99.customer_first_name,\n  s99.customer_last_name,\n  s99.customer_email_address\nFROM (\n  SELECT\n    c_customer_id AS customer_id,\n    c_first_name AS customer_first_name,\n    c_last_name AS customer_last_name,\n    c_preferred_cust_flag AS customer_preferred_cust_flag,\n    c_birth_country AS customer_birth_country,\n    c_login AS customer_login,\n    c_email_address AS customer_email_address,\n    SUM(ss_ext_list_price - ss_ext_discount_amt) AS year_total\n  FROM customer\n  JOIN store_sales ON c_customer_sk = ss_customer_sk\n  JOIN date_dim ON ss_sold_date_sk = d_date_sk\n  WHERE d_year = 1998+1\n  GROUP BY c_customer_id, c_first_name, c_last_name, c_preferred_cust_flag, c_birth_country, c_login, c_email_address\n) AS s99\nJOIN (\n  SELECT\n    c_customer_id AS customer_id,\n    c_first_name AS customer_first_name,\n    c_last_name AS customer_last_name,\n    c_preferred_cust_flag AS customer_preferred_cust_flag,\n    c_birth_country AS customer_birth_country,\n    c_login AS customer_login,\n    c_email_address AS customer_email_address,\n    SUM(ss_ext_list_price - ss_ext_discount_amt) AS year_total\n  FROM customer\n  JOIN store_sales ON c_customer_sk = ss_customer_sk\n  JOIN date_dim ON ss_sold_date_sk = d_date_sk\n  WHERE d_year = 1998\n  GROUP BY c_customer_id, c_first_name, c_last_name, c_preferred_cust_flag, c_birth_country, c_login, c_email_address\n  HAVING SUM(ss_ext_list_price - ss_ext_discount_amt) > 0\n) AS s98 ON s99.customer_id = s98.customer_id\nJOIN (\n  SELECT\n    c_customer_id AS customer_id,\n    c_first_name AS customer_first_name,\n    c_last_name AS customer_last_name,\n    c_preferred_cust_flag AS customer_preferred_cust_flag,\n    c_birth_country AS customer_birth_country,\n    c_login AS customer_login,\n    c_email_address AS customer_email_address,\n    SUM(ws_ext_list_price - ws_ext_discount_amt) AS year_total\n  FROM customer\n  JOIN web_sales ON c_customer_sk = ws_bill_customer_sk\n  JOIN date_dim ON ws_sold_date_sk = d_date_sk\n  WHERE d_year = 1998\n  GROUP BY c_customer_id, c_first_name, c_last_name, c_preferred_cust_flag, c_birth_country, c_login, c_email_address\n  HAVING SUM(ws_ext_list_price - ws_ext_discount_amt) > 0\n) AS w98 ON s98.customer_id = w98.customer_id\nJOIN (\n  SELECT\n    c_customer_id AS customer_id,\n    c_first_name AS customer_first_name,\n    c_last_name AS customer_last_name,\n    c_preferred_cust_flag AS customer_preferred_cust_flag,\n    c_birth_country AS customer_birth_country,\n    c_login AS customer_login,\n    c_email_address AS customer_email_address,\n    SUM(ws_ext_list_price - ws_ext_discount_amt) AS year_total\n  FROM customer\n  JOIN web_sales ON c_customer_sk = ws_bill_customer_sk\n  JOIN date_dim ON ws_sold_date_sk = d_date_sk\n  WHERE d_year = 1998+1\n  GROUP BY c_customer_id, c_first_name, c_last_name, c_preferred_cust_flag, c_birth_country, c_login, c_email_address\n) AS w99 ON s98.customer_id = w99.customer_id\nWHERE CASE WHEN w98.year_total > 0 THEN w99.year_total / w98.year_total ELSE 0.0 END >\n      CASE WHEN s98.year_total > 0 THEN s99.year_total / s98.year_total ELSE 0.0 END\nORDER BY\n  s99.customer_id,\n  s99.customer_first_name,\n  s99.customer_last_name,\n  s99.customer_email_address\nLIMIT 100",
+  "reasoning_trace": "Here's an alternative optimization strategy:\n\n1. **Rewrite subqueries as joins** \u2014 TARGET: `year_total` CTEs \u2014 TRANSFORMATION: Replace the two subqueries with joins to reduce the number of rows being processed and improve join order.\n\n2. **Push down filters** \u2014 TARGET: `t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0` \u2014 TRANSFORMATION: Move the filter conditions on `year_total` to the original tables (`store_sales`, `web_sales`) to reduce the number of rows being joined.\n\n3. **Simplify join conditions** \u2014 TARGET: `t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id` \u2014 TRANSFORMATION: Simplify the join conditions by creating a temporary table or CTE with the common columns (`customer_id`) to reduce the number of joins.\n\n4. **Avoid repeated calculations** \u2014 TARGET: `case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end` and `case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end` \u2014 TRANSFORMATION: Store the results of these calculations in temporary columns or variables to avoid repeated evaluations.\n\n5. **Optimize sorting** \u2014 TARGET: `order by t_s_secyear.customer_id, t_s_secyear.customer_first_name, t_s_secyear.customer_last_name, t_s_secyear.customer_email_address` \u2014 TRANSFORMATION: Consider creating an index on the sorted columns to speed up the sorting process.\n\n6. **Limit rows early** \u2014 TARGET: `limit 100` \u2014 TRANSFORMATION: Apply the limit condition as soon as possible in the query execution plan to reduce the number of rows being processed.\n\nNote that this strategy is similar to the previous one, but with a different order and focus on rewriting subqueries as joins.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 30127.873,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 29018305.46,
+      "optimized": 11377462.26,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 79992.2,
+    "index_advisor_inference_ms": 15804.7,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 310503.8,
+    "total_inference_ms": 406300.7,
+    "writer_inference_ms": 332693.8,
+    "writer_tokens_in": 16096,
+    "writer_tokens_out": 80040,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Equivalence UNVERIFIED \u2014 the original query timed out, so its result set could not be hashed and the S=1 integrity check could not run. A rewrite is not approved unless it is verified to return the same rows as the original.",
+    "Data_Loss_Detected: filter 't_s_firstyear.sale_type = 's'' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.sale_type = 'w'' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_secyear.sale_type = 's'' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_secyear.sale_type = 'w'' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_secyear.dyear = 1998 + 1' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_secyear.dyear = 1998 + 1' was removed or altered"
+  ],
+  "strategy": "Here's an alternative optimization strategy:\n\n1. **Rewrite subqueries as joins** \u2014 TARGET: `year_total` CTEs \u2014 TRANSFORMATION: Replace the two subqueries with joins to reduce the number of rows being processed and improve join order.\n\n2. **Push down filters** \u2014 TARGET: `t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0` \u2014 TRANSFORMATION: Move the filter conditions on `year_total` to the original tables (`store_sales`, `web_sales`) to reduce the number of rows being joined.\n\n3. **Simplify join conditions** \u2014 TARGET: `t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id` \u2014 TRANSFORMATION: Simplify the join conditions by creating a temporary table or CTE with the common columns (`customer_id`) to reduce the number of joins.\n\n4. **Avoid repeated calculations** \u2014 TARGET: `case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end` and `case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end` \u2014 TRANSFORMATION: Store the results of these calculations in temporary columns or variables to avoid repeated evaluations.\n\n5. **Optimize sorting** \u2014 TARGET: `order by t_s_secyear.customer_id, t_s_secyear.customer_first_name, t_s_secyear.customer_last_name, t_s_secyear.customer_email_address` \u2014 TRANSFORMATION: Consider creating an index on the sorted columns to speed up the sorting process.\n\n6. **Limit rows early** \u2014 TARGET: `limit 100` \u2014 TRANSFORMATION: Apply the limit condition as soon as possible in the query execution plan to reduce the number of rows being processed.\n\nNote that this strategy is similar to the previous one, but with a different order and focus on rewriting subqueries as joins.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT\n\nThe rewrite applies the strategy's main technique of rewriting subqueries as joins, which is the first point in the strategy. The original query had two subqueries that were replaced with jo"
+  },
+  "raw_sql": "with year_total as ( select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ss_ext_list_price-ss_ext_discount_amt) year_total ,'s' sale_type from customer ,store_sales ,date_dim where c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year union all select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ws_ext_list_price-ws_ext_discount_amt) year_total ,'w' sale_type from customer ,web_sales ,date_dim where c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year ) select t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address from year_total t_s_firstyear ,year_total t_s_secyear ,year_total t_w_firstyear ,year_total t_w_secyear where t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id and t_s_firstyear.sale_type = 's' and t_w_firstyear.sale_type = 'w' and t_s_secyear.sale_type = 's' and t_w_secyear.sale_type = 'w' and t_s_firstyear.dyear = 1998 and t_s_secyear.dyear = 1998+1 and t_w_firstyear.dyear = 1998 and t_w_secyear.dyear = 1998+1 and t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0 and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end order by t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address limit 100"
+}

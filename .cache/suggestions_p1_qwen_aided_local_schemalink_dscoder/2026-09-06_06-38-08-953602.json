@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-09-06T06:38:08.953573",
+  "query_hash": "9756dc2bf6d5",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "use window functions to avoid repeated subqueries",
+    "use window functions to precompute aggregates"
+  ],
+  "improvement_pct": -109.22,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "equivalence_failed_semantic",
+  "used_fallback": true,
+  "inference_ms": 1101037.4,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH store_sales_agg AS (\n    SELECT ss_quantity,\n           COUNT(*) OVER (PARTITION BY ss_quantity) as count_,\n           AVG(ss_ext_tax + ss_net_paid_inc_tax) OVER (PARTITION BY ss_quantity) as avg_tax_and_paid\n    FROM store_sales\n    WHERE  ss_quantity BETWEEN 1 AND 20 OR\n           ss_quantity BETWEEN 21 AND 40 OR\n           ss_quantity BETWEEN 41 AND 60 OR\n           ss_quantity BETWEEN 61 AND 80 OR\n           ss_quantity BETWEEN 81 AND 100\n)\nSELECT (CASE WHEN count_ > 1071 THEN avg_tax_and_paid ELSE NULL END ) as bucket1,\n       (CASE WHEN count_ > 39161 THEN avg_tax_and_paid ELSE NULL END ) as bucket2,\n       (CASE WHEN count_ > 29434 THEN avg_tax_and_paid ELSE NULL END ) as bucket3,\n       (CASE WHEN count_ > 6568 THEN avg_tax_and_paid ELSE NULL END ) as bucket4,\n       (CASE WHEN count_ > 21216 THEN avg_tax_and_paid ELSE NULL END ) as bucket5 \nFROM reason JOIN store_sales_agg ON r_reason_sk = reason.r_reason_sk WHERE r_reason_sk = 1",
+  "reasoning_trace": "<think>\nOkay, let's look at this query. The user wants to optimize it, and they provided the schema and some rules. The original query is selecting several cases based on subqueries that check counts and averages from the store_sales table. The main goal is to identify optimization strategies without writing SQL.\n\nFirst, I notice that the query is selecting from the 'reason' table where r_reason_sk = 1. That's a very small table, so that part is probably fast. The main cost is likely in the subqueries that are repeated multiple times.\n\nLooking at the subqueries, each one is querying store_sales with a condition on ss_quantity. For example, the first one checks for quantities between 1 and 20. The same subquery is used for count(*) and then for avg(ss_ext_tax) and avg(ss_net_paid_inc_tax). Wait, actually, each bucket has two subqueries: one for count and two for averages. Wait, no, looking again: each bucket has a case where if the count is greater than a certain value, it uses the avg of ss_ext_tax, else uses avg of ss_net_paid_inc_tax. So each bucket has two subqueries, but the same condition on ss_quantity. \n\nWait, the structure is: for each bucket (bucket1 to bucket5), there's a subquery that checks count(*) where ss_quantity is in a range. Then, depending on whether that count is above a threshold, it selects either avg(ss_ext_tax) or avg(ss_net_paid_inc_tax) for the same quantity range. So each bucket has two subqueries, but they all are on the same quantity range. \n\nSo, the same store_sales table is being scanned multiple times for each of these ranges. For example, the first bucket checks 1-20, then the second 21-40, etc. Each of these ranges is a separate subquery. But since the ranges are non-overlapping and cover different parts of the data, maybe there's a way to combine these into a single scan of store_sales with appropriate grouping.\n\nThe problem is that each subquery is executed separately, leading to multiple full scans of the store_sales table. That's going to be expensive, especially since store_sales has 57 million rows. So, the main optimization opportunity is to reduce the number of times store_sales is scanned.\n\nSo, the first idea is to rewrite these subqueries into a single query that groups by the quantity ranges and calculates the count and the two averages. Then, use that grouped data to compute the case conditions. This way, we scan store_sales once, and then use the aggregated results for all the buckets.\n\nBut how to structure that? Let's think. The original query has five buckets, each with their own range. So, we can create a CTE (common table expression) that groups the store_sales data by the quantity ranges, and computes the count, avg(ss_ext_tax), and avg(ss_net_paid_inc_tax) for each range. Then, in the main query, we can reference these precomputed values.\n\nBut the original query is selecting from the reason table, which has only one row (since r_reason_sk = 1). So, the main query is essentially just joining with that single row, and the rest is computed based on the store_sales data. Therefore, the main cost is in the subqueries on store_sales.\n\nSo, the optimization strategy would be to replace the multiple subqueries with a single scan of store_sales, grouped by the quantity ranges, and then use those aggregated values in the case statements. This would reduce the number of times store_sales is scanned from 5 (for each bucket's count and averages) to just once.\n\nAnother thing to note is that the subqueries are using the same conditions (ss_quantity between X and Y) for count and averages. So, combining them into a single query with grouping would be more efficient.\n\nAdditionally, the case statements are using the same quantity ranges for each bucket. So, if we can precompute all the necessary aggregates in one pass, that would save a lot of I/O and processing time.\n\nSo, the first optimization step is to replace the repeated subqueries with a single grouped query that calculates the required counts and averages for each quantity range. Then, use those precomputed values in the case expressions.\n\nAnother possible optimization is to check if the quantity ranges can be represented as a single condition, but since they are separate ranges, grouping by the range is necessary.\n\nTherefore, the main transformation is to rewrite the subqueries into a single CTE that groups store_sales by the quantity ranges and computes the needed aggregates. Then, reference those in the main query.\n\n</think>\n\n1. **Materialize Subqueries** \u2014 TARGET: `store_sales` subqueries for `ss_quantity between 1 and 20`, `21 and 40`, etc. \u2014 TRANSFORMATION: Replace repeated subqueries with a single `CTE` that groups `store_sales` by quantity ranges, precomputing `count(*)`, `avg(ss_ext_tax)`, and `avg(ss_net_paid_inc_tax)` for each range to avoid multiple full table scans.  \n2. **Filter Early** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Add `ss_quantity` range filters in the CTE to partition data early, reducing the rows processed for each group.  \n3. **Avoid Redundant Aggregates** \u2014 TARGET: `store_sales` subqueries for `avg(ss_ext_tax)` and `avg(ss_net_paid_inc_tax)` \u2014 TRANSFORMATION: Compute both averages in a single pass per quantity range to eliminate redundant scans.  \n4. **Leverage Indexes** \u2014 TARGET: `store_sales.ss_quantity` \u2014 TRANSFORMATION: Ensure an index on `ss_quantity` to accelerate range-based filtering in the CTE.  \n5. **Simplify Case Logic** \u2014 TARGET: `CASE` expressions in the main query \u2014 TRANSFORMATION: Use precomputed aggregated values from the CTE to eliminate repeated subquery evaluations in the `CASE` conditions.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 15550.555,
+      "optimized_ms": 32534.862,
+      "delta_ms": -16984.307,
+      "improvement_pct": -109.22,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 21111513.97,
+      "optimized": 10653467.22,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": false
+    },
+    "inference_ms": 1031737.7,
+    "index_advisor_inference_ms": 27968.3,
+    "reflection_iterations": 4,
+    "labeler_inference_ms": 41331.4,
+    "total_inference_ms": 1101037.4,
+    "writer_inference_ms": 144528.9,
+    "writer_tokens_in": 24953,
+    "writer_tokens_out": 4492,
+    "writer_calls": 10
+  },
+  "errors": [
+    "Integrity check failed: result hashes differ (S\u22601) \u2014 your rewrite returns different rows than the original. Common causes: converting IN/EXISTS to a plain JOIN without DISTINCT multiplies rows; changing the driving table in FROM alters the result set. Fix: use EXISTS or add DISTINCT when flattening subqueries into JOINs.",
+    "Integrity check failed: the rewrite returns a DIFFERENT number of rows (55009199 vs 1 in the original) \u2014 S\u22601, not an equivalent result set. Preserve the exact rows, or return the original UNCHANGED.",
+    "Execution time regression: 15550.555ms \u2192 32534.862ms"
+  ],
+  "strategy": "1. **Materialize Subqueries** \u2014 TARGET: `store_sales` subqueries for `ss_quantity between 1 and 20`, `21 and 40`, etc. \u2014 TRANSFORMATION: Replace repeated subqueries with a single `CTE` that groups `store_sales` by quantity ranges, precomputing `count(*)`, `avg(ss_ext_tax)`, and `avg(ss_net_paid_inc_tax)` for each range to avoid multiple full table scans.  \n2. **Filter Early** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Add `ss_quantity` range filters in the CTE to partition data early, reducing the rows processed for each group.  \n3. **Avoid Redundant Aggregates** \u2014 TARGET: `store_sales` subqueries for `avg(ss_ext_tax)` and `avg(ss_net_paid_inc_tax)` \u2014 TRANSFORMATION: Compute both averages in a single pass per quantity range to eliminate redundant scans.  \n4. **Leverage Indexes** \u2014 TARGET: `store_sales.ss_quantity` \u2014 TRANSFORMATION: Ensure an index on `ss_quantity` to accelerate range-based filtering in the CTE.  \n5. **Simplify Case Logic** \u2014 TARGET: `CASE` expressions in the main query \u2014 TRANSFORMATION: Use precomputed aggregated values from the CTE to eliminate repeated subquery evaluations in the `CASE` conditions.",
+  "writer": "local:deepseek-coder:6.7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "deviated",
+    "judge_note": "DEVIATED  \nThe strategy aimed to materialize subqueries into a CTE with precomputed aggregates per quantity range, but the rewrite uses window functions and a single pass over all ranges, not grouping"
+  },
+  "raw_sql": "select case when (select count(*) from store_sales where ss_quantity between 1 and 20) > 1071 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 1 and 20) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 1 and 20) end bucket1 , case when (select count(*) from store_sales where ss_quantity between 21 and 40) > 39161 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 21 and 40) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 21 and 40) end bucket2, case when (select count(*) from store_sales where ss_quantity between 41 and 60) > 29434 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 41 and 60) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 41 and 60) end bucket3, case when (select count(*) from store_sales where ss_quantity between 61 and 80) > 6568 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 61 and 80) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 61 and 80) end bucket4, case when (select count(*) from store_sales where ss_quantity between 81 and 100) > 21216 then (select avg(ss_ext_tax) from store_sales where ss_quantity between 81 and 100) else (select avg(ss_net_paid_inc_tax) from store_sales where ss_quantity between 81 and 100) end bucket5 from reason where r_reason_sk = 1"
+}

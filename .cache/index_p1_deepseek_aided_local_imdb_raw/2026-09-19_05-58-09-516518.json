@@ -1,0 +1,203 @@
+{
+  "timestamp": "2026-09-19T05:58:09.516490",
+  "query_hash": "b1093534f0e1",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 3404892.6,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables. We are to identify index(es) that would most reduce the execution cost.\n\nFirst, let's break down the query and the execution plan. However, note that the execution plan is withheld. We must rely on the query structure and the schema.\n\nThe query is:\n\nSELECT MIN(kt.kind) AS movie_kind, MIN(t.title) AS complete_us_internet_movie \nFROM complete_cast AS cc, comp_cast_type AS cct1, company_name AS cn, company_type AS ct, info_type AS it1, keyword AS k, kind_type AS kt, movie_companies AS mc, movie_info AS mi, movie_keyword AS mk, title AS t \nWHERE \n    cct1.kind = 'complete+verified' \n    AND cn.country_code = '[us]' \n    AND it1.info = 'release dates' \n    AND kt.kind IN ('movie', 'tv movie', 'video movie', 'video game') \n    AND mi.note LIKE '%internet%' \n    AND mi.info IS NOT NULL \n    AND (mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%') \n    AND t.production_year > 1990 \n    AND kt.id = t.kind_id \n    AND t.id = mi.movie_id \n    AND t.id = mk.movie_id \n    AND t.id = mc.movie_id \n    AND t.id = cc.movie_id \n    AND mk.movie_id = mi.movie_id \n    AND mk.movie_id = mc.movie_id \n    AND mk.movie_id = cc.movie_id \n    AND mi.movie_id = mc.movie_id \n    AND mi.movie_id = cc.movie_id \n    AND mc.movie_id = cc.movie_id \n    AND k.id = mk.keyword_id \n    AND it1.id = mi.info_type_id \n    AND cn.id = mc.company_id \n    AND ct.id = mc.company_type_id \n    AND cct1.id = cc.status_id\n\nThis is a complex query with multiple joins and conditions. We are to look for Seq Scans on large tables.\n\nLooking at the tables and their indexes:\n\n- comp_cast_type: 4 rows, no index -> small table, probably not a bottleneck.\n- company_name: 234,997 rows, no index -> candidate for index.\n- company_type: 4 rows, no index -> small table.\n- complete_cast: 135,086 rows, has index on movie_id -> already has an index on movie_id, but note that the query uses cc.movie_id in multiple places, so the existing index might be used.\n- info_type: 113 rows, no index -> small table.\n- keyword: 134,170 rows, no index -> candidate for index.\n- kind_type: 7 rows, no index -> small table.\n- movie_companies: 2,609,129 rows, has indexes on company_id, company_type_id, movie_id -> already has indexes on movie_id and company_id, etc.\n- movie_info: 14,835,720 rows, has indexes on info_type_id and movie_id -> already has indexes, but note the condition on mi.note and mi.info.\n- movie_keyword: 4,523,930 rows, has indexes on keyword_id and movie_id -> already has indexes.\n- title: 2,528,312 rows, has index on kind_id -> already has an index on kind_id.\n\nNow, let's look at the conditions and joins:\n\nThe query is joining many tables. We can see that the condition `t.id = mi.movie_id` and `t.id = mk.movie_id` and `t.id = mc.movie_id` and `t.id = cc.movie_id` are forcing the title table to be the central join point.\n\nAlso, note the condition on movie_info: `mi.note LIKE '%internet%'` and `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. The `mi.note` condition is a full text search and might be expensive. Also, the `mi.info` condition is a pattern match on a string.\n\nMoreover, the condition `cn.country_code = '[us]'` is on company_name.country_code, which is not indexed.\n\nLet's look for the tables that are large and have no index:\n\n1. company_name: 234,997 rows, no index. The condition `cn.id = mc.company_id` is a join condition. Since company_name has no index, the join might be using a sequential scan on company_name. Also, the condition `cn.country_code = '[us]'` is a filter on company_name. We can create an index on company_name.country_code to help with the filter.\n\n2. keyword: 134,170 rows, no index. The condition `k.id = mk.keyword_id` is a join condition. Since keyword has no index, the join might be using a sequential scan. Also, note that the query does not filter on keyword, so the index might not help for filtering but for the join.\n\nBut note: the query does not have a filter on keyword, so the index on keyword might not be necessary for filtering, but it could help the join if the join is the main access path.\n\nHowever, the movie_keyword table already has an index on keyword_id, so the join from movie_keyword to keyword might be efficient because of that index. But the movie_keyword table is large (4.5M rows) and has an index on keyword_id, so the join from movie_keyword to keyword might be using that index. But the company_name table is being accessed via a join from movie_companies, and movie_companies has an index on company_id, so the join from movie_companies to company_name might be efficient because of the index on movie_companies.company_id? Wait, no: the condition is `cn.id = mc.company_id`, so we are joining company_name to movie_companies on company_id. The movie_companies table has an index on company_id, so the join might be efficient.\n\nBut note: the condition `cn.country_code = '[us]'` is a filter on company_name. Without an index on country_code, the sequential scan on company_name might be expensive.\n\nAlso, the movie_info table has an index on movie_id, but the condition `mi.note LIKE '%internet%'` is a full text search and might not use the index. The note column is not indexed, so that condition might be causing a sequential scan on movie_info.\n\nLet's break down the query and see which tables are being scanned sequentially.\n\nThe query uses a lot of joins. We can see that the title table is the central table. The conditions on title are:\n\n- t.production_year > 1990\n- kt.id = t.kind_id (and kt.kind is in a set of values)\n\nThe title table has an index on kind_id, so the condition `kt.id = t.kind_id` might be efficient. But the condition `t.production_year > 1990` is not on an indexed column. So a sequential scan on title might be happening for that condition.\n\nBut note: the title table has 2.5M rows. The condition `t.production_year > 1990` might be a large fraction of the table. Without an index on production_year, this condition would require a sequential scan.\n\nNow, let's look at the movie_info table. The condition `mi.note LIKE '%internet%'` is a full text search and cannot use an index because it's a pattern that starts with '%'. Also, the condition `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'` is a pattern match that might be expensive. The movie_info table has an index on movie_id, but the condition is on info and note, which are not indexed.\n\nSimilarly, the movie_keyword table has an index on keyword_id, but the condition on keyword is not present, so the index might not be used for filtering.\n\nNow, let's consider the company_name table. The condition `cn.country_code = '[us]'` is a filter. Without an index, this requires a sequential scan of company_name. The company_name table has 234,997 rows, so a sequential scan might be acceptable, but if this condition is repeated or if the table is large, it might be a bottleneck.\n\nBut note: the company_name table is being joined via movie_companies.company_id = company_name.id. The movie_companies table has an index on company_id, so the join might be efficient, but the filter on company_name.country_code is still a problem.\n\nNow, let's think about the movie_info table. The condition `mi.note LIKE '%internet%'` is a full text search and might be very expensive. We cannot index the note column for pattern matching with leading '%', but we can use a trigram index if we have the pg_trgm extension. However, the condition is a LIKE with a leading '%', so a trigram index might not help. But note: the condition is `mi.note LIKE '%internet%'`, which is a pattern that does not start with a fixed string. However, the note column might be large and the condition might be slow.\n\nAlternatively, we might consider indexing the movie_info.info column for the pattern condition. But the condition is `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. This is a pattern that starts with 'USA:'. We can create a GIN or GiST index on the info column for the pattern condition, but note that the condition is a pattern that starts with 'USA:'. We can use a B-tree index and hope that the leading part is used, but the condition is not a prefix condition. However, the condition is a pattern that starts with 'USA:', so we can create an index on the substring starting with 'USA:'. But note: the condition is OR, so we have two patterns.\n\nAlternatively, we can use a partial index on movie_info.info for the patterns that start with 'USA:'. But note: the condition also requires that mi.info is not null. We can create a partial index on movie_info.info for the condition that the string starts with 'USA:'. However, the condition is OR, so we have two patterns. We can break it into two conditions and index each, but that might be complex.\n\nBut note: the query condition is `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. This is equivalent to `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. We can index the movie_info.info column for the pattern 'USA:%' but that might not help because the pattern is not a prefix. However, we can use a functional index to index the substring of the first 6 characters (since 'USA:' is 4 characters, but the pattern is 'USA:% 199%' which is more than 4). Alternatively, we can use a trigram index on the entire info column, but the condition is a pattern that starts with 'USA:', so a trigram index might help.\n\nBut note: the database has the pg_trgm extension. We can create a GiST index on movie_info.info using the trgm operator class. This might help with the pattern condition because the condition is a pattern that starts with 'USA:'. However, the condition is not a prefix condition, so the index might not be very efficient. But it might still help.\n\nAlternatively, we can create a B-tree index on the substring of the first 10 characters (or so) of movie_info.info. But note: the condition is `LIKE 'USA:% 199%'` and `LIKE 'USA:% 200%'`. The pattern is fixed at the beginning. We can create a functional index on `LEFT(movie_info.info, 10)` and then use that in the condition. But the condition is not on the substring, so we cannot use that index directly.\n\nGiven the complexity, let's focus on the tables that are being scanned sequentially and are large.\n\nThe main bottlenecks are likely:\n\n1. The condition `cn.country_code = '[us]'` on company_name (no index).\n2. The condition `mi.note LIKE '%internet%'` on movie_info (no index).\n3. The condition `t.production_year > 1990` on title (no index).\n\nBut note: the title table has an index on kind_id, but not on production_year. The condition `t.production_year > 1990` is a filter on title. Without an index, this requires a sequential scan.\n\nAlso, the movie_info table has no index on note or info, so the condition `mi.note LIKE '%internet%'` and the condition on info might be causing a sequential scan.\n\nNow, let's consider the indexes we can add:\n\n1. On company_name.country_code: to help the filter `cn.country_code = '[us]'`.\n2. On title.production_year: to help the filter `t.production_year > 1990`.\n3. On movie_info.note: for the condition `mi.note LIKE '%internet%'`. But note: the condition is a pattern that starts with '%', so a B-tree index won't help. However, with the pg_trgm extension, we can create a GiST index on movie_info.note for trigram similarity. But note: the condition is `LIKE '%internet%'`, which is a pattern that does not start with a fixed string. The trigram index might help because it can quickly rule out rows that do not contain the substring 'internet'. But note: the condition is `LIKE '%internet%'`, which matches any string containing 'internet'. The trigram index can help with that.\n\nAlternatively, we can use a full-text search index, but the problem does not specify that we have the full-text search extension.\n\nBut note: the database has the pg_trgm extension, so we can use that.\n\n4. On movie_info.info: for the condition `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. We can use a trigram index on movie_info.info to help with the pattern condition.\n\nBut note: the condition is a pattern that starts with 'USA:'. The trigram index might help because the pattern condition is looking for a specific substring at the beginning. However, the condition is not a prefix condition, so the index might not be very efficient. But it might still help.\n\nNow, let's order by the number of rows in the tables:\n\n- company_name: 234,997 rows\n- title: 2,528,312 rows\n- movie_info: 14,835,720 rows\n- movie_keyword: 4,523,930 rows\n- movie_companies: 2,609,129 rows\n\nThe largest tables are movie_info and movie_keyword, but movie_keyword already has an index on keyword_id, so the join might be efficient. The movie_info table is large and has no index on the conditions that are causing the scan.\n\nBut note: the condition `mi.note LIKE '%internet%'` is a condition that might be very expensive because it requires a full scan of the movie_info table for the note column. The movie_info table has 14.8M rows, so a sequential scan for that condition would be very expensive.\n\nSimilarly, the condition `t.production_year > 1990` on title (2.5M rows) would be expensive.\n\nAlso, the condition `cn.country_code = '[us]'` on company_name (234k rows) would be expensive.\n\nNow, let's consider the indexes:\n\n1. company_name.country_code: This would help the filter on company_name. The table has 234k rows, so an index on country_code would reduce the sequential scan to a lookup.\n\n2. title.production_year: This would help the filter on title. The table has 2.5M rows, so an index on production_year would reduce the sequential scan.\n\n3. movie_info.note: We can create a GiST index on movie_info.note using the trgm operator class. This would help with the condition `mi.note LIKE '%internet%'`. The movie_info table has 14.8M rows, so this index might help.\n\n4. movie_info.info: We can create a GiST index on movie_info.info using the trgm operator class. This would help with the condition `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. The movie_info table has 14.8M rows, so this index might help.\n\nBut note: the condition on movie_info.info is an OR condition, and the pattern is fixed at the beginning. The trigram index might help, but it might not be as efficient as a B-tree index on a substring. However, without a better idea, we can use the trigram index.\n\nNow, note that the query also has a condition on movie_info.info_type_id (it1.id = mi.info_type_id). The movie_info table already has an index on info_type_id, so that condition is already covered.\n\nAlso, the condition on movie_info.note is not present in the existing indexes.\n\nNow, let's consider the join conditions:\n\n- The condition `t.id = mi.movie_id` is already covered by the index on movie_info.movie_id (which exists).\n- The condition `t.id = mk.movie_id` is covered by the index on movie_keyword.movie_id (which exists).\n- The condition `t.id = mc.movie_id` is covered by the index on movie_companies.movie_id (which exists).\n- The condition `t.id = cc.movie_id` is covered by the index on complete_cast.movie_id (which exists).\n\nSo the joins are efficient.\n\nNow, the condition `k.id = mk.keyword_id` is a join condition. The movie_keyword table has an index on keyword_id, so the join is efficient. The keyword table has no index, but the join is from movie_keyword to keyword, so the index on keyword.id is not necessary because the movie_keyword table already has an index on keyword_id.\n\nSimilarly, the condition `it1.id = mi.info_type_id` is covered by the index on movie_info.info_type_id.\n\nThe condition `cn.id = mc.company_id` is covered by the index on movie_companies.company_id.\n\nThe condition `ct.id = mc.company_type_id` is covered by the index on movie_companies.company_type_id.\n\nThe condition `cct1.id = cc.status_id` is covered by the index on complete_cast.movie_id? Wait, no: the condition is on cct1.id, and the complete_cast table has an index on movie_id, but not on status_id. However, the condition is `cct1.id = cc.status_id`. The complete_cast table does not have an index on status_id, so the join condition might be using a sequential scan on complete_cast. But note: the complete_cast table has 135k rows, so a sequential scan might be acceptable, but if the condition is not selective, it might be a problem.\n\nBut note: the condition on complete_cast is `cct1.id = cc.status_id`. The complete_cast table has a column status_id, and the comp_cast_type table has a column kind. The condition `cct1.kind = 'complete+verified'` is a filter on comp_cast_type, which is a small table. So the status_id in complete_cast might be filtered by the condition `cct1.id = cc.status_id` and then by the condition on comp_cast_type.kind. But the complete_cast table does not have an index on status_id, so the join might be using a sequential scan.\n\nBut note: the complete_cast table has an index on movie_id, but the condition is on status_id. So the index on movie_id is not helpful for the join condition. We might consider an index on complete_cast.status_id, but the condition is a join condition with comp_cast_type, which is small. So the index might not be necessary.\n\nNow, let's summarize the index candidates:\n\n1. company_name.country_code: to help the filter `cn.country_code = '[us]'`.\n2. title.production_year: to help the filter `t.production_year > 1990`.\n3. movie_info.note: to help the condition `mi.note LIKE '%internet%'` (using trigram index).\n4. movie_info.info: to help the condition `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'` (using trigram index).\n\nBut note: the condition on movie_info.note is a full text search and might be better handled by a full-text index, but we don't have that extension. The trigram index is the next best.\n\nNow, let's consider the order of impact:\n\n- The movie_info table is the largest (14.8M rows) and has two expensive conditions (note and info). So indexing movie_info.note and movie_info.info would have the most impact.\n\n- The company_name table is 234k rows, so indexing country_code would help.\n\n- The title table is 2.5M rows, so indexing production_year would help.\n\nBut note: the query might be filtering on company_name.country_code, so that condition might be a bottleneck.\n\nNow, let's write the JSON.\n\nWe are to return an array of indexes, each with:\n- target: table name\n- property: column name\n- index_type: the type of index (e.g., 'BTREE', 'GIN', 'GiST')\n- partial_predicate: null or a condition for a partial index\n- estimated_benefit: a string describing what the index would eliminate and on how many rows.\n\nWe are to order by the number of rows scanned (largest first). So the largest table with the most rows is movie_info (14.8M rows). Then title (2.5M rows). Then company_name (234k rows).\n\nBut note: the condition on movie_info.note might be the most expensive because it is a full text search and the table is large. Similarly, the condition on movie_info.info is also expensive.\n\nHowever, the condition on movie_info.note is a LIKE with a leading '%', so it cannot use a B-tree index. The condition on movie_info.info is a pattern that starts with 'USA:', so it can use a trigram index.\n\nFor movie_info.note, we can use a GiST index with trigram. For movie_info.info, we can use a GiST index with trigram.\n\nBut note: the condition on movie_info.note is `mi.note LIKE '%internet%'`. This condition is looking for any note that contains the substring 'internet'. The trigram index can help with that.\n\nSimilarly, the condition on movie_info.info is `mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'`. The trigram index can help with that.\n\nNow, let's write the indexes:\n\n1. For movie_info.note: \n   - target: movie_info\n   - property: note\n   - index_type: GiST (using trgm)\n   - partial_predicate: null (because the condition is on note, and the table is movie_info)\n   - estimated_benefit: \"Eliminates the sequential scan on movie_info.note LIKE '%internet%' by using a GiST index with trigram, red",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "note",
+      "index_type": "gist",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "gist",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 15.3,
+      "baseline_exec_ms": 270.832,
+      "optimized_exec_ms": 229.273,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20749.67,
+          "cost_with_index": 20749.68,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4644.95,
+          "cost_with_index": 4644.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55705.8,
+          "cost_with_index": 42300.68,
+          "benefit_pct": 24.1
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19502.99,
+          "cost_with_index": 19502.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7457.78,
+          "cost_with_index": 7457.78,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10982.87,
+          "cost_with_index": 10982.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9500.95,
+          "cost_with_index": 9500.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3823.62,
+          "cost_with_index": 3823.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9455.33,
+          "cost_with_index": 9455.44,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45853.36,
+          "cost_with_index": 45853.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3803.12,
+          "cost_with_index": 3803.12,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3852.15,
+          "cost_with_index": 3852.15,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -27.8,
+      "baseline_exec_ms": 243.255,
+      "optimized_exec_ms": 310.797,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20749.68,
+          "cost_with_index": 20749.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4644.95,
+          "cost_with_index": 4644.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55704.6,
+          "cost_with_index": 55704.6,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7457.78,
+          "cost_with_index": 7457.78,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9500.95,
+          "cost_with_index": 9500.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45853.36,
+          "cost_with_index": 43573.33,
+          "benefit_pct": 5.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3803.12,
+          "cost_with_index": 3803.12,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3852.15,
+          "cost_with_index": 3852.15,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-09-12T20:23:15.849353",
+  "query_hash": "8ebe2727407b",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 756910.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT i_item_id, ca_country, ca_state, ca_county, \n       AVG(cs_quantity) AS agg1, AVG(cs_list_price) AS agg2, \n       AVG(cs_coupon_amt) AS agg3, AVG(cs_sales_price) AS agg4, \n       AVG(cs_net_profit) AS agg5, AVG(c_birth_year) AS agg6, \n       AVG(cd1.cd_dep_count) AS agg7\nFROM catalog_sales\nJOIN date_dim ON cs_sold_date_sk = d_date_sk AND d_year = 2001\nJOIN customer_demographics cd1 ON cs_bill_cdemo_sk = cd1.cd_demo_sk WHERE cd1.cd_gender = 'F' AND cd1.cd_education_status = 'Primary'\nJOIN customer_address ca ON c_current_addr_sk = ca_address_sk AND ca_state IN ('AL','MO','TN' ,'GA','MT','IN','CA')\nJOIN customer ON cs_bill_customer_sk = c_customer_sk AND c_birth_month IN (1,3,7,11,10,4)\nGROUP BY ROLLUP (i_item_id, ca_country, ca_state, ca_county)\nORDER BY ca_country, ca_state, ca_county, i_item_id\nLIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization. First, I need to understand the original query. The user is selecting several aggregates from the catalog_sales, customer, customer_demographics, customer_address, date_dim, and item tables. They're grouping by rollup on i_item_id, ca_country, ca_state, ca_county, and ordering by those fields with a limit of 100.\n\nLooking at the query structure, there are multiple joins and subqueries. The main tables involved are catalog_sales, customer, customer_demographics (used twice), customer_address, date_dim, and item. The joins are based on various keys like cs_sold_date_sk to d_date_sk, cs_item_sk to i_item_sk, and so on.\n\nFirst, I should check for repeated subqueries or subqueries that are evaluated multiple times. The query has cd1 and cd2 as customer_demographics tables. The conditions are cd1.cd_gender = 'F' and cd1.cd_education_status = 'Primary', and c_current_cdemo_sk = cd2.cd_demo_sk. Since cd1 and cd2 are both customer_demographics, maybe there's a way to optimize the join between them or reduce the number of rows early.\n\nAnother thing is the use of rollup. Rollup can be expensive because it requires generating aggregated results for each level. However, the limit of 100 might mean that the final result is just the top 100 rows, so maybe the rollup isn't necessary, but the user might need it for the grouping.\n\nLooking at the WHERE clause, there are filters on d_year = 2001, which is a specific year. Also, ca_state is in a list of states, and c_birth_month is in a list of months. These filters can help reduce the number of rows early in the query execution.\n\nThe aggregation functions are using cast to decimal, which might be unnecessary if the columns are already numeric. But since the query uses cast, maybe the data types are stored as integers, and casting to decimal is required for the average calculation. However, that's part of the query and might not be an optimization point unless there's a way to avoid the cast.\n\nNow, considering the joins. The catalog_sales is joined with customer via cs_bill_customer_sk = c_customer_sk. Then, customer is joined with customer_demographics (cd2) via c_current_cdemo_sk = cd2.cd_demo_sk. Also, customer is joined with customer_address via c_current_addr_sk = ca_address_sk. Then, catalog_sales is joined with date_dim via cs_sold_date_sk = d_date_sk, and with item via cs_item_sk = i_item_sk.\n\nThe customer_demographics tables (cd1 and cd2) are both used. The cd1 is filtered for gender and education status, while cd2 is used to link to the customer. Since cd1 and cd2 are both customer_demographics, maybe there's a way to combine these conditions or use a single join with a subquery to filter cd1 first.\n\nAnother point is the use of rollup. If the final result is just the top 100 rows ordered by ca_country, ca_state, ca_county, i_item_id, maybe the rollup can be optimized by first aggregating and then applying the limit, but the rollup might be necessary for the grouping.\n\nPossible optimizations:\n\n1. **Filter Early**: Apply the d_year = 2001 and ca_state in (...) filters as early as possible to reduce the number of rows processed in subsequent joins. For example, pre-filtering the date_dim and customer_address tables before joining with other tables.\n\n2. **Join Order**: Reorder the joins to process the most restrictive conditions first. For instance, joining customer_demographics (cd1) with the filter conditions (gender and education status) first, then joining with customer, which might reduce the number of rows early.\n\n3. **Subquery for cd1**: Since cd1 has specific filters (gender and education status), creating a subquery for cd1 with those conditions might reduce the number of rows joined with customer, improving performance.\n\n4. **Avoid Redundant Joins**: Check if cd2 is necessary. The query uses c_current_cdemo_sk = cd2.cd_demo_sk, but since cd2 is customer_demographics, maybe there's a way to use the same table for both cd1 and cd2, but with different conditions. However, since cd1 is filtered, perhaps cd2 can be joined after filtering cd1.\n\n5. **Materialize Aggregates**: Since the query is using rollup, which is a form of grouping, maybe materializing the intermediate results of the aggregation could help, but that's more of a query rewrite than an optimization.\n\n6. **Index Usage**: Ensure that the tables involved have indexes on the join columns and filter columns. For example, indexes on date_dim.d_date_sk, customer_address.ca_address_sk, customer_demographics.cd_demo_sk, etc. However, the user hasn't mentioned indexes, so this might be beyond the current scope.\n\n7. **Limit Early**: Since the final result is limited to 100 rows, maybe applying the limit earlier in the query execution could reduce the amount of data processed. However, with rollup, the grouping might require all data to be processed first.\n\nPutting this together, the main opportunities are:\n\n- Filtering date_dim and customer_address early to reduce the number of rows.\n- Using a subquery for cd1 to apply the gender and education filters first.\n- Reordering joins to process the most restrictive conditions first.\n- Possibly using indexes on the join and filter columns.\n\nSo, the structured list would prioritize these steps, starting with the most impactful ones like filtering early and using subqueries for cd1.\n\n</think>\n\n1. **Filter Early** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Pre-filter `date_dim` with `d_year = 2001` and join it with `catalog_sales` to reduce rows early  \n2. **Subquery for cd1** \u2014 TARGET: `customer_demographics` (cd1) \u2014 TRANSFORMATION: Replace `cd1` with a subquery filtering `cd_gender = 'F'` and `cd_education_status = 'Primary'` to reduce join cardinality  \n3. **Join Order Optimization** \u2014 TARGET: `customer` and `customer_demographics` (cd2) \u2014 TRANSFORMATION: Join `customer` with `cd2` after filtering `cd1` to minimize row proliferation  \n4. **Materialize Address Filter** \u2014 TARGET: `customer_address` \u2014 TRANSFORMATION: Pre-filter `ca_state` in (`AL','MO','TN' ,'GA','MT','IN','CA'`) and join it with `customer` to reduce rows before aggregating  \n5. **Limit Intermediate Results** \u2014 TARGET: Final aggregation \u2014 TRANSFORMATION: Apply `LIMIT 100` after grouping to reduce post-aggregation processing  \n6. **Avoid Redundant Casts** \u2014 TARGET: `cs_quantity`, `cs_list_price`, etc. \u2014 TRANSFORMATION: Use native numeric types if possible (e.g., `cs_quantity` is integer, avoid `CAST(... AS DECIMAL)` for avg)  \n7. **Index on Filtered Columns** \u2014 TARGET: `customer_address.ca_state`, `customer.c_birth_month` \u2014 TRANSFORMATION: Ensure indexes on `ca_state`, `c_birth_month`, and join keys to accelerate filtering and joins",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2779.69,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 937593.89,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 676083.0,
+    "index_advisor_inference_ms": 72578.0,
+    "reflection_iterations": 3,
+    "labeler_inference_ms": 8249.6,
+    "total_inference_ms": 756910.6,
+    "writer_inference_ms": 80867.1,
+    "writer_tokens_in": 13861,
+    "writer_tokens_out": 2471,
+    "writer_calls": 8
+  },
+  "errors": [
+    "duplicate_attempt \u2014 identical SQL was already rejected this session"
+  ],
+  "strategy": "1. **Filter Early** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Pre-filter `date_dim` with `d_year = 2001` and join it with `catalog_sales` to reduce rows early  \n2. **Subquery for cd1** \u2014 TARGET: `customer_demographics` (cd1) \u2014 TRANSFORMATION: Replace `cd1` with a subquery filtering `cd_gender = 'F'` and `cd_education_status = 'Primary'` to reduce join cardinality  \n3. **Join Order Optimization** \u2014 TARGET: `customer` and `customer_demographics` (cd2) \u2014 TRANSFORMATION: Join `customer` with `cd2` after filtering `cd1` to minimize row proliferation  \n4. **Materialize Address Filter** \u2014 TARGET: `customer_address` \u2014 TRANSFORMATION: Pre-filter `ca_state` in (`AL','MO','TN' ,'GA','MT','IN','CA'`) and join it with `customer` to reduce rows before aggregating  \n5. **Limit Intermediate Results** \u2014 TARGET: Final aggregation \u2014 TRANSFORMATION: Apply `LIMIT 100` after grouping to reduce post-aggregation processing  \n6. **Avoid Redundant Casts** \u2014 TARGET: `cs_quantity`, `cs_list_price`, etc. \u2014 TRANSFORMATION: Use native numeric types if possible (e.g., `cs_quantity` is integer, avoid `CAST(... AS DECIMAL)` for avg)  \n7. **Index on Filtered Columns** \u2014 TARGET: `customer_address.ca_state`, `customer.c_birth_month` \u2014 TRANSFORMATION: Ensure indexes on `ca_state`, `c_birth_month`, and join keys to accelerate filtering and joins",
+  "writer": "local:qwen2.5-coder:7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to apply filters early and reduce rows before joins, and the rewrite filters `d_year = 2001`, `cd1.cd_gender = 'F'`, `cd1.cd_education_status = 'Primary'`,"
+  },
+  "raw_sql": "select i_item_id, ca_country, ca_state, ca_county, avg( cast(cs_quantity as decimal(12,2))) agg1, avg( cast(cs_list_price as decimal(12,2))) agg2, avg( cast(cs_coupon_amt as decimal(12,2))) agg3, avg( cast(cs_sales_price as decimal(12,2))) agg4, avg( cast(cs_net_profit as decimal(12,2))) agg5, avg( cast(c_birth_year as decimal(12,2))) agg6, avg( cast(cd1.cd_dep_count as decimal(12,2))) agg7 from catalog_sales, customer_demographics cd1, customer_demographics cd2, customer, customer_address, date_dim, item where cs_sold_date_sk = d_date_sk and cs_item_sk = i_item_sk and cs_bill_cdemo_sk = cd1.cd_demo_sk and cs_bill_customer_sk = c_customer_sk and cd1.cd_gender = 'F' and cd1.cd_education_status = 'Primary' and c_current_cdemo_sk = cd2.cd_demo_sk and c_current_addr_sk = ca_address_sk and c_birth_month in (1,3,7,11,10,4) and d_year = 2001 and ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA') group by rollup (i_item_id, ca_country, ca_state, ca_county) order by ca_country, ca_state, ca_county, i_item_id limit 100"
+}

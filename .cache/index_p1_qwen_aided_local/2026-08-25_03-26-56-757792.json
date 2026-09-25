@@ -1,0 +1,265 @@
+{
+  "timestamp": "2026-08-25T03:26:56.757774",
+  "query_hash": "3505b74fb5bb",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 142206.2,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of the given SQL query. The database is PostgreSQL 16.14 with extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure. The main query is selecting customer details and some counts from store_sales, joined with other tables like date_dim, store, household_demographics, and customer. The query has a subquery that groups store_sales data based on certain conditions, then joins with the customer table.\n\nLooking at the relevant tables: customer (266k rows), household_demographics (7.2k rows), store (44 rows), store_sales (57.6 million rows), and date_dim (73k rows). All tables have no indexes, so the execution plan is likely using sequential scans, which are expensive for large tables like store_sales.\n\nThe main issue is the subquery that's part of the FROM clause. Let's break down the subquery. It's selecting ss_ticket_number, ss_customer_sk, and count(*) from store_sales, joined with date_dim, store, and household_demographics. The WHERE clause has several conditions:\n\n- store_sales.ss_sold_date_sk = date_dim.d_date_sk\n- store_sales.ss_store_sk = store.s_store_sk\n- store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk\n- date_dim.d_dom between 1 and 2\n- household_demographics.hd_buy_potential in ('1001-5000', '5001-10000')\n- hd_vehicle_count > 0\n- (hd_dep_count / hd_vehicle_count) > 1\n- date_dim.d_year in (2000, 2001, 2002)\n- store.s_county in ('Williamson County', ... repeated four times)\n\nThe subquery groups by ss_ticket_number and ss_customer_sk, then the main query joins this with customer and filters cnt between 1 and 5, ordering by cnt and c_last_name.\n\nThe main problem here is that the subquery is scanning the store_sales table (57.6M rows) without any indexes. The joins with date_dim, store, and household_demographics are also causing full table scans. \n\nLet's identify the tables with Seq Scans. The store_sales table is the largest, so it's a primary candidate. The conditions on store_sales include joins with date_dim, store, and household_demographics. \n\nFor the store_sales table, the key columns involved in the joins are ss_sold_date_sk (joined with date_dim.d_date_sk), ss_store_sk (joined with store.s_store_sk), and ss_hdemo_sk (joined with household_demographics.hd_demo_sk). Also, there are filters on d_dom, d_year, and the hd_buy_potential, hd_vehicle_count, and hd_dep_count. \n\nSince the query is filtering on date_dim.d_dom between 1 and 2, and d_year in (2000, 2001, 2002), an index on date_dim.d_date_sk (since it's joined with store_sales.ss_sold_date_sk) might help, but the date_dim table is small (73k rows), so maybe not the main issue. However, the store_sales table is the main problem.\n\nThe store_sales table has a lot of rows, so creating indexes on the columns used in the joins and filters would help. The joins are on ss_sold_date_sk, ss_store_sk, and ss_hdemo_sk. Also, the filters on d_dom, d_year, and the household_demographics conditions.\n\nBut since the query is joining store_sales with date_dim, and the date_dim has d_date_sk, which is the foreign key to store_sales.ss_sold_date_sk. So, if we can index store_sales on ss_sold_date_sk, that might help, but since it's already part of the primary key (assuming it's a composite key?), wait, no. Wait, the store_sales table's primary key is (ss_ticket_number, ss_item_sk), but the query is grouping by ss_ticket_number and ss_customer_sk. Wait, looking back at the schema for store_sales: the primary key is (ss_ticket_number, ss_item_sk). But in the subquery, they are grouping by ss_ticket_number and ss_customer_sk. So, the ss_customer_sk is part of the join with the customer table.\n\nBut the main issue is the store_sales table being scanned. So, indexes on the columns used in the joins and filters would help. Let's think about the conditions:\n\n- ss_sold_date_sk = date_dim.d_date_sk (so, date_dim.d_date_sk is used in the join)\n- ss_store_sk = store.s_store_sk (so, store.s_store_sk is used in the join)\n- ss_hdemo_sk = household_demographics.hd_demo_sk (so, household_demographics.hd_demo_sk is used in the join)\n- date_dim.d_dom between 1 and 2 (so, date_dim.d_dom is filtered)\n- date_dim.d_year in (2000, 2001, 2002) (so, date_dim.d_year is filtered)\n- household_demographics.hd_buy_potential in ('1001-5000', '5001-10000') (so, hd_buy_potential is filtered)\n- hd_vehicle_count > 0 (so, hd_vehicle_count is filtered)\n- (hd_dep_count / hd_vehicle_count) > 1 (this is a calculated condition, but since it's a division, maybe it's better to index hd_dep_count and hd_vehicle_count)\n- store.s_county in ('Williamson County', ...) (so, store.s_county is filtered)\n\nBut the store table has only 44 rows, so filtering on s_county might not need an index. However, the main problem is the store_sales table.\n\nSo, for store_sales, the columns involved in joins and filters are:\n\n- ss_sold_date_sk (joined with date_dim.d_date_sk)\n- ss_store_sk (joined with store.s_store_sk)\n- ss_hdemo_sk (joined with household_demographics.hd_demo_sk)\n- Also, the filters on date_dim.d_dom and d_year, but those are on date_dim, not store_sales. However, since the join is on date_dim.d_date_sk, maybe an index on store_sales.ss_sold_date_sk would help, but that's already part of the primary key? Wait, no. The primary key of store_sales is (ss_ticket_number, ss_item_sk). So, ss_sold_date_sk is a regular column. Therefore, an index on ss_sold_date_sk would help with the join with date_dim.\n\nBut the query is filtering on date_dim.d_dom and d_year. Since date_dim is joined via d_date_sk, which is the same as store_sales.ss_sold_date_sk. So, if we can filter store_sales rows where the corresponding date_dim.d_dom is between 1 and 2, and d_year is in 2000-2002, that would reduce the number of rows scanned in store_sales.\n\nBut how to index that? Since the date_dim is joined via d_date_sk, which is the same as store_sales.ss_sold_date_sk, perhaps creating an index on store_sales.ss_sold_date_sk, and then using the date_dim's d_dom and d_year as filters. However, since the date_dim is a separate table, the index on store_sales would need to include the columns that are used in the join and the filters. Wait, but the filters are on date_dim's columns, not store_sales. So, maybe the index on store_sales should include ss_sold_date_sk, and then the date_dim's d_dom and d_year are used in the WHERE clause. But since the join is on d_date_sk, which is the same as ss_sold_date_sk, the date_dim's d_dom and d_year are linked to the store_sales rows via that join.\n\nSo, perhaps creating an index on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) would help with the joins. But the query also has conditions on date_dim.d_dom and d_year. Since date_dim.d_date_sk is the same as store_sales.ss_sold_date_sk, maybe we can create an index on store_sales that includes ss_sold_date_sk, and then use the date_dim's d_dom and d_year as filters. However, since the date_dim is a separate table, the index on store_sales would not directly help with those filters. Wait, but the join condition is store_sales.ss_sold_date_sk = date_dim.d_date_sk. So, when joining, the date_dim's d_date_sk is used to find the corresponding store_sales rows. Then, the date_dim's d_dom and d_year are used as filters. So, the date_dim's d_dom and d_year are part of the WHERE clause, which would filter the date_dim rows. But since the join is on d_date_sk, the date_dim rows are filtered first, and then joined with store_sales. However, if the date_dim has an index on d_dom and d_year, that would help. But the user said that date_dim has no indexes. So, maybe the date_dim's scan is also a problem, but the user's focus is on the store_sales table.\n\nAlternatively, perhaps the main issue is the store_sales table being scanned. So, creating an index on store_sales that includes the columns used in the joins and the filters. For example, an index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) would help with the joins. Also, the filters on date_dim.d_dom and d_year would be handled by the date_dim's scan, but since date_dim is small, maybe that's not the main issue.\n\nAnother part of the query is the condition on household_demographics.hd_buy_potential and hd_vehicle_count. Since household_demographics is a small table (7,200 rows), but the join with store_sales is on ss_hdemo_sk = hd_demo_sk. So, if we can index household_demographics on hd_buy_potential and hd_vehicle_count, that would help. But the user said that household_demographics has no indexes. So, creating an index on hd_buy_potential and hd_vehicle_count would help filter the household_demographics rows quickly.\n\nSimilarly, the store table has s_county in the WHERE clause. Since store has only 44 rows, an index on s_county might not be necessary, but it's worth considering.\n\nPutting this all together, the main tables with Seq Scans are store_sales, date_dim, and household_demographics. The store_sales table is the largest, so creating indexes on it would have the most benefit.\n\nFor store_sales, the key columns are:\n\n- ss_sold_date_sk (joined with date_dim.d_date_sk)\n- ss_store_sk (joined with store.s_store_sk)\n- ss_hdemo_sk (joined with household_demographics.hd_demo_sk)\n\nAdditionally, the query has conditions on date_dim.d_dom and d_year, which are part of the WHERE clause. Since date_dim is joined via d_date_sk, which is the same as store_sales.ss_sold_date_sk, perhaps creating an index on store_sales that includes ss_sold_date_sk, and then using the date_dim's d_dom and d_year as filters. However, since the date_dim is a separate table, the index on store_sales would not directly help with those filters. But the join condition is on d_date_sk, which is the same as ss_sold_date_sk. So, if we can filter the store_sales rows based on the date_dim's d_dom and d_year, that would reduce the number of rows scanned in store_sales.\n\nWait, but the date_dim's d_dom and d_year are part of the WHERE clause. So, the query would first join store_sales with date_dim on d_date_sk, then filter on date_dim.d_dom and d_year. So, the date_dim's scan is part of the join, but since date_dim is small, maybe the main issue is the store_sales table.\n\nTherefore, the best indexes to create would be on store_sales for the columns involved in the joins and the filters. For example:\n\n1. Index on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to speed up the joins with date_dim, store, and household_demographics.\n2. Index on household_demographics(hd_buy_potential, hd_vehicle_count) to filter the hd_buy_potential and hd_vehicle_count conditions.\n3. Index on date_dim(d_date_sk, d_dom, d_year) to filter on d_dom and d_year.\n\nBut the user mentioned that the existing indexes are none, so we need to suggest these indexes.\n\nLooking back at the user's instructions, they want indexes that would most reduce execution cost. The main Seq Scan is on store_sales, so creating an index on store_sales for the columns used in the joins and filters would help. The household_demographics and date_dim tables are smaller, but their scans could also be optimized.\n\nSo, the first index should be on store_sales(ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to speed up the joins. Then, an index on household_demographics(hd_buy_potential, hd_vehicle_count) to filter the hd_buy_potential and hd_vehicle_count conditions. Also, an index on date_dim(d_date_sk, d_dom, d_year) to filter on d_dom and d_year.\n\nBut the user's schema for relevant tables says that all tables have no indexes. So, the indexes to suggest would be:\n\n- For store_sales: index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n- For household_demographics: index on (hd_buy_potential, hd_vehicle_count)\n- For date_dim: index on (d_date_sk, d_dom, d_year)\n\nBut the user's query has a condition on date_dim.d_dom between 1 and 2, and d_year in (2000, 2001, 2002). So, an index on date_dim(d_date_sk, d_dom, d_year) would allow filtering on those columns.\n\nHowever, the user's query also has a condition on (hd_dep_count / hd_vehicle_count) > 1. Since this is a calculated condition, it's better to index hd_dep_count and hd_vehicle_count together. So, an index on household_demographics(hd_dep_count, hd_vehicle_count) would help with that condition.\n\nWait, the original query has:\n\ncase when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1\n\nThis is equivalent to hd_dep_count / hd_vehicle_count > 1, but only when hd_vehicle_count > 0. So, the condition simplifies to hd_dep_count > hd_vehicle_count (since dividing both sides by hd_vehicle_count, which is positive). Therefore, the condition can be rewritten as hd_dep_count > hd_vehicle_count AND hd_vehicle_count > 0. So, an index on (hd_dep_count, hd_vehicle_count) would help with this condition.\n\nSo, the indexes to suggest would be:\n\n1. store_sales on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n2. date_dim on (d_date_sk, d_dom, d_year)\n3. household_demographics on (hd_buy_potential, hd_vehicle_count, hd_dep_count)\n\nBut the user's schema for household_demographics has columns hd_buy_potential, hd_vehicle_count, hd_dep_count. So, creating an index on those three columns would help with the conditions.\n\nAdditionally, the store table has s_county in the WHERE clause. Since store has only 44 rows, an index on s_county might not be necessary, but it's worth considering. However, the user's query has store.s_county in ('Williamson County', ...) which is a filter. So, an index on store.s_county would help, but since the table is small, the benefit might be minimal. However, since the query is joining store_sales with store on ss_store_sk = s_store_sk, an index on store.s_store_sk would help with the join. But store has a primary key on s_store_sk, so maybe it's already indexed. Wait, the schema for store says it has no indexes. So, creating an index on s_store_sk would help with the join.\n\nBut the user's query has store.s_county in the WHERE clause. So, an index on store.s_county would help filter the rows. However, since store has only 44 rows, the benefit might be minimal. But since the query is part of a larger join, it's worth considering.\n\nPutting all this together, the main indexes to suggest are:\n\n- For store_sales: index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n- For date_dim: index on (d_date_sk, d_dom, d_year)\n- For household_demographics: index on (hd_buy_potential, hd_vehicle_count, hd_dep_count)\n- For store: index on s_county (though it's small)\n\nBut the user's query has a condition on store.s_county, so an index on that column would help. However, since the table is small, the benefit might be minimal. But given that the query is part of a larger join, it's worth including.\n\nNow, the user's instructions say to prioritize the largest tables first. The store_sales table is the largest, so the index on store_sales would have the most benefit. Then, the date_dim and household_demographics.\n\nSo, the JSON should list the indexes for store_sales, date_dim, and household_demographics. The store's index on s_county is optional but could be included.\n\nBut the user's query has a condition on store.s_county in ('Williamson County', ...) which is a filter. So, an index on store.s_county would help. However, since the store table is small, the benefit might be minimal. But since the query is part of a larger join, it's worth considering.\n\nIn the end, the main indexes to suggest are:\n\n1. store_sales on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n2. date_dim on (d_date_sk, d_dom, d_year)\n3. household_demographics on (hd_buy_potential, hd_vehicle_count, hd_dep_count)\n4. store on s_county\n\nBut the user's schema for store says no indexes, so creating an index on s_county would help with the filter.\n\nHowever, the user's query has a condition on store.s_county in the WHERE clause. So, the index on store.s_county would help filter those rows.\n\nBut the user's query also has a join between store_sales and store on ss_store_sk = s_store_sk. So, an index on store.s_store_sk would help with the join. But since store has a primary key on s_store_sk, maybe it's already indexed. However, the user says there are no indexes, so creating an index on s_store_sk would help.\n\nBut the user's query has store.s_county in the WHERE clause. So, the index on s_county would help with that filter.\n\nSo, the indexes to suggest are:\n\n- store_sales: index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n- date_dim: index on (d_date_sk, d_dom, d_year)\n- household_demographics: index on (hd_buy_potential, hd_vehicle_count, hd_dep_count)\n- store: index on s_county\n\nBut the user's query has a condition on store.s_county, so the index on store.s_county would help.\n\nNow, the user's instructions say to order the indexes by the number of rows scanned, largest first. The store_sales table has 57.6M rows, so the index on store_sales would have the most benefit. Then, date_dim (73k rows), then household_demographics (7.2k rows), and store (44 rows).\n\nSo, the JSON should list the indexes in that order.\n\nBut the user's query has a condition on date_dim.d_dom between 1 and 2, and d_year in (2000, 2001, 2002). So, an index on date_dim(d_date_sk, d_dom, d_year) would allow filtering on those columns.\n\nSimilarly, the household_demographics has conditions on hd_buy_potential, hd_vehicle_count, and hd_dep_count. So, an index on those columns would help.\n\nThe store_sales index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) would help with the joins.\n\nSo, the final answer should include these indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk,ss_store_sk,ss_hdemo_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales (57.598932 rows)\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date_sk,d_dom,d_year\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on date_dim (73,049 rows)\"\n    },\n    {\n      \"target\": \"household_demographics\",\n      \"property\": \"hd_buy_potential,hd_vehicle_count,hd_dep_count\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on household_demographics (7,200 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottleneck is the Seq Scan on store_sales (57.6M rows) due to complex joins and filters. Indexes on store_sales's join columns (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) will dramatically reduce scan cost. Date_dim and household_demographics also have Seq Scans that can be optimized with btree indexes on their filter columns.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk,ss_store_sk,ss_hdemo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.4,
+      "baseline_exec_ms": 2322.772,
+      "optimized_exec_ms": 2355.212,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2942783.47,
+          "cost_with_index": 2942754.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955035.64,
+          "cost_with_index": 1955003.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372410.55,
+          "cost_with_index": 1372386.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816348.53,
+          "cost_with_index": 816301.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118336.44,
+          "cost_with_index": 118335.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110623.32,
+          "cost_with_index": 21110199.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020203.23,
+          "cost_with_index": 29018784.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129314.8,
+          "cost_with_index": 129261.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179276.47,
+          "cost_with_index": 179276.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81585.79,
+          "cost_with_index": 81585.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712188.11,
+          "cost_with_index": 3656187.71,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135230.57,
+          "cost_with_index": 135230.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222649.2,
+          "cost_with_index": 222648.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342721.06,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date_sk,d_dom,d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.5,
+      "baseline_exec_ms": 2385.965,
+      "optimized_exec_ms": 2326.743,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435750.82,
+          "cost_with_index": 1435477.6,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2942754.93,
+          "cost_with_index": 2942754.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955003.24,
+          "cost_with_index": 1955003.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372386.39,
+          "cost_with_index": 1372386.39,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816301.02,
+          "cost_with_index": 816301.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118335.88,
+          "cost_with_index": 118062.66,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018784.97,
+          "cost_with_index": 29018620.45,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129261.31,
+          "cost_with_index": 129261.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.42,
+          "cost_with_index": 1210287.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3952701.8,
+          "cost_with_index": 3952428.58,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937570.9,
+          "cost_with_index": 937297.67,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179276.47,
+          "cost_with_index": 179276.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81585.5,
+          "cost_with_index": 81312.28,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906063.77,
+          "cost_with_index": 906063.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712155.94,
+          "cost_with_index": 3712155.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135230.57,
+          "cost_with_index": 135230.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222648.43,
+          "cost_with_index": 222648.43,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91642.99,
+          "cost_with_index": 91642.99,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_buy_potential,hd_vehicle_count,hd_dep_count",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.3,
+      "baseline_exec_ms": 2430.041,
+      "optimized_exec_ms": 2397.922,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342697.9,
+          "cost_with_index": 1342697.9,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

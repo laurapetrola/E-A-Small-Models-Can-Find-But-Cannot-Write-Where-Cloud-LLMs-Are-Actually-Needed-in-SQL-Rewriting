@@ -1,0 +1,139 @@
+{
+  "timestamp": "2026-08-31T07:58:38.448384",
+  "query_hash": "7b1907e24d00",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 78571.5,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user is asking for indexes that can reduce the execution cost of a complex SQL query involving multiple tables. The query is using Common Table Expressions (CTEs) to aggregate sales data from store_sales, store_returns, catalog_sales, catalog_returns, web_sales, and web_returns, then combines them to get channel-wise summaries.\n\nFirst, I need to understand which tables are being scanned and why. The query has several parts: ssr (store sales and returns), csr (catalog), wsr (web). Each of these CTEs involves joining with date_dim and another table (store, catalog_page, web_site). \n\nLooking at the schema and existing indexes, I notice that some tables might be causing full table scans. For example, the date_dim table has no indexes, which could be a problem since it's used in multiple joins with date_sk. Also, tables like catalog_sales and store_sales have a lot of rows (28 million and 57 million respectively), so if they're being scanned without proper indexes, that's a big performance hit.\n\nIn the query, the date_dim is joined with other tables on date_sk. Since date_dim has no indexes, joining on date_sk would require a full table scan. Creating an index on d_date_sk in date_dim could help here. But wait, the user mentioned that the existing indexes are already listed, and date_dim has none. So adding an index on d_date_sk would be beneficial for the joins involving date_dim.\n\nAnother area is the joins between the sales tables (like store_sales) and date_dim. For example, in the ssr CTE, store_sales is joined with date_dim on date_sk. If date_sk is not indexed in date_dim, that's a full table scan. But date_dim's primary key is d_date_sk, so maybe that's already indexed. Wait, the schema says date_dim has no indexes. So the primary key is d_date_sk, which is automatically indexed. So maybe that's not the issue.\n\nWait, looking at the schema again: date_dim has no indexes listed. But the primary key is d_date_sk, which is an index. So joining on date_sk (which is the same as d_date_sk) would use the primary key index. So maybe that's not the problem. But perhaps other tables are involved.\n\nLooking at the store table, which has 44 rows. The query joins store with salesreturns on store_sk. Since store is small, a full table scan might not be a problem. But maybe the join condition is causing issues. However, the store table's index on s_closed_date_sk might not be relevant here.\n\nThe main issue might be with the large tables like catalog_sales and store_sales. For example, in the csr CTE, catalog_sales is joined with date_dim on date_sk. If the date_sk in catalog_sales is not indexed, but wait, the primary key of catalog_sales is (cs_item_sk, cs_order_number), and date_sk is a foreign key. The existing indexes on catalog_sales include cs_sold_date_sk, cs_ship_date_sk, etc. But the date_sk in the query is used in the join with date_dim. Wait, in the csr CTE, the salesreturns are from catalog_sales and catalog_returns. The date_sk comes from cs_sold_date_sk (for catalog_sales) and cr_returned_date_sk (for catalog_returns). So the join with date_dim is on date_sk, which is either cs_sold_date_sk or cr_returned_date_sk. \n\nIf the date_sk is being used in the WHERE clause or JOIN condition, and if those columns are not indexed, that could lead to full table scans. For example, in the catalog_sales table, the date_sk is cs_sold_date_sk. The existing indexes on catalog_sales include cs_sold_date_sk (as part of the primary key?), no. Wait, the primary key of catalog_sales is (cs_item_sk, cs_order_number). The cs_sold_date_sk is a column in the table. The existing indexes on catalog_sales include cs_sold_date_sk as part of the index? Let me check the schema again.\n\nLooking at the catalog_sales indexes: there's an index on cs_sold_date_sk (cs_d1?), no. Wait, the indexes listed for catalog_sales are:\n\n- cs_b_a on (cs_bill_addr_sk)\n- cs_b_hd on (cs_bill_hdemo_sk)\n- cs_cc on (cs_call_center_sk)\n- cs_cp on (cs_catalog_page_sk)\n- cs_d1 on (cs_ship_date_sk)\n- cs_p on (cs_promo_sk)\n- cs_s_a on (cs_ship_addr_sk)\n- cs_s_cd on (cs_ship_cdemo_sk)\n- cs_s_hd on (cs_ship_hdemo_sk)\n- cs_sm on (cs_ship_mode_sk)\n- cs_t on (cs_sold_time_sk)\n- idx_catalog_sales_cs_bill_cdemo_sk_fk_rescue on (cs_bill_cdemo_sk)\n- idx_catalog_sales_cs_bill_customer_sk_fk_rescue on (cs_bill_customer_sk)\n- idx_catalog_sales_cs_ship_customer_sk on (cs_ship_customer_sk)\n- idx_catalog_sales_cs_sold_date_sk on (cs_sold_date_sk)\n- idx_catalog_sales_cs_warehouse_sk_fk_rescue on (cs_warehouse_sk)\n\nAh, there's an index on cs_sold_date_sk (cs_d1?), which is the date_sk used in the join with date_dim. So joining on cs_sold_date_sk would use that index. Similarly, for catalog_returns, the cr_returned_date_sk is part of the index cr_returned_date_sk (idx_catalog_returns_cr_returned_date_sk_cr_returning_addr_sk_fk_?), which is an index. So maybe the joins on date_sk are using existing indexes.\n\nBut wait, the query has a condition where date_sk = d_date_sk and d_date between ... So the date_dim is being filtered by d_date between two dates. Since date_dim has no indexes, that could be causing a full table scan. Even though the primary key is on d_date_sk, the WHERE clause is filtering on d_date, which is a computed column (since d_date is a DATE type, and d_date_sk is the primary key). Wait, the date_dim table has a column d_date which is a DATE, and d_date_sk is the primary key. So the WHERE clause is using d_date between ... which is a column that's not indexed. Because the primary key is on d_date_sk, and d_date is a separate column. So if the query is filtering on d_date, which is not indexed, that would require a full table scan on date_dim. \n\nSo the date_dim table's d_date column is not indexed, leading to a full table scan. Since date_dim is used in multiple joins, this could be a major performance bottleneck. Creating an index on d_date would help here. But the user's schema says date_dim has no indexes. So adding an index on d_date would be beneficial.\n\nAnother area is the joins between the sales tables and date_dim. For example, in the ssr CTE, the store_sales is joined with date_dim on date_sk (which is cs_sold_date_sk). Since there's an index on cs_sold_date_sk, that join should be efficient. Similarly for other tables.\n\nWait, but the query has a condition on d_date between ... which is a range condition. If date_dim's d_date is not indexed, then the query would scan the entire table to find rows where d_date is between the two dates. So adding an index on d_date would allow the query to quickly find those rows, reducing the scan.\n\nSo the main candidate for an index is date_dim on d_date. That would eliminate the full table scan on date_dim for the date range condition.\n\nAnother possible issue is the joins between the sales tables and the date_dim. For example, in the store_sales table, the date_sk is cs_sold_date_sk, which is indexed. So joining on that should be efficient.\n\nLooking at the web_sales and web_returns tables, they are joined with date_dim on date_sk (ws_sold_date_sk and wr_returned_date_sk). The web_sales has an index on ws_sold_date_sk (ws_s_d?), which is part of the existing indexes. Similarly, web_returns has an index on wr_returned_date_sk (idx_web_returns_wr_returned_date_sk_wr_returning_addr_sk_fk_resc). So those joins should be efficient.\n\nAnother possible area is the joins between the sales tables and the other tables (like store, catalog_page, web_site). For example, in the ssr CTE, the salesreturns are joined with store on store_sk. The store table has an index on s_store_sk (since it's the primary key), so that join should be efficient. Similarly, the catalog_page has an index on cp_catalog_page_sk (as part of the primary key), so joining with catalog_page should be okay.\n\nWait, the csr CTE joins with catalog_page on page_sk = cp_catalog_page_sk. The catalog_page's primary key is cp_catalog_page_sk, so that join is efficient.\n\nThe wsr CTE joins with web_site on wsr_web_site_sk = web_site_sk. The web_site's primary key is web_site_sk, so that's efficient.\n\nSo the main issue is the date_dim table's lack of an index on d_date, leading to a full table scan for the date range condition. Adding an index on d_date would help.\n\nAnother possible candidate is the store_sales table. The query aggregates by store_id, which is part of the store table. But since store is small, maybe that's not the issue. However, if the join between store_sales and store is causing a full table scan, but since store is small, it's unlikely.\n\nWait, the query has a join between salesreturns and date_dim, and then with store, catalog_page, web_site. The main problem is the date_dim's full table scan due to the date range filter.\n\nSo the index to add would be on date_dim(d_date), which would allow the query to quickly find the rows in date_dim where d_date is between the two dates, eliminating the full table scan.\n\nTherefore, the recommended index is on date_dim with d_date as the column.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on date_dim for date range filter (73,049 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs a date range filter on date_dim.d_date without an index, causing a full table scan. Adding an index on d_date would enable efficient range queries and reduce scan cost.\"\n}",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_date",
+      "index_type": "btree",
+      "estimated_benefit_pct": 76.9,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 18.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 7772331.77,
+          "cost_with_index": 2989121.7,
+          "benefit_pct": 61.5
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 15432795.52,
+          "cost_with_index": 15432299.79,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": null,
+          "cost_with_index": null,
+          "benefit_pct": null
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 581616.97,
+          "cost_with_index": 451264.7,
+          "benefit_pct": 22.4
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 18965954.65,
+          "cost_with_index": 18424496.55,
+          "benefit_pct": 2.9
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 199347.21,
+          "cost_with_index": 194713.27,
+          "benefit_pct": 2.3
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 3.274081498528e+19,
+          "cost_with_index": 3.4930231683499e+19,
+          "benefit_pct": -6.7
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 390281.75,
+          "cost_with_index": 152714.68,
+          "benefit_pct": 60.9
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 2377721.27,
+          "cost_with_index": 1040324.96,
+          "benefit_pct": 56.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3771074.03,
+          "cost_with_index": 1650551.12,
+          "benefit_pct": 56.2
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 1439442.44,
+          "cost_with_index": 1467361.2,
+          "benefit_pct": -1.9
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 591881.15,
+          "cost_with_index": 587275.69,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 300544.42,
+          "cost_with_index": 293546.47,
+          "benefit_pct": 2.3
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": null,
+          "cost_with_index": null,
+          "benefit_pct": null
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 591673.94,
+          "cost_with_index": 454804.06,
+          "benefit_pct": 23.1
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 415633.44,
+          "cost_with_index": 403419.95,
+          "benefit_pct": 2.9
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 160604.51,
+          "cost_with_index": 157302.58,
+          "benefit_pct": 2.1
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 359279.37,
+          "cost_with_index": 340161.54,
+          "benefit_pct": 5.3
+        }
+      ],
+      "workload_queries_improved": 13,
+      "workload_queries_regressed": 2,
+      "status": null
+    }
+  ]
+}

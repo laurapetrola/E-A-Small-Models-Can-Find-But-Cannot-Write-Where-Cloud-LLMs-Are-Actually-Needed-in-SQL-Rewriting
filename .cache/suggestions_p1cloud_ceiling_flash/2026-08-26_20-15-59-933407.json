@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-08-26T20:15:59.933377",
+  "query_hash": "f6be26408cf5",
+  "suggestions": [
+    "convert aggregate functions into CASE expressions with division",
+    "restructure subquery with EXISTS for filtering",
+    "use derived table for aggregated data",
+    "pre-filter a large table as a CTE before the join",
+    "materialize intermediate results",
+    "use a CTE to select top items first",
+    "join top items with filtered data",
+    "pre-filter large tables into CTEs",
+    "use CTEs to materialize filtered dimensions",
+    "split final result into top items CTE and main join"
+  ],
+  "improvement_pct": 47.75,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 295324.2,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "SELECT i.i_item_id,\n       CASE WHEN SUM(fs.cnt_q) = 0 THEN NULL ELSE SUM(fs.sum_q)::numeric / SUM(fs.cnt_q) END AS agg1,\n       CASE WHEN SUM(fs.cnt_lp) = 0 THEN NULL ELSE SUM(fs.sum_lp)::numeric / SUM(fs.cnt_lp) END AS agg2,\n       CASE WHEN SUM(fs.cnt_ca) = 0 THEN NULL ELSE SUM(fs.sum_ca)::numeric / SUM(fs.cnt_ca) END AS agg3,\n       CASE WHEN SUM(fs.cnt_sp) = 0 THEN NULL ELSE SUM(fs.sum_sp)::numeric / SUM(fs.cnt_sp) END AS agg4\nFROM (\n    SELECT ss.ss_item_sk,\n           COUNT(ss.ss_quantity) AS cnt_q,\n           SUM(ss.ss_quantity) AS sum_q,\n           COUNT(ss.ss_list_price) AS cnt_lp,\n           SUM(ss.ss_list_price) AS sum_lp,\n           COUNT(ss.ss_coupon_amt) AS cnt_ca,\n           SUM(ss.ss_coupon_amt) AS sum_ca,\n           COUNT(ss.ss_sales_price) AS cnt_sp,\n           SUM(ss.ss_sales_price) AS sum_sp\n    FROM store_sales ss\n    WHERE EXISTS (\n            SELECT cd.cd_demo_sk\n            FROM customer_demographics cd\n            WHERE cd.cd_demo_sk = ss.ss_cdemo_sk\n              AND cd.cd_gender = 'F'\n              AND cd.cd_marital_status = 'W'\n              AND cd.cd_education_status = 'College'\n          )\n      AND EXISTS (\n            SELECT dd.d_date_sk\n            FROM date_dim dd\n            WHERE dd.d_date_sk = ss.ss_sold_date_sk\n              AND dd.d_year = 2001\n          )\n      AND EXISTS (\n            SELECT p.p_promo_sk\n            FROM promotion p\n            WHERE p.p_promo_sk = ss.ss_promo_sk\n              AND (p.p_channel_email = 'N' OR p.p_channel_event = 'N')\n          )\n    GROUP BY ss.ss_item_sk\n) AS fs\nJOIN item i ON fs.ss_item_sk = i.i_item_sk\nGROUP BY i.i_item_id\nORDER BY i.i_item_id\nLIMIT 100",
+  "reached_sql": "SELECT i.i_item_id,\n       CASE WHEN SUM(fs.cnt_q) = 0 THEN NULL ELSE SUM(fs.sum_q)::numeric / SUM(fs.cnt_q) END AS agg1,\n       CASE WHEN SUM(fs.cnt_lp) = 0 THEN NULL ELSE SUM(fs.sum_lp)::numeric / SUM(fs.cnt_lp) END AS agg2,\n       CASE WHEN SUM(fs.cnt_ca) = 0 THEN NULL ELSE SUM(fs.sum_ca)::numeric / SUM(fs.cnt_ca) END AS agg3,\n       CASE WHEN SUM(fs.cnt_sp) = 0 THEN NULL ELSE SUM(fs.sum_sp)::numeric / SUM(fs.cnt_sp) END AS agg4\nFROM (\n    SELECT ss.ss_item_sk,\n           COUNT(ss.ss_quantity) AS cnt_q,\n           SUM(ss.ss_quantity) AS sum_q,\n           COUNT(ss.ss_list_price) AS cnt_lp,\n           SUM(ss.ss_list_price) AS sum_lp,\n           COUNT(ss.ss_coupon_amt) AS cnt_ca,\n           SUM(ss.ss_coupon_amt) AS sum_ca,\n           COUNT(ss.ss_sales_price) AS cnt_sp,\n           SUM(ss.ss_sales_price) AS sum_sp\n    FROM store_sales ss\n    WHERE EXISTS (\n            SELECT cd.cd_demo_sk\n            FROM customer_demographics cd\n            WHERE cd.cd_demo_sk = ss.ss_cdemo_sk\n              AND cd.cd_gender = 'F'\n              AND cd.cd_marital_status = 'W'\n              AND cd.cd_education_status = 'College'\n          )\n      AND EXISTS (\n            SELECT dd.d_date_sk\n            FROM date_dim dd\n            WHERE dd.d_date_sk = ss.ss_sold_date_sk\n              AND dd.d_year = 2001\n          )\n      AND EXISTS (\n            SELECT p.p_promo_sk\n            FROM promotion p\n            WHERE p.p_promo_sk = ss.ss_promo_sk\n              AND (p.p_channel_email = 'N' OR p.p_channel_event = 'N')\n          )\n    GROUP BY ss.ss_item_sk\n) AS fs\nJOIN item i ON fs.ss_item_sk = i.i_item_sk\nGROUP BY i.i_item_id\nORDER BY i.i_item_id\nLIMIT 100",
+  "reasoning_trace": "1. BITMAP FACT-FILTER \u2014 TARGET: store_sales.ss_cdemo_sk, ss_sold_date_sk, ss_promo_sk \u2014 TRANSFORMATION: Create single-column btree indexes on those three fact FK columns and bitmap-intersect the filtered dimension key sets (female/widowed/College customer_demographics, d_year=2001 date_dim, promotion OR-condition) before any join or aggregation, so the 57.6M-row store_sales scan is reduced to only the rows that can survive the dimension filters.\n\n2. EXISTENCE-PREDICATE REWRITE \u2014 TARGET: the three inner joins to customer_demographics, date_dim, and promotion \u2014 TRANSFORMATION: Rewrite those dimension joins as correlated existence predicates on the fact FK columns with the selective dimension filters inside, making it explicit that customer_demographics/date_dim/promotion are filters on store_sales, not row-multiplying joins, and allowing the planner to apply them before the item join/grouping.\n\n3. TWO-PHASE AGGREGATION \u2014 TARGET: store_sales.ss_item_sk \u2192 item.i_item_id \u2014 TRANSFORMATION: First group the filtered store_sales rows by ss_item_sk and carry SUM/COUNT for ss_quantity, ss_list_price, ss_coupon_amt, and ss_sales_price; then join item on i_item_sk and group by i_item_id using weighted AVG values, so the final GROUP BY/ORDER BY/LIMIT operates on at most one row per item_sk instead of on the full qualified fact row set.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 5707.512,
+      "optimized_ms": 2982.275,
+      "delta_ms": 2725.237,
+      "improvement_pct": 47.75,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 118656.63,
+      "optimized": 1381085.86,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 285710.0,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 9614.2,
+    "total_inference_ms": 295324.2,
+    "writer_inference_ms": 1207767.8,
+    "writer_tokens_in": 5618,
+    "writer_tokens_out": 132376,
+    "writer_calls": 4
+  },
+  "errors": [],
+  "strategy": "1. BITMAP FACT-FILTER \u2014 TARGET: store_sales.ss_cdemo_sk, ss_sold_date_sk, ss_promo_sk \u2014 TRANSFORMATION: Create single-column btree indexes on those three fact FK columns and bitmap-intersect the filtered dimension key sets (female/widowed/College customer_demographics, d_year=2001 date_dim, promotion OR-condition) before any join or aggregation, so the 57.6M-row store_sales scan is reduced to only the rows that can survive the dimension filters.\n\n2. EXISTENCE-PREDICATE REWRITE \u2014 TARGET: the three inner joins to customer_demographics, date_dim, and promotion \u2014 TRANSFORMATION: Rewrite those dimension joins as correlated existence predicates on the fact FK columns with the selective dimension filters inside, making it explicit that customer_demographics/date_dim/promotion are filters on store_sales, not row-multiplying joins, and allowing the planner to apply them before the item join/grouping.\n\n3. TWO-PHASE AGGREGATION \u2014 TARGET: store_sales.ss_item_sk \u2192 item.i_item_id \u2014 TRANSFORMATION: First group the filtered store_sales rows by ss_item_sk and carry SUM/COUNT for ss_quantity, ss_list_price, ss_coupon_amt, and ss_sales_price; then join item on i_item_sk and group by i_item_id using weighted AVG values, so the final GROUP BY/ORDER BY/LIMIT operates on at most one row per item_sk instead of on the full qualified fact row set.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was EXISTENCE-PREDICATE REWRITE, and the rewrite explicitly replaces the inner joins with EXISTS clauses on the fact table, applying the dimension filters as e"
+  },
+  "raw_sql": "select i_item_id, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 from store_sales, customer_demographics, date_dim, item, promotion where ss_sold_date_sk = d_date_sk and ss_item_sk = i_item_sk and ss_cdemo_sk = cd_demo_sk and ss_promo_sk = p_promo_sk and cd_gender = 'F' and cd_marital_status = 'W' and cd_education_status = 'College' and (p_channel_email = 'N' or p_channel_event = 'N') and d_year = 2001 group by i_item_id order by i_item_id limit 100"
+}

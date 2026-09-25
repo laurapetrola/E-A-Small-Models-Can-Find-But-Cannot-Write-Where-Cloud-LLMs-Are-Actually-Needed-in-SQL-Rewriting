@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-08-26T21:58:53.629540",
+  "query_hash": "092369ddef36",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "materialize CTEs"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 453520.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_slice AS (\n    SELECT d_year,\n           MIN(d_date_sk) AS min_d_date_sk,\n           MAX(d_date_sk) AS max_d_date_sk\n    FROM date_dim\n    WHERE d_year IN (1998, 1998 + 1)\n    GROUP BY d_year\n),\nweb_summary AS (\n    SELECT ws_bill_customer_sk AS customer_sk,\n           'w' AS sale_type,\n           SUM(CASE WHEN ds.d_year = 1998 THEN ws_ext_list_price - ws_ext_discount_amt END) AS w_1998,\n           SUM(CASE WHEN ds.d_year = 1998 + 1 THEN ws_ext_list_price - ws_ext_discount_amt END) AS w_1999,\n           COUNT(CASE WHEN ds.d_year = 1998 THEN 1 END) AS w_1998_cnt,\n           COUNT(CASE WHEN ds.d_year = 1998 + 1 THEN 1 END) AS w_1999_cnt\n    FROM web_sales\n    JOIN date_slice ds ON ws_sold_date_sk BETWEEN ds.min_d_date_sk AND ds.max_d_date_sk\n    GROUP BY ws_bill_customer_sk\n),\nweb_pruned AS (\n    SELECT customer_sk,\n           sale_type,\n           w_1998,\n           w_1999,\n           w_1998_cnt,\n           w_1999_cnt\n    FROM web_summary\n    WHERE w_1998_cnt > 0\n      AND w_1998 > 0\n      AND w_1999_cnt > 0\n),\nstore_summary AS (\n    SELECT ss_customer_sk AS customer_sk,\n           's' AS sale_type,\n           SUM(CASE WHEN ds.d_year = 1998 THEN ss_ext_list_price - ss_ext_discount_amt END) AS s_1998,\n           SUM(CASE WHEN ds.d_year = 1998 + 1 THEN ss_ext_list_price - ss_ext_discount_amt END) AS s_1999,\n           COUNT(CASE WHEN ds.d_year = 1998 THEN 1 END) AS s_1998_cnt,\n           COUNT(CASE WHEN ds.d_year = 1998 + 1 THEN 1 END) AS s_1999_cnt\n    FROM store_sales\n    JOIN date_slice ds ON ss_sold_date_sk BETWEEN ds.min_d_date_sk AND ds.max_d_date_sk\n    WHERE EXISTS (SELECT 1 FROM web_pruned wp WHERE wp.customer_sk = store_sales.ss_customer_sk)\n    GROUP BY ss_customer_sk\n)\nSELECT c.c_customer_id AS customer_id,\n       c.c_first_name AS customer_first_name,\n       c.c_last_name AS customer_last_name,\n       c.c_email_address AS customer_email_address\nFROM store_summary st\nJOIN web_pruned wt ON wt.customer_sk = st.customer_sk\nJOIN customer c ON c.c_customer_sk = st.customer_sk\nWHERE st.sale_type = 's'\n  AND wt.sale_type = 'w'\n  AND st.s_1998_cnt > 0\n  AND st.s_1998 > 0\n  AND st.s_1999_cnt > 0\n  AND wt.w_1998_cnt > 0\n  AND wt.w_1998 > 0\n  AND wt.w_1999_cnt > 0\n  AND CASE WHEN wt.w_1998 > 0 THEN wt.w_1999 / wt.w_1998 ELSE 0.0 END\n    > CASE WHEN st.s_1998 > 0 THEN st.s_1999 / st.s_1998 ELSE 0.0 END\nORDER BY c.c_customer_id,\n         c.c_first_name,\n         c.c_last_name,\n         c.c_email_address\nLIMIT 100",
+  "reasoning_trace": "1. DATE-SLICE PUSHDOWN \u2014 TARGET: the `store_sales`/`web_sales` \u00d7 `date_dim` joins in both `year_total` branches \u2014 TRANSFORMATION: precompute the `d_date_sk` ranges for `d_year = 1998` and `d_year = 1999` and scan only those date slices of `store_sales` and `web_sales`, removing the all-years aggregation and the per-row `date_dim` join.\n\n2. CROSS-CHANNEL SEMI-JOIN PRUNING \u2014 TARGET: the 57M-row `store_sales` aggregation branch \u2014 TRANSFORMATION: first compute the set of `c_customer_sk` values that satisfy the web-side requirements (positive 1998 web total and an existing 1999 web total), then restrict the `store_sales` aggregation to only those customers, discarding store customers that cannot appear in the final result before the large aggregation.\n\n3. CONDITIONAL PIVOT AGGREGATION \u2014 TARGET: the four `year_total` references (`t_s_firstyear`, `t_s_secyear`, `t_w_firstyear`, `t_w_secyear`) and the final four-way self-join on `customer_id` \u2014 TRANSFORMATION: aggregate each channel once per `c_customer_sk` with separate conditional sums for 1998 and 1999, then join the resulting one-row-per-customer store and web summaries on `c_customer_sk`, eliminating the four-way CTE self-join and the separate 1998/1999 rows.\n\n4. DEFERRED CUSTOMER ENRICHMENT \u2014 TARGET: the early `customer` joins and the seven-column aggregation in each branch \u2014 TRANSFORMATION: aggregate fact rows first using only `ss_customer_sk`/`ws_bill_customer_sk`, then join `customer` after aggregation to fetch `customer_id`, `customer_first_name`, `customer_last_name`, and `customer_email_address`, so the large hash aggregation does not group by customer text columns.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 29037835.09,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 409178.4,
+    "index_advisor_inference_ms": 30887.0,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 13455.1,
+    "total_inference_ms": 453520.5,
+    "writer_inference_ms": 2179097.4,
+    "writer_tokens_in": 14852,
+    "writer_tokens_out": 243243,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Optimized query execution error: (psycopg2.errors.QueryCanceled) canceling statement due to statement timeout\n\n[SQL: SELECT * FROM (WITH date_slice AS (\n    SELECT d_year,\n           MIN(d_date_sk) AS min_d_date_sk,\n           MAX(d_date_sk) AS max_d_date_sk\n    FROM date_dim\n    WHERE d_year IN (1998, 1998 + 1)\n    GROUP BY d_year\n),\nweb_summary AS (\n    SELECT ws_bill_customer_sk AS customer_sk,\n           'w' AS sale_type,\n           SUM(CASE WHEN ds.d_year = 1998 THEN ws_ext_list_price - ws_ext_discount_amt END) AS w_1998,\n           SUM(CASE WHEN ds.d_year = 1998 + 1 THEN ws_ext_list_price - ws_ext_discount_amt END) AS w_1999,\n           COUNT(CASE WHEN ds.d_year = 1998 THEN 1 END) AS w_1998_cnt,\n           COUNT(CASE WHEN ds.d_year = 1998 + 1 THEN 1 END) AS w_1999_cnt\n    FROM web_sales\n    JOIN date_slice ds ON ws_sold_date_sk BETWEEN ds.min_d_date_sk AND ds.max_d_date_sk\n    GROUP BY ws_bill_customer_sk\n),\nweb_pruned AS (\n    SELECT customer_sk,\n           sale_type,\n           w_1998,\n           w_1999,\n           w_1998_cnt,\n           w_1999_cnt\n    FROM web_summary\n    WHERE w_1998_cnt > 0\n      AND w_1998 > 0\n      AND w_1999_cnt > 0\n),\nstore_summary AS (\n    SELECT ss_customer_sk AS customer_sk,\n           's' AS sale_type,\n           SUM(CASE WHEN ds.d_year = 1998 THEN ss_ext_list_price - ss_ext_discount_amt END) AS s_1998,\n           SUM(CASE WHEN ds.d_year = 1998 + 1 THEN ss_ext_list_price - ss_ext_discount_amt END) AS s_1999,\n           COUNT(CASE WHEN ds.d_year = 1998 THEN 1 END) AS s_1998_cnt,\n           COUNT(CASE WHEN ds.d_year = 1998 + 1 THEN 1 END) AS s_1999_cnt\n    FROM store_sales\n    JOIN date_slice ds ON ss_sold_date_sk BETWEEN ds.min_d_date_sk AND ds.max_d_date_sk\n    WHERE EXISTS (SELECT 1 FROM web_pruned wp WHERE wp.customer_sk = store_sales.ss_customer_sk)\n    GROUP BY ss_customer_sk\n)\nSELECT c.c_customer_id AS customer_id,\n       c.c_first_name AS customer_first_name,\n       c.c_last_name AS customer_last_name,\n       c.c_email_address AS customer_email_address\nFROM store_summary st\nJOIN web_pruned wt ON wt.customer_sk = st.customer_sk\nJOIN customer c ON c.c_customer_sk = st.customer_sk\nWHERE st.sale_type = 's'\n  AND wt.sale_type = 'w'\n  AND st.s_1998_cnt > 0\n  AND st.s_1998 > 0\n  AND st.s_1999_cnt > 0\n  AND wt.w_1998_cnt > 0\n  AND wt.w_1998 > 0\n  AND wt.w_1999_cnt > 0\n  AND CASE WHEN wt.w_1998 > 0 THEN wt.w_1999 / wt.w_1998 ELSE 0.0 END\n    > CASE WHEN st.s_1998 > 0 THEN st.s_1999 / st.s_1998 ELSE 0.0 END\nORDER BY c.c_customer_id,\n         c.c_first_name,\n         c.c_last_name,\n         c.c_email_address\nLIMIT 100) AS _sample ORDER BY 1, 2, 3, 4 LIMIT 100]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)",
+    "Data_Loss_Detected: filter 't_s_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_secyear.dyear = 1998 + 1' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_secyear.dyear = 1998 + 1' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_firstyear.year_total > 0' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.year_total > 0' was removed or altered"
+  ],
+  "strategy": "1. DATE-SLICE PUSHDOWN \u2014 TARGET: the `store_sales`/`web_sales` \u00d7 `date_dim` joins in both `year_total` branches \u2014 TRANSFORMATION: precompute the `d_date_sk` ranges for `d_year = 1998` and `d_year = 1999` and scan only those date slices of `store_sales` and `web_sales`, removing the all-years aggregation and the per-row `date_dim` join.\n\n2. CROSS-CHANNEL SEMI-JOIN PRUNING \u2014 TARGET: the 57M-row `store_sales` aggregation branch \u2014 TRANSFORMATION: first compute the set of `c_customer_sk` values that satisfy the web-side requirements (positive 1998 web total and an existing 1999 web total), then restrict the `store_sales` aggregation to only those customers, discarding store customers that cannot appear in the final result before the large aggregation.\n\n3. CONDITIONAL PIVOT AGGREGATION \u2014 TARGET: the four `year_total` references (`t_s_firstyear`, `t_s_secyear`, `t_w_firstyear`, `t_w_secyear`) and the final four-way self-join on `customer_id` \u2014 TRANSFORMATION: aggregate each channel once per `c_customer_sk` with separate conditional sums for 1998 and 1999, then join the resulting one-row-per-customer store and web summaries on `c_customer_sk`, eliminating the four-way CTE self-join and the separate 1998/1999 rows.\n\n4. DEFERRED CUSTOMER ENRICHMENT \u2014 TARGET: the early `customer` joins and the seven-column aggregation in each branch \u2014 TRANSFORMATION: aggregate fact rows first using only `ss_customer_sk`/`ws_bill_customer_sk`, then join `customer` after aggregation to fetch `customer_id`, `customer_first_name`, `customer_last_name`, and `customer_email_address`, so the large hash aggregation does not group by customer text columns.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was DATE-SLICE PUSHDOWN, and the rewrite applies it by precomputing date ranges for 1998 and 1999 and filtering the sales tables to those ranges."
+  },
+  "raw_sql": "with year_total as ( select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ss_ext_list_price-ss_ext_discount_amt) year_total ,'s' sale_type from customer ,store_sales ,date_dim where c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year union all select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ws_ext_list_price-ws_ext_discount_amt) year_total ,'w' sale_type from customer ,web_sales ,date_dim where c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year ) select t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address from year_total t_s_firstyear ,year_total t_s_secyear ,year_total t_w_firstyear ,year_total t_w_secyear where t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id and t_s_firstyear.sale_type = 's' and t_w_firstyear.sale_type = 'w' and t_s_secyear.sale_type = 's' and t_w_secyear.sale_type = 'w' and t_s_firstyear.dyear = 1998 and t_s_secyear.dyear = 1998+1 and t_w_firstyear.dyear = 1998 and t_w_secyear.dyear = 1998+1 and t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0 and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end order by t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address limit 100"
+}

@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-08-26T13:25:10.562325",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "materialize intermediate results",
+    "pre-filter large tables into CTEs",
+    "use INTERSECT to find common items",
+    "split full outer join into separate joins with intersected items",
+    "use COALESCE for full outer join handling",
+    "materialize date filter into CTE",
+    "split daily sales into separate CTEs",
+    "combine sources with union all",
+    "pre-aggregate daily sales",
+    "join with date_range CTE",
+    "materialize intermediate result",
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "convert an IN subquery to a semi-join",
+    "materialize intermediate result sets",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": -58.27,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 667117.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_range AS MATERIALIZED (\n    SELECT d_date_sk, d_date\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1212 AND 1212 + 11\n),\nweb_sales_by_day AS MATERIALIZED (\n    SELECT\n        ws_item_sk AS item_sk,\n        ws_sold_date_sk AS sold_date_sk,\n        SUM(ws_sales_price) AS web_daily,\n        COUNT(*) AS web_present\n    FROM web_sales\n    WHERE ws_item_sk IS NOT NULL\n      AND ws_sold_date_sk IN (SELECT d_date_sk FROM date_range)\n    GROUP BY ws_item_sk, ws_sold_date_sk\n),\nstore_sales_by_day AS MATERIALIZED (\n    SELECT\n        ss_item_sk AS item_sk,\n        ss_sold_date_sk AS sold_date_sk,\n        SUM(ss_sales_price) AS store_daily,\n        COUNT(*) AS store_present\n    FROM store_sales\n    WHERE ss_item_sk IS NOT NULL\n      AND ss_sold_date_sk IN (SELECT d_date_sk FROM date_range)\n    GROUP BY ss_item_sk, ss_sold_date_sk\n),\nweb_daily_all AS MATERIALIZED (\n    SELECT\n        w.item_sk,\n        dr.d_date,\n        w.web_daily,\n        w.web_present\n    FROM web_sales_by_day w\n    JOIN date_range dr ON w.sold_date_sk = dr.d_date_sk\n),\nstore_daily_all AS MATERIALIZED (\n    SELECT\n        s.item_sk,\n        dr.d_date,\n        s.store_daily,\n        s.store_present\n    FROM store_sales_by_day s\n    JOIN date_range dr ON s.sold_date_sk = dr.d_date_sk\n),\nintersect_items AS MATERIALIZED (\n    SELECT item_sk FROM web_daily_all\n    INTERSECT\n    SELECT item_sk FROM store_daily_all\n),\nweb_daily AS MATERIALIZED (\n    SELECT\n        w.item_sk,\n        w.d_date,\n        w.web_daily,\n        w.web_present\n    FROM web_daily_all w\n    JOIN intersect_items i USING (item_sk)\n    ORDER BY w.item_sk, w.d_date\n),\nstore_daily AS MATERIALIZED (\n    SELECT\n        s.item_sk,\n        s.d_date,\n        s.store_daily,\n        s.store_present\n    FROM store_daily_all s\n    JOIN intersect_items i USING (item_sk)\n    ORDER BY s.item_sk, s.d_date\n),\ncombined AS MATERIALIZED (\n    SELECT\n        COALESCE(w.item_sk, s.item_sk) AS item_sk,\n        COALESCE(w.d_date, s.d_date) AS d_date,\n        w.web_daily,\n        w.web_present,\n        s.store_daily,\n        s.store_present\n    FROM web_daily w\n    FULL OUTER JOIN store_daily s\n        ON w.item_sk = s.item_sk AND w.d_date = s.d_date\n    ORDER BY COALESCE(w.item_sk, s.item_sk), COALESCE(w.d_date, s.d_date)\n)\nSELECT\n    item_sk,\n    d_date,\n    CASE WHEN web_present IS NOT NULL THEN web_cume ELSE NULL END AS web_sales,\n    CASE WHEN store_present IS NOT NULL THEN store_cume ELSE NULL END AS store_sales,\n    web_cume AS web_cumulative,\n    store_cume AS store_cumulative\nFROM (\n    SELECT\n        c.item_sk,\n        c.d_date,\n        c.web_present,\n        c.store_present,\n        SUM(c.web_daily) OVER (\n            PARTITION BY c.item_sk\n            ORDER BY c.d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS web_cume,\n        SUM(c.store_daily) OVER (\n            PARTITION BY c.item_sk\n            ORDER BY c.d_date\n            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n        ) AS store_cume\n    FROM combined c\n) sales_cume\nWHERE web_cume > store_cume\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reasoning_trace": "1. **DATE-RANGE COVERING INDEX ACCESS** \u2014 TARGET: the `store_sales`/`date_dim` and `web_sales`/`date_dim` joins filtered by `d_month_seq between 1212 and 1212+11` \u2014 TRANSFORMATION: precompute the 12-month `d_date_sk` set and use covering indexes on `store_sales(ss_sold_date_sk, ss_item_sk) INCLUDE (ss_sales_price)` and `web_sales(ws_sold_date_sk, ws_item_sk) INCLUDE (ws_sales_price)` so both fact scans become index-only range scans over exactly the target dates instead of full fact-table scans plus a hash join to the full `date_dim`.\n\n2. **DEFER CUMULATIVE WINDOWS TO COMBINED ROWS** \u2014 TARGET: `web_v1`/`store_v1` `sum(sum(...)) over (...) cume_sales` and the outer `max(web_sales) over ...` / `max(store_sales) over ...` windows in subquery `y` \u2014 TRANSFORMATION: reduce both CTEs to plain `(item_sk, d_date, sum(sales_price))` daily aggregates and compute each channel\u2019s carried-forward cumulative total as a running `sum` over the combined `(item_sk, d_date)` rows after the full join, preserving NULL before a channel\u2019s first sale; this avoids four partition/order window passes.\n\n3. **CHANNEL-INTERSECTION SEMIJOIN** \u2014 TARGET: the inputs to `web_v1 web FULL OUTER JOIN store_v1 store` \u2014 TRANSFORMATION: filter both daily channel series to `item_sk` values that also appear in the other channel\u2019s daily series before the full join; any item with sales in only one channel always has NULL `web_cumulative` or `store_cumulative` and can never satisfy `web_cumulative > store_cumulative`, so it can be discarded early.\n\n4. **ORDER-PRESERVING MERGE FULL OUTER JOIN** \u2014 TARGET: `web_v1 web FULL OUTER JOIN store_v1 store ON (web.item_sk = store.item_sk and web.d_date = store.d_date)` \u2014 TRANSFORMATION: materialize the semijoin-reduced channel series sorted by `(item_sk, d_date)` and perform the full outer join as a merge join, producing rows already in the `(item_sk, d_date)` order needed by the cumulative calculations and the final `ORDER BY`.\n\n5. **STREAMING TOP-K TERMINATION** \u2014 TARGET: final `WHERE web_cumulative > store_cumulative ORDER BY item_sk, d_date LIMIT 100` \u2014 TRANSFORMATION: with the merge join emitting rows in final order, evaluate the cumulative comparison incrementally and stop as soon as 100 qualifying rows are found, avoiding computation of windows or joins for any later `item_sk` values.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 20698.763,
+      "optimized_ms": 32760.242,
+      "delta_ms": -12061.479,
+      "improvement_pct": -58.27,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1931659.4,
+      "optimized": 491321772.17,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 633037.5,
+    "index_advisor_inference_ms": 22623.6,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 11456.5,
+    "total_inference_ms": 667117.6,
+    "writer_inference_ms": 1834794.1,
+    "writer_tokens_in": 14330,
+    "writer_tokens_out": 211829,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1931659.40 \u2192 optimized=491321772.17 (+25335.2%)",
+    "Execution time regression: 20698.763ms \u2192 32760.242ms"
+  ],
+  "strategy": "1. **DATE-RANGE COVERING INDEX ACCESS** \u2014 TARGET: the `store_sales`/`date_dim` and `web_sales`/`date_dim` joins filtered by `d_month_seq between 1212 and 1212+11` \u2014 TRANSFORMATION: precompute the 12-month `d_date_sk` set and use covering indexes on `store_sales(ss_sold_date_sk, ss_item_sk) INCLUDE (ss_sales_price)` and `web_sales(ws_sold_date_sk, ws_item_sk) INCLUDE (ws_sales_price)` so both fact scans become index-only range scans over exactly the target dates instead of full fact-table scans plus a hash join to the full `date_dim`.\n\n2. **DEFER CUMULATIVE WINDOWS TO COMBINED ROWS** \u2014 TARGET: `web_v1`/`store_v1` `sum(sum(...)) over (...) cume_sales` and the outer `max(web_sales) over ...` / `max(store_sales) over ...` windows in subquery `y` \u2014 TRANSFORMATION: reduce both CTEs to plain `(item_sk, d_date, sum(sales_price))` daily aggregates and compute each channel\u2019s carried-forward cumulative total as a running `sum` over the combined `(item_sk, d_date)` rows after the full join, preserving NULL before a channel\u2019s first sale; this avoids four partition/order window passes.\n\n3. **CHANNEL-INTERSECTION SEMIJOIN** \u2014 TARGET: the inputs to `web_v1 web FULL OUTER JOIN store_v1 store` \u2014 TRANSFORMATION: filter both daily channel series to `item_sk` values that also appear in the other channel\u2019s daily series before the full join; any item with sales in only one channel always has NULL `web_cumulative` or `store_cumulative` and can never satisfy `web_cumulative > store_cumulative`, so it can be discarded early.\n\n4. **ORDER-PRESERVING MERGE FULL OUTER JOIN** \u2014 TARGET: `web_v1 web FULL OUTER JOIN store_v1 store ON (web.item_sk = store.item_sk and web.d_date = store.d_date)` \u2014 TRANSFORMATION: materialize the semijoin-reduced channel series sorted by `(item_sk, d_date)` and perform the full outer join as a merge join, producing rows already in the `(item_sk, d_date)` order needed by the cumulative calculations and the final `ORDER BY`.\n\n5. **STREAMING TOP-K TERMINATION** \u2014 TARGET: final `WHERE web_cumulative > store_cumulative ORDER BY item_sk, d_date LIMIT 100` \u2014 TRANSFORMATION: with the merge join emitting rows in final order, evaluate the cumulative comparison incrementally and stop as soon as 100 qualifying rows are found, avoiding computation of windows or joins for any later `item_sk` values.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was **channel-intersection semi-join** (filtering items present in both channels), and the rewrite implements this via `INTERSECT` on `item_sk` before joining,"
+  },
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-08-27T07:30:25.723397",
+  "query_hash": "cddbdcb96bc9",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "materialize intermediate results"
+  ],
+  "improvement_pct": -14.14,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 431070.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_item AS (\n    SELECT i_item_sk, i_brand_id, i_brand\n    FROM item\n    WHERE i_manufact_id = 816\n),\nnovember_dates AS (\n    SELECT d_date_sk, d_year\n    FROM date_dim\n    WHERE d_moy = 11\n),\nsales_by_item_year AS (\n    SELECT ss.ss_item_sk, nd.d_year, SUM(ss.ss_sales_price) AS partial_sum\n    FROM filtered_item fi\n    JOIN store_sales ss ON ss.ss_item_sk = fi.i_item_sk\n    JOIN november_dates nd ON ss.ss_sold_date_sk = nd.d_date_sk\n    GROUP BY ss.ss_item_sk, nd.d_year\n)\nSELECT s.d_year, fi.i_brand_id AS brand_id, fi.i_brand AS brand, SUM(s.partial_sum) AS sum_agg\nFROM sales_by_item_year s\nJOIN filtered_item fi ON s.ss_item_sk = fi.i_item_sk\nGROUP BY s.d_year, fi.i_brand_id, fi.i_brand\nORDER BY s.d_year, sum_agg DESC, brand_id\nLIMIT 100",
+  "reasoning_trace": "1. COVERING INDEX \u2014 TARGET: `store_sales(ss_item_sk, ss_sold_date_sk) INCLUDE (ss_sales_price)` \u2014 TRANSFORMATION: Build this covering index so the small `item.i_manufact_id = 816` filter can drive indexed probes into `store_sales`, eliminating the full 57.6M-row fact scan.\n\n2. JOIN ORDER \u2014 TARGET: item \u2192 store_sales \u2192 date_dim \u2014 TRANSFORMATION: Start from the tiny filtered `item` result, probe `store_sales` by `ss_item_sk` through the covering index, then join only the `date_dim` rows with `d_moy = 11` to get `d_year`; this removes all non-matching and non-November fact rows before aggregation.\n\n3. PARTIAL PRE-AGGREGATION \u2014 TARGET: fact rows grouped by `(ss_item_sk, d_year)` \u2014 TRANSFORMATION: After joining the filtered `date_dim`, aggregate `SUM(ss_sales_price)` by item and year first, collapsing the surviving fact rows to one row per item per November-year before brand-level grouping.\n\n4. FINAL GROUP BY + TOP-N \u2014 TARGET: `d_year`, `i_brand_id`, `i_brand` \u2014 TRANSFORMATION: Join the pre-aggregated result to the filtered `item` rows, group by the three final dimensions, sum the partial aggregates, and apply `ORDER BY d_year, sum_agg DESC, brand_id LIMIT 100` only to the small grouped result.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 145.085,
+      "optimized_ms": 165.596,
+      "delta_ms": -20.511,
+      "improvement_pct": -14.14,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 129370.1,
+      "optimized": 217855.73,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 412561.9,
+    "index_advisor_inference_ms": 14072.5,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 4436.1,
+    "total_inference_ms": 431070.5,
+    "writer_inference_ms": 1231685.4,
+    "writer_tokens_in": 7214,
+    "writer_tokens_out": 156015,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=129370.10 \u2192 optimized=217855.73 (+68.4%)",
+    "Execution time regression: 145.085ms \u2192 165.596ms"
+  ],
+  "strategy": "1. COVERING INDEX \u2014 TARGET: `store_sales(ss_item_sk, ss_sold_date_sk) INCLUDE (ss_sales_price)` \u2014 TRANSFORMATION: Build this covering index so the small `item.i_manufact_id = 816` filter can drive indexed probes into `store_sales`, eliminating the full 57.6M-row fact scan.\n\n2. JOIN ORDER \u2014 TARGET: item \u2192 store_sales \u2192 date_dim \u2014 TRANSFORMATION: Start from the tiny filtered `item` result, probe `store_sales` by `ss_item_sk` through the covering index, then join only the `date_dim` rows with `d_moy = 11` to get `d_year`; this removes all non-matching and non-November fact rows before aggregation.\n\n3. PARTIAL PRE-AGGREGATION \u2014 TARGET: fact rows grouped by `(ss_item_sk, d_year)` \u2014 TRANSFORMATION: After joining the filtered `date_dim`, aggregate `SUM(ss_sales_price)` by item and year first, collapsing the surviving fact rows to one row per item per November-year before brand-level grouping.\n\n4. FINAL GROUP BY + TOP-N \u2014 TARGET: `d_year`, `i_brand_id`, `i_brand` \u2014 TRANSFORMATION: Join the pre-aggregated result to the filtered `item` rows, group by the three final dimensions, sum the partial aggregates, and apply `ORDER BY d_year, sum_agg DESC, brand_id LIMIT 100` only to the small grouped result.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique is join reorder and partial pre-aggregation, and the rewrite applies the same by filtering item first, joining with store_sales and date_dim in the correct ord"
+  },
+  "raw_sql": "select dt.d_year ,item.i_brand_id brand_id ,item.i_brand brand ,sum(ss_sales_price) sum_agg from date_dim dt ,store_sales ,item where dt.d_date_sk = store_sales.ss_sold_date_sk and store_sales.ss_item_sk = item.i_item_sk and item.i_manufact_id = 816 and dt.d_moy=11 group by dt.d_year ,item.i_brand ,item.i_brand_id order by dt.d_year ,sum_agg desc ,brand_id limit 100"
+}

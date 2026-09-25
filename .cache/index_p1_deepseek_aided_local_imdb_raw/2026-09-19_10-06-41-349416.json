@@ -1,0 +1,225 @@
+{
+  "timestamp": "2026-09-19T10:06:41.348983",
+  "query_hash": "9bfc8af68b00",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: 'ci.note LIKE '%(voice)%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope."
+  ],
+  "workload_aware": false,
+  "inference_ms": 1362145.3,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables. The goal is to identify the index(es) that would most reduce the execution cost.\n\nFirst, let's break down the query:\n\nThe query is trying to find the minimum credited actor's name and the minimum movie title for Russian movies from 2006 onward that have an uncredited voice actor.\n\nThe query joins several tables: char_name, cast_info, company_name, company_type, movie_companies, role_type, and title.\n\nThe conditions are:\n1. ci.note LIKE '%(voice)%' AND ci.note LIKE '%(uncredited)%'\n2. cn.country_code = '[ru]'\n3. rt.role = 'actor'\n4. t.production_year > 2005\n\nWe are told that the hint for the first condition (ci.note LIKE '%(voice)%') is non-sargable and requires a trigram/GIN index. However, note that the condition uses two LIKE patterns with a leading '%'. This is not sargable and cannot be effectively indexed with a B-tree. The hint says that a trigram/GIN index is required, but note that the database has the pg_trgm extension. However, the instructions say that we are only to consider indexes that are not already present and that we are to return a JSON structure.\n\nBut note: the query has multiple tables and conditions. We must look for Seq Scans on large tables.\n\nLooking at the physical execution plan is not available, but we can analyze the query structure.\n\nThe tables involved and their approximate row counts (from the schema provided) are:\n\n- cast_info: 36,244,344 rows\n- char_name: 3,140,339 rows (no index)\n- company_name: 234,997 rows (no index)\n- company_type: 4 rows (no index)\n- movie_companies: 2,609,129 rows\n- role_type: 12 rows (no index)\n- title: 2,528,312 rows\n\nThe query does a join between these tables. The conditions are:\n\n- t.id = mc.movie_id (from title and movie_companies)\n- t.id = ci.movie_id (from title and cast_info)\n- ci.movie_id = mc.movie_id (from cast_info and movie_companies) -> redundant with the above\n- chn.id = ci.person_role_id (from char_name and cast_info)\n- rt.id = ci.role_id (from role_type and cast_info)\n- cn.id = mc.company_id (from company_name and movie_companies)\n- ct.id = mc.company_type_id (from company_type and movie_companies)\n\nAlso, the condition on cn.country_code is '[ru]' (which is a constant, so it might be a filter on company_name.country_code).\n\nNow, let's consider the potential bottlenecks:\n\n1. The condition on cast_info.note: two LIKE patterns with leading '%'. This is non-sargable and cannot be indexed with B-tree. The hint says that a trigram/GIN index is required. However, note that the table cast_info has an index on note? Actually, the schema provided for cast_info does not list an index on note. But the hint says that the condition is non-sargable and requires a trigram/GIN index. However, the instructions say that we are to consider only columns that are causing a Seq Scan. Since the condition on note is non-sargable, it will cause a Seq Scan on cast_info. But note that the query is joining cast_info with other tables, so the entire cast_info table might be scanned.\n\nBut wait, the condition on note is in the WHERE clause and is applied to cast_info. Since it's non-sargable, the entire table might be scanned. However, note that the query is also filtering by other conditions (like t.production_year) and joining with other tables. The Seq Scan on cast_info might be the most expensive part.\n\nBut note: the condition on note is two separate LIKE conditions. We cannot index that with B-tree, but we can use a GIN or GiST index with trigrams. However, the instructions say that we are to return a JSON structure with the index recommendations. We are allowed to use the pg_trgm extension.\n\nBut note: the instructions say that we are to consider only columns that are causing a Seq Scan. The condition on note is causing a Seq Scan on cast_info. However, the condition on note is not the only condition on cast_info. There are also conditions on movie_id, person_role_id, and role_id.\n\nBut note: the query is joining cast_info with other tables. The conditions on cast_info are:\n\n- t.id = ci.movie_id (from title and cast_info)\n- ci.movie_id = mc.movie_id (from movie_companies and cast_info) -> redundant\n- chn.id = ci.person_role_id (from char_name and cast_info)\n- rt.id = ci.role_id (from role_type and cast_info)\n\nSo, the conditions on cast_info are movie_id, person_role_id, and role_id. These columns are already indexed (movie_id, person_role_id, role_id). So, the join conditions on these columns are covered by existing indexes.\n\nBut the condition on note is not covered by any index. Therefore, the Seq Scan on cast_info is due to the note condition.\n\nHowever, note that the condition on note is two LIKE patterns. We can create a GIN index on the note column using the trigram operator class. This would allow the query to use the index for the LIKE conditions, but note that the leading '%' makes it non-selective. However, the index can still help by allowing the query to quickly find rows that match the pattern, even if it's a full scan of the index. But note that the condition is two separate LIKE conditions. We might need to index the note column for trigram matching.\n\nBut wait, the hint says: \"The correct response is no_change: true. a trigram/GIN index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope.\" However, the instructions say that we are to return an index recommendation. But note that the instructions also say: \"If multiple scans exist, order the indexes by the number of rows scanned \u2014 largest first.\"\n\nBut note: the condition on note is non-sargable and cannot be effectively indexed with B-tree. The only way to index it is with a GIN or GiST index using trigrams. However, the instructions say that we are to return the index recommendations in the JSON structure.\n\nBut note: the condition on company_name.country_code is a constant. This condition is on company_name.country_code. The table company_name has no index. This condition might cause a Seq Scan on company_name if it is not covered by an index.\n\nAlso, the condition on role_type.role is a constant. The table role_type has no index. But role_type has only 12 rows, so it might not be a problem.\n\nThe condition on title.production_year is a range condition (t.production_year > 2005). This is a B-tree condition and can be covered by an index on title.production_year. But note that the title table has an index on kind_id, but not on production_year. So, this condition might cause a Seq Scan on title.\n\nBut note: the query is joining title with cast_info and movie_companies. The condition on title.production_year is a filter. We can create an index on title.production_year to avoid a Seq Scan.\n\nNow, let's consider the tables that might be causing Seq Scans:\n\n1. cast_info: because of the condition on note (non-sargable).\n2. company_name: because of the condition on country_code (constant, but the table has no index).\n3. title: because of the condition on production_year (no index on that column).\n\nBut note: the query is joining these tables. The order of joins might matter. However, without the execution plan, we must rely on the schema.\n\nNow, let's look at the joins:\n\nThe query is joining:\n- char_name (chn) with cast_info (ci) via chn.id = ci.person_role_id\n- cast_info (ci) with title (t) via t.id = ci.movie_id\n- cast_info (ci) with movie_companies (mc) via ci.movie_id = mc.movie_id (redundant with the above)\n- movie_companies (mc) with company_name (cn) via cn.id = mc.company_id\n- movie_companies (mc) with company_type (ct) via ct.id = mc.company_type_id\n- role_type (rt) with cast_info (ci) via rt.id = ci.role_id\n\nThe condition on company_name.country_code is a filter on company_name. This condition might be applied after the join with movie_companies and company_name. But note that the condition is on company_name.country_code, so it is a filter on company_name. Without an index on company_name.country_code, a Seq Scan on company_name might occur.\n\nSimilarly, the condition on title.production_year is a filter on title. Without an index on title.production_year, a Seq Scan on title might occur.\n\nNow, let's consider the existing indexes:\n\n- cast_info: indexes on movie_id, person_id, person_role_id, role_id.\n- movie_companies: indexes on movie_id, company_id, company_type_id.\n- title: index on kind_id.\n\nWe are to recommend indexes that do not already exist.\n\nSo, we can recommend:\n\n1. An index on cast_info.note to support the LIKE conditions. Since the condition is non-sargable, we can use a GIN index with trigram. But note that the condition is two separate LIKE conditions. We can index the note column with a trigram index.\n\n2. An index on company_name.country_code to support the condition cn.country_code = '[ru]'.\n\n3. An index on title.production_year to support the condition t.production_year > 2005.\n\nBut note: the condition on note is two LIKE conditions. We can create a GIN index on cast_info.note using the trigram operator class. This would allow the query to use the index for the LIKE conditions.\n\nAlso, note that the condition on company_name.country_code is a constant. We can create a B-tree index on company_name.country_code.\n\nSimilarly, we can create a B-tree index on title.production_year.\n\nNow, let's order by the number of rows scanned (largest first):\n\n1. cast_info: 36 million rows. The condition on note is non-sargable and will cause a full table scan. This is the largest table and the condition is expensive. So, we should index note first.\n\n2. company_name: 234 thousand rows. The condition on country_code is a constant, so it might be a filter that is not selective. We don't know the distribution, but it's a constant so it might be a small fraction. But the table is smaller than cast_info.\n\n3. title: 2.5 million rows. The condition on production_year is a range condition. Without an index, it might require a Seq Scan.\n\nBut note: the query is joining title with cast_info and movie_companies. The condition on title.production_year might be applied after the join, but the join condition is on t.id. The index on title.id is not present, but note that the title table has a primary key on id? Actually, the schema for title does not show a primary key, but it does have an index on kind_id. We don't know if id is the primary key. However, the condition t.id = mc.movie_id and t.id = ci.movie_id is a join condition. Without an index on title.id, the join might be expensive. But note that the movie_companies and cast_info tables have indexes on movie_id. So, the join condition on t.id might be using the indexes on the other tables.\n\nBut the condition on production_year is a filter. We can index that.\n\nNow, let's write the JSON structure:\n\nWe are to recommend:\n\n1. For cast_info.note: a GIN index with trigram. But note that the condition is two LIKE conditions. We can index the note column with a trigram index. The index type would be \"GIN\" and the property would be \"note\". The partial_predicate is null because the condition is on the note column.\n\n2. For company_name.country_code: a B-tree index. The index type would be \"BTREE\" and the property would be \"country_code\". Partial_predicate is null.\n\n3. For title.production_year: a B-tree index. The index type would be \"BTREE\" and the property would be \"production_year\". Partial_predicate is null.\n\nBut note: the condition on note is two LIKE conditions. We are indexing the entire note column. This is acceptable.\n\nNow, the estimated benefit:\n\n- For cast_info.note: This index will allow the query to use the trigram index for the LIKE conditions, which might reduce the number of rows scanned from 36 million to a smaller number (depending on the pattern). However, note that the pattern starts with '%', so the index might not be very selective. But it will still help by allowing the query to quickly find rows that match the pattern.\n\n- For company_name.country_code: This index will allow the query to quickly find the rows in company_name with country_code = '[ru]'. Without the index, a Seq Scan on company_name would be performed.\n\n- For title.production_year: This index will allow the query to quickly filter the title table by production_year > 2005.\n\nNow, note that the query is also filtering by other conditions. But these are the main ones.\n\nBut wait, the condition on note is two separate conditions. We are indexing the note column. This index will help both LIKE conditions.\n\nNow, let's write the JSON:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"cast_info\",\n      \"property\": \"note\",\n      \"index_type\": \"GIN\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces Seq Scan on cast_info.note from 36 million rows to a smaller number by using trigram index for LIKE conditions\"\n    },\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces Seq Scan on company_name.country_code from 234 thousand rows to a smaller number by using B-tree index for equality condition\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces Seq Scan on title.production_year from 2.5 million rows to a smaller number by using B-tree index for range condition\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the columns that are causing Seq Scans in the query. The cast_info.note condition is non-sargable and requires a GIN index with trigram. The company_name.country_code and title.production_year conditions are not covered by existing indexes and can be indexed with B-tree.\"\n}\n\nBut note: the instructions say that we must set partial_predicate to null if the condition is on the target table's column. We are doing that.\n\nAlso, note that the condition on note is two LIKE conditions. We are indexing the entire note column. This is acceptable.\n\nHowever, note that the condition on note is two separate conditions. We are not breaking it down. But the index will help for both.\n\nBut wait, the condition is: ci.note LIKE '%(voice)%' AND ci.note LIKE '%(uncredited)%'. This is two separate conditions. We are indexing the note column. The index will help for both.\n\nBut note: the condition is an AND, so both patterns must be present. The trigram index will help by allowing the query to quickly find rows that have both patterns? Actually, the trigram index does not require the entire string to match, but it does allow for partial matches. However, the condition is two separate LIKE conditions. The index might not be able to combine the two conditions. But note that the condition is on the same column. We can use the index for each condition separately, but the query planner might use the index for one condition and then filter the other. This is acceptable.\n\nNow, note that the condition on note is the only condition on cast_info that is not covered by an existing index. The other conditions (movie_id, person_role_id, role_id) are covered by existing indexes.\n\nTherefore, we recommend these three indexes.\n\nBut note: the condition on company_name.country_code is a constant. We are indexing the entire country_code column. This is acceptable because the condition is an equality and the index will be very efficient.\n\nSimilarly, the condition on title.production_year is a range condition. We are indexing the entire production_year column. This is acceptable.\n\nNow, note that the table company_type has only 4 rows, so no index is needed.\n\nThe table role_type has only 12 rows, so no index is needed.\n\nThe table char_name has no index, but the condition on char_name.id is a join condition. The join condition is chn.id = ci.person_role_id. The table char_name has no index on id. But note that the condition is a join condition. We can create an index on char_name.id to speed up the join. However, the instructions say to consider only the columns causing a Seq Scan. The condition on char_name.id is a join condition. Without an index, the join might be expensive. But note that the join is with cast_info.person_role_id. The cast_info has an index on person_role_id. So, the join condition might be using the index on cast_info.person_role_id and then looking up char_name.id. But without an index on char_name.id, the lookup might be a table lookup (which is fast). However, if the join condition is causing a large number of rows to be returned, then the index on char_name.id might help. But note that the condition on char_name.id is a direct equality. We can create a B-tree index on char_name.id.\n\nBut wait, the query is selecting MIN(chn.name) and MIN(t.title). The join with char_name is to get the name. The condition on char_name.id is a join condition. Without an index on char_name.id, the join might be efficient because the other side (cast_info) has an index on person_role_id. But note that the join condition is an equality and the table char_name has 3 million rows. Without an index, the join might be a nested loop join with a cost of 3 million rows. With an index, it would be a hash join or merge join. But note that the condition on cast_info.person_role_id is already covered by an index, so the planner might use a nested loop join. In that case, the index on char_name.id would be very helpful.\n\nBut note: the instructions say to order by the number of rows scanned. The char_name table has 3 million rows. The condition on char_name.id is a join condition. Without an index, the join might cause a large number of rows to be scanned. But note that the join condition is an equality and the other table (cast_info) has an index on person_role_id. The planner might choose a nested loop join, which would scan the char_name table for each row in cast_info. But the cast_info table has 36 million rows, so the nested loop join would be very expensive.\n\nBut note: the condition on cast_info.note is already being handled by the index we are recommending. However, the condition on cast_info.note is a filter. The planner might first filter cast_info by note, then join with char_name. Without the index on note, the cast_info table is scanned entirely. With the index on note, the cast_info table is filtered. Then, the join with char_name might be done on the filtered cast_info rows.\n\nBut note: the condition on note is two LIKE conditions. The index on note might reduce the number of rows from 36 million to, say, 1 million. Then, the join with char_name would be on 1 million rows. Without the index on char_name.id, the join would be a nested loop join, which would be 1 million * (cost of lookup in char_name). The cost of lookup in char_name without an index is a table scan for each row? Actually, no. The join condition is an equality on char_name.id. Without an index, the planner might use a sequential scan for each row of the outer table (cast_info) and then do an index scan on char_name.id? No, without an index, it would do a sequential scan for each row of the outer table. That would be very expensive.\n\nBut note: the planner might choose a different join order. We are not sure. But the point is that the join condition on char_name.id is not covered by an index. We can recommend an index on char_name.id.\n\nBut note: the instructions say to consider only the columns causing a Seq Scan. The condition on char_name.id is a join condition. Without an index, the join might be expensive. The table char_name has 3 million rows. The join condition is an equality. We can create a B-tree index on char_name.id.\n\nBut note: the condition on char_name.id is a direct equality. The index would be very efficient.\n\nNow, let's compare the row counts:\n\n- cast_info: 36 million rows (with the note condition, it might be reduced to 1 million rows, but without the index, it's 36 million)\n- char_name: 3 million rows\n\nThe join condition on char_name.id might be expensive if the cast_info t",
+  "recommendations": [
+    {
+      "table": "cast_info",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.4,
+      "baseline_exec_ms": 312.885,
+      "optimized_exec_ms": 299.227,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4716.18,
+          "cost_with_index": 4717.52,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55687.01,
+          "cost_with_index": 55687.01,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9394.1,
+          "cost_with_index": 9395.01,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.3,
+      "baseline_exec_ms": 297.83,
+      "optimized_exec_ms": 291.027,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.52,
+          "cost_with_index": 20815.54,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 4717.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55687.01,
+          "cost_with_index": 42199.14,
+          "benefit_pct": 24.2
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19503.62,
+          "cost_with_index": 19503.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66993.23,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 3832.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.01,
+          "cost_with_index": 9395.15,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 5.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.8,
+      "baseline_exec_ms": 295.074,
+      "optimized_exec_ms": 286.802,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.54,
+          "cost_with_index": 20815.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 4717.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-08-28T12:21:00.539181",
+  "query_hash": "3505b74fb5bb",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "use materialized CTEs to pre-filter data",
+    "reorder joins to reduce intermediate rows",
+    "replace CASE expression with direct comparison",
+    "use HAVING clause for aggregation filter"
+  ],
+  "improvement_pct": -166.72,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 591301.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_keys AS MATERIALIZED (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_dom BETWEEN 1 AND 2\n      AND d_year IN (2000, 2000 + 1, 2000 + 2)\n), store_keys AS MATERIALIZED (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_county IN ('Williamson County','Williamson County','Williamson County','Williamson County')\n), hd_keys AS MATERIALIZED (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE hd_buy_potential IN ('1001-5000', '5001-10000')\n      AND hd_vehicle_count > 0\n      AND CASE WHEN hd_vehicle_count > 0 THEN hd_dep_count / hd_vehicle_count ELSE NULL END > 1\n)\nSELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, ss_ticket_number, cnt\nFROM (\n    SELECT ss_ticket_number, ss_customer_sk, COUNT(*) AS cnt\n    FROM store_sales\n    WHERE ss_customer_sk IS NOT NULL\n      AND ss_sold_date_sk IN (SELECT d_date_sk FROM date_keys)\n      AND ss_store_sk IN (SELECT s_store_sk FROM store_keys)\n      AND ss_hdemo_sk IN (SELECT hd_demo_sk FROM hd_keys)\n    GROUP BY ss_ticket_number, ss_customer_sk\n    HAVING COUNT(*) <= 5\n) AS dj\nJOIN customer ON customer.c_customer_sk = dj.ss_customer_sk\nORDER BY cnt DESC, c_last_name ASC",
+  "reasoning_trace": "1. DATE-LED COVERING INDEX \u2014 TARGET: `store_sales` columns `ss_sold_date_sk`, `ss_store_sk`, `ss_hdemo_sk`, `ss_ticket_number`, `ss_customer_sk` \u2014 TRANSFORMATION: add a covering B-tree index with `ss_sold_date_sk` as the leading column, then `ss_store_sk`, `ss_hdemo_sk`, and include `ss_ticket_number`, `ss_customer_sk`; this lets the date-range filter (`d_dom`/`d_year`) drive an index-only scan and keeps every grouping column inside the index.\n\n2. MATERIALIZED DIMENSION-KEY SEMI-JOIN \u2014 TARGET: the joins in derived table `dj` to `date_dim`, `store`, and `household_demographics` \u2014 TRANSFORMATION: precompute the matching `d_date_sk`, `s_store_sk`, and `hd_demo_sk` sets into small materialized CTEs, then filter `store_sales` with `IN`/hash semi-joins against those CTEs before aggregation, so dimension lookups are not repeated per row and row-multiplication cannot occur.\n\n3. HAVING COUNT PUSH-DOWN \u2014 TARGET: outer predicate `cnt BETWEEN 1 AND 5` on derived table `dj` \u2014 TRANSFORMATION: move `cnt <= 5` inside the aggregation as `HAVING count(*) <= 5` and drop the redundant `cnt >= 1`; this discards large-count groups before the `customer` join and before any derived-table materialization.\n\n4. EARLY NULL-REJECT ON CUSTOMER KEY \u2014 TARGET: `store_sales.ss_customer_sk` \u2014 TRANSFORMATION: add `ss_customer_sk IS NOT NULL` inside the `store_sales` scan before grouping, because the final inner join to `customer.c_customer_sk` cannot produce rows from NULL customer keys.\n\n5. COVERING INDEX FOR CUSTOMER OUTPUTS \u2014 TARGET: `customer` columns `c_customer_sk`, `c_last_name`, `c_first_name`, `c_salutation`, `c_preferred_cust_flag` \u2014 TRANSFORMATION: add a covering index on `customer(c_customer_sk)` including the four output columns, so the final join does not need heap lookups into the `customer` table and the `ORDER BY c_last_name` has the needed columns available cheaply.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2306.228,
+      "optimized_ms": 6151.154,
+      "delta_ms": -3844.926,
+      "improvement_pct": -166.72,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1345159.91,
+      "optimized": 1832463.7,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 561929.7,
+    "index_advisor_inference_ms": 22774.8,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 6597.2,
+    "total_inference_ms": 591301.7,
+    "writer_inference_ms": 1247682.1,
+    "writer_tokens_in": 9566,
+    "writer_tokens_out": 138783,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1345159.91 \u2192 optimized=1832463.70 (+36.2%)",
+    "Execution time regression: 2306.228ms \u2192 6151.154ms"
+  ],
+  "strategy": "1. DATE-LED COVERING INDEX \u2014 TARGET: `store_sales` columns `ss_sold_date_sk`, `ss_store_sk`, `ss_hdemo_sk`, `ss_ticket_number`, `ss_customer_sk` \u2014 TRANSFORMATION: add a covering B-tree index with `ss_sold_date_sk` as the leading column, then `ss_store_sk`, `ss_hdemo_sk`, and include `ss_ticket_number`, `ss_customer_sk`; this lets the date-range filter (`d_dom`/`d_year`) drive an index-only scan and keeps every grouping column inside the index.\n\n2. MATERIALIZED DIMENSION-KEY SEMI-JOIN \u2014 TARGET: the joins in derived table `dj` to `date_dim`, `store`, and `household_demographics` \u2014 TRANSFORMATION: precompute the matching `d_date_sk`, `s_store_sk`, and `hd_demo_sk` sets into small materialized CTEs, then filter `store_sales` with `IN`/hash semi-joins against those CTEs before aggregation, so dimension lookups are not repeated per row and row-multiplication cannot occur.\n\n3. HAVING COUNT PUSH-DOWN \u2014 TARGET: outer predicate `cnt BETWEEN 1 AND 5` on derived table `dj` \u2014 TRANSFORMATION: move `cnt <= 5` inside the aggregation as `HAVING count(*) <= 5` and drop the redundant `cnt >= 1`; this discards large-count groups before the `customer` join and before any derived-table materialization.\n\n4. EARLY NULL-REJECT ON CUSTOMER KEY \u2014 TARGET: `store_sales.ss_customer_sk` \u2014 TRANSFORMATION: add `ss_customer_sk IS NOT NULL` inside the `store_sales` scan before grouping, because the final inner join to `customer.c_customer_sk` cannot produce rows from NULL customer keys.\n\n5. COVERING INDEX FOR CUSTOMER OUTPUTS \u2014 TARGET: `customer` columns `c_customer_sk`, `c_last_name`, `c_first_name`, `c_salutation`, `c_preferred_cust_flag` \u2014 TRANSFORMATION: add a covering index on `customer(c_customer_sk)` including the four output columns, so the final join does not need heap lookups into the `customer` table and the `ORDER BY c_last_name` has the needed columns available cheaply.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was MATERIALIZED DIMENSION-KEY SEMI-JOIN, and the rewrite applies this by precomputing small CTEs for dimension keys and using IN/semi-joins against them."
+  },
+  "raw_sql": "select c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt from (select ss_ticket_number ,ss_customer_sk ,count(*) cnt from store_sales,date_dim,store,household_demographics where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_store_sk = store.s_store_sk and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk and date_dim.d_dom between 1 and 2 and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') and household_demographics.hd_vehicle_count > 0 and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 and date_dim.d_year in (2000,2000+1,2000+2) and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') group by ss_ticket_number,ss_customer_sk) dj,customer where ss_customer_sk = c_customer_sk and cnt between 1 and 5 order by cnt desc, c_last_name asc"
+}

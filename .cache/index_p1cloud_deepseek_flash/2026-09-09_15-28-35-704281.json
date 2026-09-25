@@ -1,0 +1,330 @@
+{
+  "timestamp": "2026-09-09T15:28:35.700071",
+  "query_hash": "092369ddef36",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 166999.0,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes.\n\nFirst, let's break down the query:\n\nThe query uses a Common Table Expression (CTE) named `year_total` that is built by two unions:\n\n1. From `customer`, `store_sales`, and `date_dim` for sales (sale_type 's').\n2. From `customer`, `web_sales`, and `date_dim` for web sales (sale_type 'w').\n\nThen, it joins four copies of the CTE (each copy being a year_total for a specific customer and year) and filters by year (1998 and 1999) and conditions on the ratio of year_total.\n\nThe main issue is that the CTE is built by two separate queries (one for store_sales and one for web_sales) and then the main query joins these.\n\nLooking at the CTE:\n\nFor the store_sales part:\n  - It joins `customer` with `store_sales` and `date_dim`.\n  - The join conditions are: `c_customer_sk = ss_customer_sk` and `ss_sold_date_sk = d_date_sk`.\n\nFor the web_sales part:\n  - It joins `customer` with `web_sales` and `date_dim`.\n  - The join conditions are: `c_customer_sk = ws_bill_customer_sk` and `ws_sold_date_sk = d_date_sk`.\n\nThe main query then joins four copies of the CTE (each copy being a year_total for a specific customer and year) and filters by year and conditions on the ratio.\n\nThe problem: The CTE is built by two separate queries, each of which is a join of three tables. The tables involved are:\n\n- customer (266,000 rows)\n- store_sales (57,598,932 rows)\n- web_sales (14,396,103 rows)\n- date_dim (73,049 rows)\n\nWithout indexes, these joins are likely to be done via sequential scans, which is very expensive.\n\nNow, let's look at the execution plan (which we don't have, but we can infer):\n\nThe CTE for store_sales:\n  - It will do a join between customer and store_sales. Since store_sales is very large (57 million rows), and customer is 266k, the join might be done by iterating over customer and then scanning store_sales for each customer. This is a very expensive operation.\n\nSimilarly, the web_sales CTE:\n  - It will join customer and web_sales (14 million rows) for each customer.\n\nTherefore, the two CTEs are the main bottlenecks.\n\nWe are to suggest indexes that would help.\n\nFirst, for the store_sales part:\n\nThe join condition is:\n  - `c_customer_sk = ss_customer_sk`\n  - `ss_sold_date_sk = d_date_sk`\n\nWe can create an index on store_sales to speed up the join. Since the join is on `ss_customer_sk` and `ss_sold_date_sk`, we can create a composite index on (ss_customer_sk, ss_sold_date_sk) or two separate indexes.\n\nBut note: the CTE is grouping by customer and year, so the join condition is on two columns. We can create a composite index on (ss_customer_sk, ss_sold_date_sk) to help with the join.\n\nSimilarly, for the web_sales part, we have:\n  - `c_customer_sk = ws_bill_customer_sk`\n  - `ws_sold_date_sk = d_date_sk`\n\nWe can create a composite index on web_sales (ws_bill_customer_sk, ws_sold_date_sk).\n\nBut note: the CTE also uses the `date_dim` table. We might also consider indexing `date_dim` on `d_date_sk` because it is used in the join condition. However, `date_dim` has only 73k rows, so a sequential scan might be acceptable. But if the query is filtering by year, then we might want to index `date_dim` on `d_year` or `d_date_sk` to quickly find the dates for a given year.\n\nHowever, the query is filtering by year in the main query, but the CTE is built with the year as part of the grouping. The CTE does not have a filter by year until the main query. So in the CTE, the `date_dim` is being joined without a filter. We can index `date_dim` on `d_date_sk` to speed up the join.\n\nBut note: the CTE is built by two separate queries. We can also consider creating indexes on the `customer` table, but the `customer` table is being joined on `c_customer_sk` which is the primary key (if we assume it is). However, the problem states that the `customer` table has no indexes. So we should index the foreign keys in the other tables.\n\nLet's break down the tables and the joins:\n\n1. For store_sales CTE:\n   - Table: store_sales (57M rows)\n   - Join condition: `ss_customer_sk = c_customer_sk` and `ss_sold_date_sk = d_date_sk`\n   - We can create an index on store_sales (ss_customer_sk, ss_sold_date_sk) to help with the join.\n\n2. For web_sales CTE:\n   - Table: web_sales (14M rows)\n   - Join condition: `ws_bill_customer_sk = c_customer_sk` and `ws_sold_date_sk = d_date_sk`\n   - We can create an index on web_sales (ws_bill_customer_sk, ws_sold_date_sk) to help with the join.\n\n3. For date_dim in both CTEs:\n   - Table: date_dim (73k rows)\n   - Join condition: `d_date_sk = ss_sold_date_sk` (for store_sales) and `d_date_sk = ws_sold_date_sk` (for web_sales)\n   - We can create an index on date_dim (d_date_sk) to speed up the join.\n\nBut note: the CTE is grouping by customer and year, so the join condition is necessary to link the customer and the sales. Without an index, the join might be a nested loop join, which is expensive for large tables.\n\nNow, let's consider the main query:\n\nThe main query joins four copies of the CTE (each copy being a year_total for a specific customer and year). The CTE is built by two separate queries, so the main query is essentially doing four separate queries and then joining them.\n\nBut note: the CTE is built once and then materialized. So the main query is using the precomputed CTE.\n\nHowever, the CTE is built by two sequential scans (or expensive joins) and then the main query is doing four table lookups (each being a scan of the CTE, which is a temporary table). But the CTE is built by two separate queries, so the main query is just doing four lookups on the CTE, which is a table. So if we can speed up the CTE, then the main query will be faster.\n\nTherefore, the primary bottlenecks are the two CTEs.\n\nNow, let's consider the columns we are grouping by in the CTE:\n\nFor store_sales CTE:\n  - Group by: `c_customer_id`, `c_first_name`, `c_last_name`, `c_preferred_cust_flag`, `c_birth_country`, `c_login`, `c_email_address`, `d_year`\n\nBut note: the join condition is on `c_customer_sk` and `ss_sold_date_sk`. We are grouping by columns from `customer` and `date_dim`. We don't need an index on the grouping columns because the grouping is done after the join.\n\nSo the main issue is the join.\n\nNow, let's consider the index types:\n\nWe are using PostgreSQL, and we have the `hypopg` extension, which allows us to create indexes without committing until we are sure.\n\nWe are to suggest indexes for the tables that are causing the most expensive Seq Scans.\n\nThe tables that are being scanned are:\n\n1. store_sales (57M rows) in the CTE for store_sales.\n2. web_sales (14M rows) in the CTE for web_sales.\n\nWe are to suggest indexes on these tables to speed up the joins.\n\nWe are also to consider the `date_dim` table, which is small (73k rows) but is being joined in both CTEs.\n\nLet's propose:\n\n1. For store_sales: index on (ss_customer_sk, ss_sold_date_sk)\n   - This is a composite index that will help with the join condition.\n\n2. For web_sales: index on (ws_bill_customer_sk, ws_sold_date_sk)\n   - Similarly, a composite index.\n\n3. For date_dim: index on (d_date_sk)\n   - This is a single column index and will help with the join condition.\n\nBut note: the CTE for store_sales also uses `date_dim` in the join. We are already indexing `date_dim` on `d_date_sk`, so that should help.\n\nNow, let's consider the `customer` table. The CTE joins `customer` with `store_sales` and `web_sales`. The join condition for store_sales is `c_customer_sk = ss_customer_sk`. Since `c_customer_sk` is the primary key of `customer`, we can assume it is unique and indexed. Similarly, the join condition for web_sales is `c_customer_sk = ws_bill_customer_sk`. Again, `c_customer_sk` is the primary key of `customer`, so it is already indexed.\n\nBut note: the problem states that the `customer` table has no indexes. However, the primary key is an index. So we don't need to index `customer` because the primary key is already there.\n\nNow, let's consider the `date_dim` table. The problem states that `date_dim` has no indexes. So we are free to index it.\n\nNow, let's write the JSON:\n\nWe are to return a list of indexes, each with:\n   - target: table name\n   - property: column name (or composite index columns? But note: the index_type can be composite, but the property is the column name. We are to specify the columns in the index as a list? Actually, the JSON structure provided does not specify composite indexes. We are to use the column name for the property. But note: the index_type can be specified as \"BTREE\", \"GIN\", etc., but the problem does not require that. We are to specify the index type and the columns.\n\nBut the JSON structure provided does not have a field for multiple columns. We are to specify one column per index? Or can we specify a composite index?\n\nLooking at the JSON structure:\n\n{\n  \"target\": \"<table_name>\",\n  \"property\": \"<column_name>\",\n  ...\n\n}\n\nIt seems that the `property` is a single column. But we are creating composite indexes. How do we represent that?\n\nWe can create two separate indexes for the composite index? Or we can use a different approach.\n\nBut note: the problem says to return a list of indexes. We can return two indexes for the composite index? Or we can return one index with a composite key?\n\nThe JSON structure does not specify. However, the `property` field is a string. We can use a string that represents the composite index, but that is not standard.\n\nAlternatively, we can break the composite index into two separate indexes? But that might not be as effective.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the index(es) that we think are necessary.\n\nGiven the JSON structure, we are to return an array of objects, each with a single `property` (column) and an `index_type`. We cannot specify a composite index in the `property` field because it is a string.\n\nBut wait, the problem says:\n\n   \"property\": \"<column_name>\",\n\nSo we can only index one column per object. But a composite index is on multiple columns.\n\nWe must represent a composite index as two separate indexes? Or we can use a different index type?\n\nAlternatively, we can use a partial index? But the problem says to set `partial_predicate` to null if not needed.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe can create two indexes for the composite index? One on the first column and one on the second? But that is not a composite index.\n\nAlternatively, we can create two separate indexes for the two columns? But that might not be as effective as a composite index.\n\nBut the JSON structure does not allow for composite indexes. We must follow the structure.\n\nTherefore, we must break the composite index into two separate indexes? Or we can use a single index on one column and then another index on the other column?\n\nBut note: the join condition is on two columns. We want to use both for the join. A composite index on (ss_customer_sk, ss_sold_date_sk) is the best. But we cannot represent that in the JSON.\n\nWe must return one index per column? Or we can return two indexes for the composite index?\n\nBut the JSON structure does not allow for multiple columns in the `property` field.\n\nAlternatively, we can use a functional index? But that is not necessary.\n\nGiven the constraints, we must return the index(es) in the JSON structure provided. We can only index one column per index.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe can create two indexes for the composite index? One on `ss_customer_sk` and one on `ss_sold_date_sk`? But that is not as good as a composite index.\n\nBut the JSON structure does not allow for composite indexes. We must follow the structure.\n\nAlternatively, we can use a B-tree index on `ss_customer_sk` and a B-tree index on `ss_sold_date_sk`? But that is two separate indexes.\n\nBut note: the join condition is on two columns. We can use a composite index, but we cannot represent it. So we must use two separate indexes? Or we can use one index on the first column and then rely on the second column being indexed separately?\n\nBut the composite index is more efficient for joins on multiple columns.\n\nGiven the constraints of the JSON structure, we must return the index(es) as:\n\n{\n  \"target\": \"store_sales\",\n  \"property\": \"ss_customer_sk\",\n  \"index_type\": \"BTREE\",\n  \"partial_predicate\": null,\n  \"estimated_benefit\": \"...\"\n},\n{\n  \"target\": \"store_sales\",\n  \"property\": \"ss_sold_date_sk\",\n  \"index_type\": \"BTREE\",\n  \"partial_predicate\": null,\n  \"estimated_benefit\": \"...\"\n}\n\nBut wait, that is two indexes on the same table. We can do that.\n\nSimilarly for web_sales.\n\nBut note: the `date_dim` table has a single column index on `d_date_sk`.\n\nNow, let's write the JSON:\n\nWe are to return:\n\nindexes: [\n  { ... for store_sales on ss_customer_sk ... },\n  { ... for store_sales on ss_sold_date_sk ... },\n  { ... for web_sales on ws_bill_customer_sk ... },\n  { ... for web_sales on ws_sold_date_sk ... },\n  { ... for date_dim on d_date_sk ... }\n]\n\nBut note: the problem says to order the indexes by the number of rows scanned \u2014 largest first. The store_sales table is the largest, so the index on store_sales should be first.\n\nNow, the `estimated_benefit` field: we are to say what the index eliminates and on how many rows.\n\nFor store_sales index on ss_customer_sk: This index will eliminate the sequential scan of store_sales when joining with customer. The join condition is on ss_customer_sk. Without the index, the join might be a nested loop with a sequential scan of store_sales for each customer. With the index, it can be a nested loop with an index scan on store_sales. The benefit is reducing the cost of the join.\n\nBut we don't know the exact number of rows, so we can say:\n\nFor store_sales on ss_customer_sk: This index will eliminate the sequential scan of store_sales for each customer, reducing the cost from a full table scan (57M rows) to an index scan.\n\nBut note: the join condition is on two columns. We are indexing one column. The composite index would be better, but we cannot create it. So we are creating two separate indexes.\n\nSimilarly for the other columns.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe are also to consider the `date_dim` table. We are indexing `d_date_sk` on `date_dim`. This will help the join condition in both CTEs.\n\nNow, let's write the JSON.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the index(es) that we think are necessary.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_customer_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"This index will eliminate the sequential scan of store_sales when joining on ss_customer_sk, reducing the cost from a full table scan (57 million rows) to an index scan.\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"This index will eliminate the sequential scan of store_sales when joining on ss_sold_date_sk, reducing the cost from a full table scan (57 million rows) to an index scan.\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_bill_customer_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"This index will eliminate the sequential scan of web_sales when joining on ws_bill_customer_sk, reducing the cost from a full table scan (14 million rows) to an index scan.\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_sold_date_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"This index will eliminate the sequential scan of web_sales when joining on ws_sold_date (ws_sold_date_sk), reducing the cost from a full table scan (14 million rows) to an index scan.\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"This index will eliminate the sequential scan of date_dim when joining on d_date_sk, reducing the cost from a full table scan (73,049 rows) to an index scan.\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query involves expensive joins on large tables (store_sales and web_sales). Indexes on the join columns (ss_customer_sk, ss_sold_date_sk for store_sales; ws_bill_customer_sk, ws_sold_date_sk for web_sales) will significantly reduce the cost of these joins. Additionally, an index on date_dim.d_date_sk will speed up the join with date_dim.\"\n}\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe are returning five indexes. But note: the composite index would be better, but we cannot create it because of the JSON structure. We are creating two separate indexes for each composite index.\n\nBut wait, the problem does not require composite indexes. We are to return the index(es) that we think are necessary.\n\nAlternatively, we can create one index per table for the composite index? But the JSON structure does not allow for composite indexes.\n\nWe must follow the JSON structure.\n\nNow, note: the `date_dim` table is small, so an index on `d_date_sk` is very beneficial.\n\nBut note: the CTE for store_sales and web_sales both use `date_dim`. So one index on `date_dim` will help both.\n\nNow, let's check the `customer` table: we are not indexing it because the primary key is already there.\n\nWe are done.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe are returning five indexes. But note: the store_sales and web_sales tables are very large, so the two indexes on store_sales and two on web_sales are the most important.\n\nWe are to order the indexes by the number of rows scanned \u2014 largest first. The store_sales table has 57 million rows, then web_sales has 14 million, then date_dim has 73k. So we should order the store_sales indexes first, then web_sales, then date_dim.\n\nBut the JSON structure does not require ordering. We can list them in any order.\n\nNow, the `estimated_benefit` field: we are to say what the index eliminates and on how many rows.\n\nWe are saying that the index will eliminate the sequential scan and reduce the cost to an index scan. We are not specifying the exact number of rows, but we can say:\n\nFor store_sales on ss_customer_sk: This index will eliminate the sequential scan of store_sales when joining on ss_customer_sk, reducing the cost from a full table scan (57 million rows) to an index scan.\n\nBut note: the join condition is on two columns. We are indexing one column. The index on ss_customer_sk alone might not be as effective as a composite index, but it is still better than no index.\n\nWe are to return the JSON.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe are returning five indexes.\n\nNow, let's write the JSON.\n\nBut note: the problem says to return the index(es) that would most reduce execution cost. We are to return the minimal set.\n\nWe are returning five indexes.\n\nBut note: the `date_dim` table is small, so the index on `d_date_sk` is very cheap and will have a high benefit.\n\nWe are done.\n\nHowever, note that the CTE for store_sales and web_sales also uses the `customer` table. We are not indexing `customer` because it already has a primary key. But the primary key is on `c_customer_sk`, which is used in the join. So we don't need an index on `customer`.\n\nNow, let's write the JSON.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sal",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 7.4,
+      "baseline_exec_ms": 237461.033,
+      "optimized_exec_ms": 219872.001,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961085.68,
+          "cost_with_index": 2961066.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951198.38,
+          "cost_with_index": 1951176.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371803.07,
+          "cost_with_index": 1371786.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816947.95,
+          "cost_with_index": 816914.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117922.19,
+          "cost_with_index": 117921.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110384.34,
+          "cost_with_index": 21110097.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129313.98,
+          "cost_with_index": 129313.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179285.41,
+          "cost_with_index": 179285.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81685.08,
+          "cost_with_index": 81684.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712287.39,
+          "cost_with_index": 3712265.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.44,
+          "cost_with_index": 134873.44,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.74,
+          "cost_with_index": 222744.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345223.78,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342754.88,
+          "cost_with_index": 1342739.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -21.6,
+      "baseline_exec_ms": 237915.432,
+      "optimized_exec_ms": 289246.167,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961066.41,
+          "cost_with_index": 2961076.05,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951176.47,
+          "cost_with_index": 1951194.7,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371786.7,
+          "cost_with_index": 1371786.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816914.2,
+          "cost_with_index": 816918.65,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117921.81,
+          "cost_with_index": 117921.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110097.62,
+          "cost_with_index": 21110097.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129313.98,
+          "cost_with_index": 129313.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179285.41,
+          "cost_with_index": 179285.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81684.89,
+          "cost_with_index": 81684.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712265.63,
+          "cost_with_index": 3712291.87,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.44,
+          "cost_with_index": 134873.44,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.74,
+          "cost_with_index": 222744.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342739.21,
+          "cost_with_index": 1342739.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_bill_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 2.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.4,
+      "baseline_exec_ms": 277926.914,
+      "optimized_exec_ms": 281813.393,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961076.05,
+          "cost_with_index": 2961010.85,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951194.7,
+          "cost_with_index": 1951129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816918.65,
+          "cost_with_index": 816795.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712291.87,
+          "cost_with_index": 3712233.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91714.69,
+          "cost_with_index": 91714.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -13.3,
+      "baseline_exec_ms": 294432.542,
+      "optimized_exec_ms": 333571.149,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961010.85,
+          "cost_with_index": 2961080.38,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1951129.15,
+          "cost_with_index": 1951202.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 816795.52,
+          "cost_with_index": 816920.88,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712233.36,
+          "cost_with_index": 3712303.54,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91714.69,
+          "cost_with_index": 91714.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date_sk",
+      "index_type": "BTREE",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

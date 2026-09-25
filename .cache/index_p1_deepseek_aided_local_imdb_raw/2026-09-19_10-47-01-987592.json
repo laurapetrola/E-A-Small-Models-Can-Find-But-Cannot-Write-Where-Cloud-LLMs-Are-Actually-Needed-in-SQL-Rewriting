@@ -1,0 +1,139 @@
+{
+  "timestamp": "2026-09-19T10:47:01.987576",
+  "query_hash": "3b41fb20391f",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 1768772.2,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify the index(es) that would most reduce the execution cost.\n\nThe query is:\nSELECT MIN(t.title) AS movie_title FROM company_name AS cn, keyword AS k, movie_companies AS mc, movie_keyword AS mk, title AS t WHERE cn.country_code = '[de]' AND k.keyword = 'character-name-in-title' AND cn.id = mc.company_id AND mc.movie_id = t.id AND t.id = mk.movie_id AND mk.keyword_id = k.id AND mc.movie_id = mk.movie_id\n\nThe relevant tables and their existing indexes (from the provided schema) are:\n\n- company_name: 234,997 rows, no indexes\n- keyword: 134,170 rows, no indexes\n- movie_companies: 2,609,129 rows, indexes on company_id, company_type_id, movie_id\n- movie_keyword: 4,523,930 rows, indexes on keyword_id, movie_id\n- title: 2,528,312 rows, index on kind_id\n\nWe are also told that the physical execution plan is not provided (due to an error) but we can analyze the query structure.\n\nLet's break down the query:\n\n1. We are filtering `company_name` by `cn.country_code = '[de]'`.\n2. We are filtering `keyword` by `k.keyword = 'character-name-in-title'`.\n3. We are joining `company_name` with `movie_companies` via `cn.id = mc.company_id`.\n4. We are joining `movie_companies` with `title` via `mc.movie_id = t.id`.\n5. We are joining `title` with `movie_keyword` via `t.id = mk.movie_id`.\n6. We are joining `movie_keyword` with `keyword` via `mk.keyword_id = k.id`.\n\nThe goal is to find the minimum title from the `title` table.\n\nThe query is doing a lot of joins and filters. We need to look for Seq Scans on large tables.\n\nLooking at the tables:\n\n- `company_name` has 234,997 rows. There is a filter on `cn.country_code = '[de]'`. Since there is no index on `country_code`, a Seq Scan will be used. This might be a candidate for an index.\n\n- `keyword` has 134,170 rows. There is a filter on `k.keyword = 'character-name-in-title'`. No index on `keyword`, so Seq Scan.\n\n- `movie_companies` has 2,609,129 rows. It has indexes on `company_id`, `company_type_id`, and `movie_id`. The query uses `mc.company_id` (from `cn.id = mc.company_id`) and `mc.movie_id` (from `mc.movie_id = t.id` and `mc.movie_id = mk.movie_id`). The existing indexes on `movie_id` and `company_id` might help, but note that the `company_id` is being used in a join condition from `company_name` and `movie_companies`. However, the `company_name` table does not have an index on `id` (which is the primary key of `company_name`). So the join condition `cn.id = mc.company_id` might be a candidate for an index on `company_name.id`? But note: `company_name.id` is the primary key, so it is already an index. However, the `movie_companies` table has an index on `company_id` which is good.\n\n- `movie_keyword` has 4,523,930 rows. It has indexes on `keyword_id` and `movie_id`. The query uses `mk.movie_id` and `mk.keyword_id = k.id`. The existing index on `movie_id` and `keyword_id` might help.\n\n- `title` has 2,528,312 rows. It has an index on `kind_id`. The query does not use `kind_id` in the filter, so the index on `kind_id` is not used. The query uses `t.id` (which is the primary key, so it is an index) and then we are doing a MIN on `title`.\n\nNow, let's think about the bottlenecks:\n\n1. The `company_name` table has a filter on `country_code` and no index. This will cause a Seq Scan on `company_name` (234k rows). We can create an index on `country_code` to speed up this filter.\n\n2. The `keyword` table has a filter on `keyword` and no index. This will cause a Seq Scan on `keyword` (134k rows). We can create an index on `keyword` to speed up this filter.\n\n3. The `movie_companies` table is being joined via `company_id` and `movie_id`. The `company_id` is being used to join with `company_name.id`. Since `company_name.id` is the primary key (so it's an index) and `movie_companies.company_id` has an index, this join might be efficient. However, note that the `movie_companies` table is also being filtered by `mc.movie_id` (which is the same as `t.id`). There is an index on `movie_id` in `movie_companies`, so that might help.\n\n4. The `movie_keyword` table is being joined via `movie_id` and `keyword_id`. There are indexes on both, so that might be efficient.\n\n5. The `title` table is being filtered by `t.id` (which is the primary key, so index exists) and then we are doing a MIN on `title`. The index on `kind_id` is not used, but the query does not filter by `kind_id`. So no need for an index on `title` for this query.\n\nNow, let's consider the order of joins and the filters:\n\nThe query starts with two small filters (on `company_name` and `keyword`). Then it joins `movie_companies` and `movie_keyword` and `title`. The `movie_companies` and `movie_keyword` tables are large, but they have indexes on the join columns.\n\nHowever, note that the `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id` (which is the primary key). The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe main bottlenecks are the two Seq Scans on `company_name` and `keyword` because these tables do not have indexes on the filtered columns.\n\nBut note: the `company_name` table has a primary key on `id`, so the join condition `cn.id = mc.company_id` will use that index. Similarly, the `keyword` table has no index on `keyword`, so the filter `k.keyword = 'character-name-in-title'` will be slow.\n\nAlso, note that the `movie_companies` table has an index on `movie_id` and `company_id`. The `movie_keyword` table has an index on `movie_id` and `keyword_id`. The `title` table has an index on `id` (primary key) and `kind_id`.\n\nWe are asked to return the index(es) that would most reduce the execution cost. We should consider the number of rows scanned.\n\nThe two tables that are causing Seq Scans are `company_name` and `keyword`. We can create an index on `company_name.country_code` and an index on `keyword.keyword`.\n\nBut note: the `keyword` table has 134,170 rows, which is not extremely large, but still, an index would help. Similarly, `company_name` has 234,997 rows.\n\nAlso, note that the `movie_companies` table is being joined via `company_id` and `movie_id`. The `company_id` is being used to join with `company_name.id`. Since `company_name.id` is the primary key, the join condition `cn.id = mc.company_id` will be efficient because `mc.company_id` has an index. However, the `movie_companies` table is also being filtered by `mc.movie_id` (which is the same as `t.id`). The `movie_id` index exists, so that is good.\n\nBut wait: the `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe main issue is the two filters on `company_name` and `keyword` that are causing Seq Scans.\n\nNow, let's consider the estimated benefit:\n\n- Index on `company_name.country_code` would eliminate the Seq Scan on `company_name` and reduce the cost of filtering by country_code. The table has 234k rows, so this could be a big improvement.\n\n- Index on `keyword.keyword` would eliminate the Seq Scan on `keyword` and reduce the cost of filtering by keyword. The table has 134k rows, so this would also be a big improvement.\n\nBut note: the query is filtering by `cn.country_code = '[de]'` and `k.keyword = 'character-name-in-title'`. These are exact matches. A B-tree index would be appropriate for these.\n\nAlso, note that the `keyword` table has a column `keyword` which is TEXT. We are filtering by an exact string. So a B-tree index is suitable.\n\nNow, what about the other tables? \n\nThe `movie_companies` table has an index on `movie_id` and `company_id`. The `movie_keyword` table has an index on `keyword_id` and `movie_id`. The `title` table has an index on `kind_id` (which is not used) and the primary key on `id` (which is used). \n\nWe are not told that there are any other issues. The existing indexes on `movie_companies` and `movie_keyword` are already present, so we don't need to suggest them.\n\nBut note: the `movie_companies` table is being joined via `company_id` and `movie_id`. The `company_id` is being used to join with `company_name.id`. Since `company_name.id` is the primary key, the join condition `cn.id = mc.company_id` will be efficient because `mc.company_id` has an index. However, the `movie_companies` table is also being filtered by `mc.movie_id` (which is the same as `t.id`). The `movie_id` index exists, so that is good.\n\nBut wait: the `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe main issue is the two filters on `company_name` and `keyword` that are causing Seq Scans.\n\nTherefore, we should suggest two indexes:\n\n1. On `company_name` for `country_code`.\n2. On `keyword` for `keyword`.\n\nBut note: the `keyword` table has a column `keyword` which is TEXT. We are filtering by an exact string. A B-tree index is suitable.\n\nAlso, note that the `company_name` table has a column `country_code` which is a VARCHAR(255). We are filtering by a string. A B-tree index is suitable.\n\nNow, let's write the JSON:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on company_name (234,997 rows)\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on keyword (134,170 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query filters company_name by country_code and keyword by keyword, but these columns lack indexes. Creating a B-tree index on company_name.country_code and keyword.keyword will eliminate the Seq Scans on these tables, reducing the overall execution cost.\"\n}\n\nHowever, note that the `keyword` table has a column `keyword` and we are filtering by an exact match. We can also consider a GiST index for trigram matching if we want to use the pg_trgm extension, but the problem says to use the installed extensions. The query is an exact match, so a B-tree is sufficient.\n\nBut wait: the `keyword` table has a column `keyword` and we are filtering by an exact string. A B-tree index is the standard for exact matches.\n\nAlso, note that the `company_name` table has a column `country_code` and we are filtering by an exact string. B-tree is appropriate.\n\nNow, what about the `title` table? The query does not filter by `kind_id`, so the existing index on `kind_id` is not used. We don't need to change that.\n\nAlso, note that the `movie_companies` table has an index on `movie_id` and `company_id`. The `movie_keyword` table has an index on `keyword_id` and `movie_id`. These are already present, so we don't need to suggest them.\n\nBut wait: the `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe `movie_companies` table is being joined with `title` via `mc.movie_id = t.id`. The `title` table has an index on `id` (primary key) so that join is efficient. Similarly, the `movie_keyword` table is being joined with `title` via `t.id = mk.movie_id` and `mk.keyword_id = k.id`. The `movie_keyword` table has an index on `movie_id` and `keyword_id`, so that is efficient.\n\nTherefore, the two indexes we are suggesting are the primary ones.\n\nBut note: the `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nThe `movie_companies` table is being filtered by `mc.movie_id` (which is the same as `t.id`). The `title` table is being filtered by `t.id`. The `movie_keyword` table is being filtered by `mk.keyword_id` (which is the same as `k.id`). \n\nWe are not seeing any other bottlenecks.\n\nTherefore, we return the two indexes.\n\nBut note: the `keyword` table has a column `keyword` and we are filtering by an exact string. We are using a B-tree index. The `company_name` table has a column `country_code` and we are filtering by an exact string. We are using a B-tree index.\n\nNow, let's write the JSON accordingly.\n\nNote: The `keyword` table has a column `keyword` and we are filtering by an exact string. We are using a B-tree index. The `company_name` table has a column `country_code` and we are filtering by an exact string. We are using a B-tree index.\n\nWe are not using any partial index because the condition is on the table's own column.\n\nWe are not using any GiST or other index types because the filters are exact and B-tree is sufficient.\n\nWe are not using any index on the `title` table because the query does not filter by any column that is not already indexed appropriately.\n\nWe are not using any index on the `movie_companies` or `movie_keyword` tables because they already have indexes on the columns used in the joins and filters.\n\nTherefore, the answer is:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on company_name (234,997 rows)\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on keyword (134,170 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query filters company_name by country_code and keyword by keyword, but these columns lack indexes. Creating a B-tree index on company_name.country_code and keyword.keyword will eliminate the Seq Scans on these tables, reducing the overall execution cost.\"\n}\n\nBut note: the `keyword` table has a column `keyword` and we are filtering by an exact string. We are using a B-tree index. The `company_name` table has a column `country_code` and we are filtering by an exact string. We are using a B-tree index.\n\nWe are not using any partial index because the condition is on the table's own column.\n\nWe are not using any index on the `title` table because the query does not filter by any column that is not already indexed appropriately.\n\nWe are not using any index on the `movie_companies` or `movie_keyword` tables because they already have indexes on the columns used in the joins and filters.\n\nTherefore, the answer is as above.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on company_name (234,997 rows)\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminate Seq Scan on keyword (134,170 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query filters company_name by country_code and keyword by keyword, but these columns lack indexes. Creating a B-tree index on company_name.country_code and keyword.keyword will eliminate the Seq Scans on these tables, reducing the overall execution cost.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 6.6,
+      "baseline_exec_ms": 383.348,
+      "optimized_exec_ms": 358.125,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.54,
+          "cost_with_index": 20815.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4716.19,
+          "cost_with_index": 4716.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 9535.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.69,
+          "cost_with_index": 43389.48,
+          "benefit_pct": 5.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 67.6,
+      "validation": "executed",
+      "measured_read_benefit_pct": -3.2,
+      "baseline_exec_ms": 346.588,
+      "optimized_exec_ms": 357.597,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 34.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4716.19,
+          "cost_with_index": 2098.5,
+          "benefit_pct": 55.5
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 4580.95,
+          "benefit_pct": 39.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10842.78,
+          "benefit_pct": -6.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9535.89,
+          "cost_with_index": 8046.93,
+          "benefit_pct": 15.6
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 1214.81,
+          "benefit_pct": 68.3
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 1200.51,
+          "benefit_pct": 68.6
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 1,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "timestamp": "2026-09-04T17:10:47.708200",
+  "query_hash": "fef1783ef8c8",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [
+    "Hint: 'mc.note LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'' is non-sargable even without a CTE \u2014 no B-tree index covers a leading '%' pattern. The Seq Scan on this table is unavoidable with any SQL rewrite. The correct response is no_change: true. a FULLTEXT index is required for this query to be performant \u2014 that is a DDL operation outside the current optimization scope.",
+    "Hint: the CTE on 'mc_min' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'mc_min' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table."
+  ],
+  "workload_aware": false,
+  "inference_ms": 46677.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting MIN values from several tables, joining them with conditions. The main tables involved are company_type, info_type, movie_companies (mc), movie_info_idx (mi_idx), and title (t). \n\nLooking at the schema, the relevant tables are:\n\n- company_type: no indexes.\n- info_type: no indexes.\n- movie_companies: has indexes on company_id, company_type_id, and movie_id.\n- movie_info_idx: indexes on info_type_id and movie_id.\n- title: index on kind_id.\n\nThe query has several conditions. Let me break down the WHERE clause:\n\n1. ct.kind = 'production companies' \u2013 This is a simple equality check on the company_type table. Since company_type has no indexes, this might be causing a full table scan. But the table is small (4 rows), so maybe it's not a big issue. However, adding an index on kind could help.\n\n2. it.info = 'top 250 rank' \u2013 Similarly, info_type has no indexes. The info column is being checked for equality. Adding an index on info would help here.\n\n3. mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' \u2013 This is a non-sargable condition because of the leading '%'. The optimizer can't use an index here. The query also has two LIKE conditions on mc.note: one with a leading '%' (which is non-sargable) and another with a trailing '%'. Since the existing indexes on movie_companies don't include note, this is causing a full table scan on movie_companies. \n\n4. The joins are on ct.id = mc.company_type_id, t.id = mc.movie_id, t.id = mi_idx.movie_id, mc.movie_id = mi_idx.movie_id, and it.id = mi_idx.info_type_id. \n\nThe optimizer hints mention that the LIKE conditions on mc.note are non-sargable and require a full table scan. The SQL architect suggests that a FULLTEXT index on mc.note would help, but that's a DDL operation outside the current scope. However, the user is asking for B-tree indexes since they can't use FULLTEXT here.\n\nLooking at the existing indexes, movie_companies has indexes on company_type_id, movie_id, and company_id. But note is not indexed. Since the query has multiple LIKE conditions on mc.note, which are non-sargable, the only way to optimize is to create an index on note. However, since the LIKE patterns have leading or trailing %, a B-tree index won't help. But maybe if we can create a prefix index on note with a certain length. For example, if the note column has values like '(as Metro-Goldwyn-Mayer Pictures)', maybe a prefix of 255 characters would cover the leading part. But the problem is that the LIKE conditions have leading %, which can't be indexed with B-tree. \n\nWait, the user's instructions mention that for TEXT or BLOB columns, a prefix length is required in MySQL. So, if we create an index on mc.note with a prefix length, maybe that could help. However, the LIKE conditions with leading % can't be optimized with a B-tree index. The only way to handle that is with a full-text index, which the optimizer hints suggest is needed but not possible here. \n\nBut the user is asking for B-tree indexes. So, perhaps the main issue is the full table scan on movie_companies due to the LIKE conditions. Since the existing indexes on movie_companies don't include note, creating an index on note might not help. However, the query has multiple conditions on mc.note. Let me check the query again:\n\nThe conditions are:\n- mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%'\n- AND (mc.note LIKE '%(co-production)%' OR mc.note LIKE '%(presents)%')\n\nThese are all non-sargable because of the leading % in the LIKE patterns. Therefore, even with an index on note, the optimizer can't use it for these conditions. So, creating an index on note might not help. However, the query is doing a MIN on mc.note, which might require scanning the entire table. \n\nWait, but the user's optimizer hints say that the full table scan on mc is unavoidable with any SQL rewrite, and a FULLTEXT index is needed. Since the user can't do that, maybe there's another way. \n\nLooking at the other tables, maybe the joins are causing full table scans. For example, the title table has an index on kind_id, but the query is joining on t.id = mc.movie_id and t.id = mi_idx.movie_id. Since title's primary key is id, those joins are on the primary key, which is already indexed. \n\nThe info_type table has no indexes, and the query is filtering on it.info = 'top 250 rank'. Adding an index on info_type.info would help here. Similarly, company_type has no indexes, and the query is filtering on ct.kind = 'production companies'. Adding an index on company_type.kind would help. \n\nSo, the main candidates for indexes are:\n\n1. info_type(info): to speed up the filter on it.info = 'top 250 rank'.\n2. company_type(kind): to speed up the filter on ct.kind = 'production companies'.\n3. movie_companies(note): but since the LIKE conditions are non-sargable, this might not help. However, the query is doing a MIN on mc.note, which might require scanning the entire table. But if there's an index on note, maybe the MIN can be computed more efficiently. However, in MySQL, even with an index, the MIN operation on a TEXT column with LIKE conditions might not benefit. \n\nWait, the query is selecting MIN(mc.note), which is a aggregate function. If there's an index on note, the optimizer might be able to find the minimum value without scanning the entire table. But the LIKE conditions complicate things. However, the query's WHERE clause includes mc.note NOT LIKE ... and mc.note LIKE ... which are non-sargable. So, even with an index on note, the optimizer can't use it for those conditions, leading to a full table scan. \n\nTherefore, the only way to avoid the full table scan on movie_companies is to use a FULLTEXT index, which the user can't do. So, the answer might be that no index can be added to avoid the full table scan on movie_companies. However, the user's optimizer hints suggest that the full table scan is unavoidable, and the correct response is no_change: true. \n\nBut the user is asking for indexes that would reduce execution cost. So, maybe the other tables (info_type and company_type) can have indexes. \n\nSo, the indexes to suggest would be:\n\n- info_type(info) to speed up the filter on it.info.\n- company_type(kind) to speed up the filter on ct.kind.\n\nThese two indexes would help reduce the full table scans on info_type and company_type, which are small tables. \n\nThe movie_companies table's full table scan is unavoidable due to the non-sargable LIKE conditions, so no index can help there. \n\nTherefore, the JSON should include indexes on info_type.info and company_type.kind.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on info_type (113 rows) for equality filter on info\"\n    },\n    {\n      \"target\": \"company_type\",\n      \"property\": \"kind\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_type (4 rows) for equality filter on kind\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query requires indexes on info_type.info and company_type.kind to eliminate full table scans on these small tables. The movie_companies table's full table scan is unavoidable due to non-sargable LIKE patterns on note.\"\n}",
+  "recommendations": [
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 4.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": 99.2,
+      "baseline_exec_ms": 679.273,
+      "optimized_exec_ms": 5.593,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 641845.09,
+          "cost_with_index": 655878.8,
+          "benefit_pct": -2.2
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7181.61,
+          "cost_with_index": 7181.96,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 384638.55,
+          "cost_with_index": 243862.08,
+          "benefit_pct": 36.6
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46542.93,
+          "cost_with_index": 49984.71,
+          "benefit_pct": -7.4
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16833.99,
+          "cost_with_index": 19478.01,
+          "benefit_pct": -15.7
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 295172.33,
+          "cost_with_index": 300389.34,
+          "benefit_pct": -1.8
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 18519.05,
+          "cost_with_index": 18510.0,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 4,
+      "status": null
+    },
+    {
+      "table": "company_type",
+      "column": "kind",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -9.3,
+      "baseline_exec_ms": 709.296,
+      "optimized_exec_ms": 775.045,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 645361.1,
+          "cost_with_index": 645360.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 384826.71,
+          "cost_with_index": 384826.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46543.9,
+          "cost_with_index": 46543.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6692.86,
+          "cost_with_index": 6692.86,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

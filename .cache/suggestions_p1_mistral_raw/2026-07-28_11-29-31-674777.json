@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-07-28T11:29:31.674748",
+  "query_hash": "a614cd11c21c",
+  "suggestions": [],
+  "improvement_pct": null,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "raw",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 166556.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH refunded_cdemo AS (\n  SELECT cd_demo_sk\n  FROM customer_demographics\n  WHERE cd_marital_status IN ('D', 'S', 'U')\n    AND cd_education_status IN ('Primary', 'College', 'Advanced Degree')\n), returning_cdemo AS (\n  SELECT cd_demo_sk\n  FROM customer_demographics\n  WHERE cd_marital_status = refunded_cdemo.cd_marital_status\n    AND cd_education_status = refunded_cdemo.cd_education_status\n), state_filter AS (\n  SELECT ca_address_sk, ca_country, ca_state\n  FROM customer_address\n  WHERE ca_country = 'United States'\n), profit_filter AS (\n  SELECT ws_item_sk, ws_net_profit\n  FROM web_sales\n  JOIN state_filter ON customer_address.ca_address_sk = state_filter.ca_address_sk\n  WHERE state_filter.ca_state IN ('NC', 'TX', 'IA')\n    AND ws_net_profit BETWEEN 100 AND 200\n  UNION ALL\n  SELECT ws_item_sk, ws_net_profit\n  FROM web_sales\n  JOIN state_filter ON customer_address.ca_address_sk = state_filter.ca_address_sk\n  WHERE state_filter.ca_state IN ('WI', 'WV', 'GA')\n    AND ws_net_profit BETWEEN 150 AND 300\n  UNION ALL\n  SELECT ws_item_sk, ws_net_profit\n  FROM web_sales\n  JOIN state_filter ON customer_address.ca_address_sk = state_filter.ca_address_sk\n  WHERE state_filter.ca_state IN ('OK', 'VA', 'KY')\n    AND ws_net_profit BETWEEN 50 AND 250\n), web_returns_data AS (\n  SELECT wr_item_sk, AVG(wr_refunded_cash) AS avg_refunded_cash, AVG(wr_fee) AS avg_fee\n  FROM web_returns\n  JOIN profit_filter ON web_returns.ws_item_sk = profit_filter.ws_item_sk\n  GROUP BY wr_item_sk\n), web_sales_data AS (\n  SELECT ws_item_sk, AVG(ws_quantity) AS avg_quantity\n  FROM web_sales\n  JOIN profit_filter ON web_sales.ws_item_sk = profit_filter.ws_item_sk\n  GROUP BY ws_item_sk\n), reason_data AS (\n  SELECT r_reason_desc, AVG(wr_refunded_cash) AS avg_refunded_cash, AVG(wr_fee) AS avg_fee\n  FROM web_returns\n  JOIN profit_filter ON web_returns.ws_item_sk = profit_filter.ws_item_sk\n  JOIN reason ON reason.r_reason_sk = web_returns.wr_reason_sk\n  WHERE date_dim.d_year = 1998\n  AND web_returns.wr_refunded_cdemo_sk IN (refunded_cdemo.cd_demo_sk, returning_cdemo.cd_demo_sk)\n  GROUP BY r_reason_desc\n), result AS (\n  SELECT SUBSTRING(r_reason_desc FROM 1 FOR 20) AS reason_short, avg_quantity, avg_refunded_cash, avg_fee\n  FROM web_sales_data\n  JOIN reason_data ON web_sales_data.ws_item_sk = reason_data.wr_item_sk\n)\nSELECT reason_short, AVG(avg_quantity) OVER(), AVG(avg_refunded_cash) OVER(), AVG(avg_fee) OVER()\nFROM result\nORDER BY reason_short, AVG(avg_quantity), AVG(avg_refunded_cash), AVG(avg_fee)\nLIMIT 100",
+  "reasoning_trace": " The query can be optimized by reducing the number of subqueries and joins. Here's a rewritten version that should perform better:\n\n```sql\nWITH refunded_cdemo AS (\n  SELECT cd_demo_sk\n  FROM customer_demographics\n  WHERE cd_marital_status IN ('D', 'S', 'U')\n    AND cd_education_status IN ('Primary', 'College', 'Advanced Degree')\n), returning_cdemo AS (\n  SELECT cd_demo_sk\n  FROM customer_demographics\n  WHERE cd_marital_status = refunded_cdemo.cd_marital_status\n    AND cd_education_status = refunded_cdemo.cd_education_status\n), state_filter AS (\n  SELECT ca_address_sk, ca_country, ca_state\n  FROM customer_address\n  WHERE ca_country = 'United States'\n), profit_filter AS (\n  SELECT ws_item_sk, ws_net_profit\n  FROM web_sales\n  JOIN state_filter ON customer_address.ca_address_sk = state_filter.ca_address_sk\n), reason_data AS (\n  SELECT r_reason_desc, AVG(wr_refunded_cash) AS avg_refunded_cash, AVG(wr_fee) AS avg_fee\n  FROM web_returns\n  JOIN profit_filter ON web_returns.ws_item_sk = profit_filter.ws_item_sk\n  JOIN reason ON reason.r_reason_sk = web_returns.wr_reason_sk\n  WHERE date_dim.d_year = 1998\n  AND web_returns.wr_refunded_cdemo_sk IN (refunded_cdemo.cd_demo_sk, returning_cdemo.cd_demo_sk)\n), web_sales_data AS (\n  SELECT ws_item_sk, AVG(ws_quantity) AS avg_quantity\n  FROM web_sales\n  JOIN profit_filter ON web_sales.ws_item_sk = profit_filter.ws_item_sk\n), result AS (\n  SELECT SUBSTRING(r_reason_desc FROM 1 FOR 20) AS reason_short, avg_quantity, avg_refunded_cash, avg_fee\n  FROM web_sales_data\n  JOIN reason_data ON web_sales_data.ws_item_sk = reason_data.wr_item_sk\n)\nSELECT reason_short, AVG(avg_quantity) OVER(), AVG(avg_refunded_cash) OVER(), AVG(avg_fee) OVER()\nFROM result\nJOIN state_filter ON customer_address.ca_address_sk = state_filter.ca_address_sk\nWHERE state_filter.ca_state IN (\n  SELECT ca_state\n  FROM state_filter\n  WHERE ca_country = 'United States'\n) AND web_sales.ws_net_profit BETWEEN (\n  SELECT MIN(min_profit)\n  FROM (\n    SELECT 'NC', 'TX', 'IA' AS states, MIN(ws_net_profit) AS min_profit\n    FROM profit_filter\n    WHERE ws_net_profit BETWEEN 100 AND 200\n    UNION ALL\n    SELECT 'WI', 'WV', 'GA' AS states, MIN(ws_net_profit) AS min_profit\n    FROM profit_filter\n    WHERE ws_net_profit BETWEEN 150 AND 300\n    UNION ALL\n    SELECT 'OK', 'VA', 'KY' AS states, MIN(ws_net_profit) AS min_profit\n    FROM profit_filter\n    WHERE ws_net_profit BETWEEN 50 AND 250\n  ) AS subquery\n)\nGROUP BY reason_short\nORDER BY reason_short, AVG(avg_quantity), AVG(avg_refunded_cash), AVG(avg_fee)\nLIMIT 100\n```\n\nThis version reduces the number of subqueries and joins by combining the state filtering into a single query and using a subquery to find the minimum profit for each group of states. This should result in fewer repeated scans of the same tables and potentially faster execution times.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 446.327,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null
+    },
+    "planner_cost": {
+      "original": 91547.72,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 122017.3,
+    "index_advisor_inference_ms": 27426.5,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 17113.0,
+    "total_inference_ms": 166556.8
+  },
+  "errors": [
+    "Syntax error: Required keyword: 'high' missing for <class 'sqlglot.expressions.core.Between'>. Line 58, Col: 8.\n  ) AS min_profit\n    FROM profit_filter\n    WHERE ws_net_profit BETWEEN 50 AND 250\n  ) AS subquery\n)\n\u001b[4mGROUP BY\u001b[0m reason_short\nORDER BY reason_short, AVG(avg_quantity), AVG(avg_refunded_cash), AVG(avg_fee)\nLIMIT 1"
+  ],
+  "strategy": null,
+  "writer": null,
+  "strategy_attempts": 0,
+  "adherence": null,
+  "raw_sql": "select substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) from web_sales, web_returns, web_page, customer_demographics cd1, customer_demographics cd2, customer_address, date_dim, reason where ws_web_page_sk = wp_web_page_sk and ws_item_sk = wr_item_sk and ws_order_number = wr_order_number and ws_sold_date_sk = d_date_sk and d_year = 1998 and cd1.cd_demo_sk = wr_refunded_cdemo_sk and cd2.cd_demo_sk = wr_returning_cdemo_sk and ca_address_sk = wr_refunded_addr_sk and r_reason_sk = wr_reason_sk and ( ( cd1.cd_marital_status = 'D' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Primary' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 100.00 and 150.00 ) or ( cd1.cd_marital_status = 'S' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'College' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 50.00 and 100.00 ) or ( cd1.cd_marital_status = 'U' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Advanced Degree' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 150.00 and 200.00 ) ) and ( ( ca_country = 'United States' and ca_state in ('NC', 'TX', 'IA') and ws_net_profit between 100 and 200 ) or ( ca_country = 'United States' and ca_state in ('WI', 'WV', 'GA') and ws_net_profit between 150 and 300 ) or ( ca_country = 'United States' and ca_state in ('OK', 'VA', 'KY') and ws_net_profit between 50 and 250 ) ) group by r_reason_desc order by substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) limit 100"
+}

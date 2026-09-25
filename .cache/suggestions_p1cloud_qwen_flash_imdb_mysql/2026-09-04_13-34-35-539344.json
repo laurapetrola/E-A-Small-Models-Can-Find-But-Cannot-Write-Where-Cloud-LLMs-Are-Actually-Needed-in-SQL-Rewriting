@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-04T13:34:35.539289",
+  "query_hash": "0d0160779a00",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": 0.0,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 177572.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "mysql",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH keyword_ids AS (\n    SELECT k.id\n    FROM keyword AS k\n    WHERE k.keyword = 'character-name-in-title'\n),\nmovie_ids AS (\n    SELECT mk.movie_id AS movie_id,\n           mc.company_id AS company_id\n    FROM movie_keyword AS mk\n    JOIN movie_companies AS mc ON mc.movie_id = mk.movie_id\n    WHERE mk.keyword_id IN (SELECT id FROM keyword_ids)\n)\nSELECT MIN(n.name) AS member_in_charnamed_movie\nFROM movie_ids AS fm\nJOIN title AS t ON t.id = fm.movie_id\nJOIN cast_info AS ci ON ci.movie_id = fm.movie_id\nJOIN name AS n ON n.id = ci.person_id AND n.name LIKE '%B%'\nJOIN company_name AS cn ON cn.id = fm.company_id",
+  "reached_sql": "WITH keyword_ids AS (\n    SELECT k.id\n    FROM keyword AS k\n    WHERE k.keyword = 'character-name-in-title'\n),\nmovie_ids AS (\n    SELECT mk.movie_id AS movie_id,\n           mc.company_id AS company_id\n    FROM movie_keyword AS mk\n    JOIN movie_companies AS mc ON mc.movie_id = mk.movie_id\n    WHERE mk.keyword_id IN (SELECT id FROM keyword_ids)\n)\nSELECT MIN(n.name) AS member_in_charnamed_movie\nFROM movie_ids AS fm\nJOIN title AS t ON t.id = fm.movie_id\nJOIN cast_info AS ci ON ci.movie_id = fm.movie_id\nJOIN name AS n ON n.id = ci.person_id AND n.name LIKE '%B%'\nJOIN company_name AS cn ON cn.id = fm.company_id",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user has already tried several strategies, and now I need to come up with a different approach. Let me start by understanding the original query and the previous attempts.\n\nThe original query is looking for the minimum name (member_in_charnamed_movie) where the keyword is 'character-name-in-title', and the name starts with 'B'. The query joins multiple tables: cast_info, company_name, keyword, movie_companies, movie_keyword, name, and title. \n\nLooking at the previous strategies, they focused on subquery materialization, early filtering, join order, index pushdown, and avoiding Cartesian joins. Now, I need to think of another technique. Let me analyze the query structure again.\n\nThe WHERE clause has several conditions. The keyword condition is k.keyword = 'character-name-in-title', which is a specific filter. Then, there's the n.name LIKE '%B%' which is a pattern match. The joins are between various tables, especially linking movie IDs through multiple tables.\n\nOne thing I notice is that the query is joining movie_keyword with title via t.id = mk.movie_id. Since the keyword is fixed, maybe we can pre-filter the movie_keyword table to only include those with the specific keyword. That's what the first previous strategy tried, but maybe there's another angle.\n\nWait, the user mentioned that the previous strategy didn't work. Maybe the issue is that the joins are causing a lot of rows to be processed. Let me think about the join order. The query joins cast_info with title, then with movie_keyword, etc. If we can reduce the number of rows early in the join process, that might help.\n\nAnother thought: the name LIKE '%B%' is a pattern that could be slow if there's no index on n.name. But the user mentioned index-eligible filter pushdown as a previous strategy. However, maybe the join between cast_info and name is causing a lot of rows. If we can filter the cast_info first based on the name condition, that might help. Wait, but the name is in the name table, which is joined via cast_info.person_id = name.id. So perhaps we can pre-filter the name table first.\n\nWait, the n.name LIKE '%B%' is a condition that's applied after joining with cast_info. If we can get the name table filtered first, then join with cast_info, that might reduce the number of rows. But how? Because the name table is joined with cast_info via person_id. So maybe we can create a subquery that selects name.id where name LIKE '%B%' and then join that with cast_info. That way, we filter the name table first, reducing the number of rows before joining with cast_info.\n\nBut the user already tried subquery materialization for the keyword condition. Maybe another approach is to materialize the name filter. Let me check the previous strategies again. The fourth strategy was index-eligible filter pushdown on n.name LIKE '%B%'. But maybe the join between cast_info and name is causing a lot of rows. If we can get the name table filtered first, then join with cast_info, that might help. \n\nAlternatively, considering that the final result is the minimum name, perhaps we can find a way to limit the rows early. For example, if we can get the movie IDs that have the keyword 'character-name-in-title' and then find the names associated with those movies where the name starts with 'B', and then take the minimum. \n\nWait, the query is selecting MIN(n.name), so maybe we can find the movie IDs first that meet the keyword condition, then for each of those movies, find the names in cast_info where the person's name starts with 'B', and then take the minimum. That way, we can reduce the number of movies to process early.\n\nSo, the idea is to first get the movie IDs that have the keyword 'character-name-in-title' via the movie_keyword table. Then, for those movies, get the cast_info entries where the person's name starts with 'B', and then find the minimum name. This approach would reduce the number of movies processed early, which could save a lot of rows.\n\nSo the target here would be the movie_keyword join with the keyword condition. By materializing the movie IDs that meet the keyword condition first, we can then join with other tables, reducing the overall dataset. This is similar to the previous subquery materialization but focusing on the movie IDs instead of the keyword condition. \n\nAnother possibility is to check if there are indexes on the tables involved. For example, the movie_keyword table has a keyword_id and movie_id. If we can filter the movie_keyword table to only include the keyword 'character-name-in-title', that would reduce the rows. Then, joining with title and other tables would be on fewer rows. \n\nBut the user already tried subquery materialization for that. Maybe the next step is to optimize the join between title and movie_keyword. Since t.id = mk.movie_id, and mk.keyword_id = k.id, perhaps we can pre-filter the mk table to only include the keyword, then join with title. \n\nAlternatively, considering that the final result is the minimum name, maybe we can find the earliest occurrence of a name starting with 'B' in the relevant movies. But I think the main idea is to reduce the number of rows processed early by filtering the movie IDs first. \n\nSo, the optimization strategy would be to materialize the movie IDs that have the keyword 'character-name-in-title' first, then use those to filter the other joins. This would reduce the number of rows in the subsequent joins, leading to better performance.\n\n</think>\n\n1. Subquery Materialization \u2014 TARGET: (mk.keyword_id = k.id AND mk.keyword_id = (SELECT id FROM keyword WHERE keyword = 'character-name-in-title')) \u2014 TRANSFORMATION: Replace the keyword condition with a subquery that pre-filters keyword.id to only include the specific 'character-name-in-title' value, reducing the rows in movie_keyword before joining with title  \n2. Join Order Optimization \u2014 TARGET: (t.id = mk.movie_id AND t.id = mc.movie_id) \u2014 TRANSFORMATION: Execute the join with movie_keyword and movie_companies first to isolate movie_ids with both keyword and company data, minimizing the rows passed to subsequent joins with cast_info and name  \n3. Index-Eligible Filter Pushdown \u2014 TARGET: n.name LIKE '%B%' \u2014 TRANSFORMATION: Apply this filter after joining with cast_info but before joining with name to leverage potential index on n.name (if available)  \n4. Cartesian Join Avoidance \u2014 TARGET: (mc.company_id = cn.id) \u2014 TRANSFORMATION: Ensure this join is executed after all other filters to minimize the Cartesian product size with company_name  \n5. Early Filtering \u2014 TARGET: (ci.movie_id = t.id AND t.id = mk.movie_id) \u2014 TRANSFORMATION: Apply the movie_id equality conditions as a subquery to isolate the required movie_ids first, minimizing the rows passed to subsequent joins",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 28831.0,
+      "delta_ms": 0.0,
+      "improvement_pct": 0.0,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 20469873.15,
+      "optimized": 20311065.17,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 124362.6,
+    "index_advisor_inference_ms": 50225.7,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 2984.0,
+    "total_inference_ms": 177572.3,
+    "writer_inference_ms": 1000724.2,
+    "writer_tokens_in": 2965,
+    "writer_tokens_out": 120893,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. Subquery Materialization \u2014 TARGET: (mk.keyword_id = k.id AND mk.keyword_id = (SELECT id FROM keyword WHERE keyword = 'character-name-in-title')) \u2014 TRANSFORMATION: Replace the keyword condition with a subquery that pre-filters keyword.id to only include the specific 'character-name-in-title' value, reducing the rows in movie_keyword before joining with title  \n2. Join Order Optimization \u2014 TARGET: (t.id = mk.movie_id AND t.id = mc.movie_id) \u2014 TRANSFORMATION: Execute the join with movie_keyword and movie_companies first to isolate movie_ids with both keyword and company data, minimizing the rows passed to subsequent joins with cast_info and name  \n3. Index-Eligible Filter Pushdown \u2014 TARGET: n.name LIKE '%B%' \u2014 TRANSFORMATION: Apply this filter after joining with cast_info but before joining with name to leverage potential index on n.name (if available)  \n4. Cartesian Join Avoidance \u2014 TARGET: (mc.company_id = cn.id) \u2014 TRANSFORMATION: Ensure this join is executed after all other filters to minimize the Cartesian product size with company_name  \n5. Early Filtering \u2014 TARGET: (ci.movie_id = t.id AND t.id = mk.movie_id) \u2014 TRANSFORMATION: Apply the movie_id equality conditions as a subquery to isolate the required movie_ids first, minimizing the rows passed to subsequent joins",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was subquery materialization for the keyword condition, and the rewrite applies that by using a CTE (keyword_ids) to pre-filter keyword.id. It also aligns with"
+  },
+  "raw_sql": "SELECT MIN(n.name) AS member_in_charnamed_movie FROM cast_info AS ci, company_name AS cn, keyword AS k, movie_companies AS mc, movie_keyword AS mk, name AS n, title AS t WHERE k.keyword ='character-name-in-title' AND n.name LIKE '%B%' AND n.id = ci.person_id AND ci.movie_id = t.id AND t.id = mk.movie_id AND mk.keyword_id = k.id AND t.id = mc.movie_id AND mc.company_id = cn.id AND ci.movie_id = mc.movie_id AND ci.movie_id = mk.movie_id AND mc.movie_id = mk.movie_id"
+}

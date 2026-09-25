@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-08-28T11:49:09.216159",
+  "query_hash": "3505b74fb5bb",
+  "suggestions": [
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "convert CASE WHEN condition to equivalent arithmetic condition",
+    "pre-filter a large table as a CTE before the join",
+    "replace CASE expression with direct comparison",
+    "use HAVING clause for aggregation filter"
+  ],
+  "improvement_pct": 2.46,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 590648.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH county_stores AS (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_county = 'Williamson County'\n), qualifying_hd AS (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE (hd_buy_potential = '1001-5000' OR hd_buy_potential = '5001-10000')\n      AND hd_vehicle_count > 0\n      AND hd_dep_count >= 2 * hd_vehicle_count\n)\nSELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, ss_ticket_number, cnt\nFROM (\n    SELECT ss_ticket_number, ss_customer_sk, count(*) AS cnt\n    FROM store_sales\n    JOIN date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    WHERE ss_store_sk IN (SELECT s_store_sk FROM county_stores)\n      AND ss_hdemo_sk IN (SELECT hd_demo_sk FROM qualifying_hd)\n      AND date_dim.d_dom BETWEEN 1 AND 2\n      AND date_dim.d_year IN (2000, 2000+1, 2000+2)\n    GROUP BY ss_ticket_number, ss_customer_sk\n    HAVING count(*) BETWEEN 1 AND 5\n) AS dj\nJOIN customer ON dj.ss_customer_sk = customer.c_customer_sk\nORDER BY cnt DESC, c_last_name ASC",
+  "reached_sql": "WITH county_stores AS (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_county = 'Williamson County'\n), qualifying_hd AS (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE (hd_buy_potential = '1001-5000' OR hd_buy_potential = '5001-10000')\n      AND hd_vehicle_count > 0\n      AND hd_dep_count >= 2 * hd_vehicle_count\n)\nSELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, ss_ticket_number, cnt\nFROM (\n    SELECT ss_ticket_number, ss_customer_sk, count(*) AS cnt\n    FROM store_sales\n    JOIN date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n    WHERE ss_store_sk IN (SELECT s_store_sk FROM county_stores)\n      AND ss_hdemo_sk IN (SELECT hd_demo_sk FROM qualifying_hd)\n      AND date_dim.d_dom BETWEEN 1 AND 2\n      AND date_dim.d_year IN (2000, 2000+1, 2000+2)\n    GROUP BY ss_ticket_number, ss_customer_sk\n    HAVING count(*) BETWEEN 1 AND 5\n) AS dj\nJOIN customer ON dj.ss_customer_sk = customer.c_customer_sk\nORDER BY cnt DESC, c_last_name ASC",
+  "reasoning_trace": "1. PARTIAL COVERING INDEX \u2014 TARGET: the `store_sales`-to-`store` join in derived table `dj` \u2014 TRANSFORMATION: derive the small `s_store_sk` set for `s_county = 'Williamson County'`, build a partial covering index on `store_sales(ss_sold_date_sk, ss_hdemo_sk)` including `ss_ticket_number, ss_customer_sk` restricted to that `ss_store_sk` set, and rewrite the store join as a semi-join on those `ss_store_sk` values so the GROUP BY is fed by an index-only scan of only county-store rows rather than all 57.6M `store_sales` rows.\n\n2. HD PREFILTER \u2014 TARGET: the `household_demographics` join in derived table `dj` \u2014 TRANSFORMATION: replace the CASE ratio condition with the equivalent simple comparison `hd_dep_count >= 2 * hd_vehicle_count` (keeping `hd_vehicle_count > 0`), then precompute the qualifying `hd_demo_sk` set and rewrite the HD join as a semi-join on that set, so the expensive 1.92M-row HD probe is reduced to a small key set and can be filtered using the indexed `ss_hdemo_sk` before aggregation.\n\n3. HAVING PUSHDOWN \u2014 TARGET: derived table `dj`'s aggregate output `cnt` and the outer `customer` join \u2014 TRANSFORMATION: move the `cnt between 1 and 5` predicate from the outer query into the aggregate as `HAVING count(*) between 1 and 5`, removing non-qualifying groups before they reach the `customer` hash join and the final `ORDER BY`.\n\n4. IN-LIST DEDUP \u2014 TARGET: `store.s_county` predicate \u2014 TRANSFORMATION: collapse the four identical `'Williamson County'` literals into one equality check to eliminate redundant repeated evaluation in the store filter and simplify planning.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2343.77,
+      "optimized_ms": 2286.087,
+      "delta_ms": 57.683,
+      "improvement_pct": 2.46,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1345159.91,
+      "optimized": 1345068.23,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 563472.9,
+    "index_advisor_inference_ms": 22643.3,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4532.3,
+    "total_inference_ms": 590648.5,
+    "writer_inference_ms": 525214.6,
+    "writer_tokens_in": 5224,
+    "writer_tokens_out": 57591,
+    "writer_calls": 4
+  },
+  "errors": [],
+  "strategy": "1. PARTIAL COVERING INDEX \u2014 TARGET: the `store_sales`-to-`store` join in derived table `dj` \u2014 TRANSFORMATION: derive the small `s_store_sk` set for `s_county = 'Williamson County'`, build a partial covering index on `store_sales(ss_sold_date_sk, ss_hdemo_sk)` including `ss_ticket_number, ss_customer_sk` restricted to that `ss_store_sk` set, and rewrite the store join as a semi-join on those `ss_store_sk` values so the GROUP BY is fed by an index-only scan of only county-store rows rather than all 57.6M `store_sales` rows.\n\n2. HD PREFILTER \u2014 TARGET: the `household_demographics` join in derived table `dj` \u2014 TRANSFORMATION: replace the CASE ratio condition with the equivalent simple comparison `hd_dep_count >= 2 * hd_vehicle_count` (keeping `hd_vehicle_count > 0`), then precompute the qualifying `hd_demo_sk` set and rewrite the HD join as a semi-join on that set, so the expensive 1.92M-row HD probe is reduced to a small key set and can be filtered using the indexed `ss_hdemo_sk` before aggregation.\n\n3. HAVING PUSHDOWN \u2014 TARGET: derived table `dj`'s aggregate output `cnt` and the outer `customer` join \u2014 TRANSFORMATION: move the `cnt between 1 and 5` predicate from the outer query into the aggregate as `HAVING count(*) between 1 and 5`, removing non-qualifying groups before they reach the `customer` hash join and the final `ORDER BY`.\n\n4. IN-LIST DEDUP \u2014 TARGET: `store.s_county` predicate \u2014 TRANSFORMATION: collapse the four identical `'Williamson County'` literals into one equality check to eliminate redundant repeated evaluation in the store filter and simplify planning.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe rewrite applies the strategy's main techniques: partial covering index via semi-join on `ss_store_sk` (county_stores), HD prefilter via semi-join on `ss_hdemo_sk` (qualifying_hd), and H"
+  },
+  "raw_sql": "select c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt from (select ss_ticket_number ,ss_customer_sk ,count(*) cnt from store_sales,date_dim,store,household_demographics where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_store_sk = store.s_store_sk and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk and date_dim.d_dom between 1 and 2 and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') and household_demographics.hd_vehicle_count > 0 and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 and date_dim.d_year in (2000,2000+1,2000+2) and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') group by ss_ticket_number,ss_customer_sk) dj,customer where ss_customer_sk = c_customer_sk and cnt between 1 and 5 order by cnt desc, c_last_name asc"
+}

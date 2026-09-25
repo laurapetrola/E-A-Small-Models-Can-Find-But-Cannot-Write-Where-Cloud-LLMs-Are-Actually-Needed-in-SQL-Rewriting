@@ -1,0 +1,302 @@
+{
+  "timestamp": "2026-07-30T08:25:20.522964",
+  "query_hash": "cddbdcb96bc9",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 166794.7,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify the index(es) that would most reduce the execution cost.\n\nThe query is:\n```sql\nselect dt.d_year ,item.i_brand_id brand_id ,item.i_brand brand ,sum(ss_sales_price) sum_agg \nfrom date_dim dt \n  ,store_sales \n  ,item \nwhere dt.d_date_sk = store_sales.ss_sold_date_sk \n  and store_sales.ss_item_sk = item.i_item_sk \n  and item.i_manufact_id = 816 \n  and dt.d_moy=11 \ngroup by dt.d_year ,item.i_brand ,item.i_brand_id \norder by dt.d_year ,sum_agg desc ,brand_id \nlimit 100;\n```\n\nThe relevant tables are:\n- date_dim (73,049 rows, no indexes)\n- store_sales (57,598,932 rows, no indexes)\n- item (28,000 rows, no indexes)\n\nThe physical execution plan is not provided, but we can analyze the query structure.\n\nThe query joins three tables: date_dim, store_sales, and item. The conditions are:\n1. dt.d_date_sk = store_sales.ss_sold_date_sk\n2. store_sales.ss_item_sk = item.i_item_sk\n3. item.i_manufact_id = 816\n4. dt.d_moy = 11\n\nWe are grouping by year, brand, and brand_id, and then ordering by year, sum_agg (descending), and brand_id, limiting to 100 rows.\n\nWithout indexes, the query will likely perform full table scans on the tables, especially the large store_sales table.\n\nLet's break down the query:\n\n1. The condition `item.i_manufact_id = 816` is a filter on the item table. Since the item table has 28,000 rows, this filter might reduce the number of rows, but without an index, it will be a sequential scan.\n\n2. The condition `dt.d_moy=11` is a filter on the date_dim table. The date_dim table has 73,049 rows, so this filter might also reduce the rows, but again, without an index, it's a sequential scan.\n\n3. The main join is between store_sales and item via `store_sales.ss_item_sk = item.i_item_sk`. Then, the store_sales table is joined with date_dim via `dt.d_date_sk = store_sales.ss_sold_date_sk`.\n\nGiven the large size of store_sales (57 million rows), the join and the filters will be expensive.\n\nWe are to recommend indexes that would help. We must consider:\n\n- The columns that are being used in the joins and filters.\n\nThe joins are:\n- store_sales.ss_item_sk = item.i_item_sk\n- store_sales.ss_sold_date_sk = date_dim.d_date_sk\n\nThe filters are:\n- item.i_manufact_id = 816\n- date_dim.d_moy = 11\n\nWe should consider creating indexes on the columns that are frequently used in joins and filters.\n\nHowever, note that the query is grouping and then ordering by the year and the sum. The grouping might be done after the join and filter.\n\nLet's think about the execution plan without indexes:\n\n1. The item table will be scanned (28,000 rows) and filtered by i_manufact_id=816. Without an index, this is a sequential scan.\n\n2. The date_dim table will be scanned (73,049 rows) and filtered by d_moy=11. Without an index, sequential scan.\n\n3. Then, the store_sales table will be scanned (57 million rows) and joined with the filtered item and date_dim.\n\nAlternatively, the planner might do a nested loop join if the join conditions are on small sets, but with the large store_sales table, it might use a hash join or a merge join.\n\nBut note: the condition `item.i_manufact_id = 816` is a filter on item, and `dt.d_moy=11` is a filter on date_dim. Then, the join between store_sales and item (on ss_item_sk) and then with date_dim (on ss_sold_date_sk) must be done.\n\nWithout indexes, the planner might do:\n\n- Seq scan on item, then for each item, a seq scan on store_sales to find matching items? That would be very expensive.\n\nAlternatively, it might do:\n\n- Seq scan on store_sales, then for each row, check the item and date_dim? Also expensive.\n\nBut note: the query has two filters (one on item and one on date_dim) and two joins (store_sales to item and store_sales to date_dim). The store_sales table is the largest.\n\nWe can consider:\n\n1. Index on store_sales(ss_item_sk) to help the join with item.\n2. Index on store_sales(ss_sold_date_sk) to help the join with date_dim.\n3. Index on item(i_manufact_id) to help the filter on item.\n4. Index on date_dim(d_moy) to help the filter on date_dim.\n\nBut note: the query is grouping and then ordering by the year and the sum. The grouping might be done after the join and filter.\n\nHowever, the problem states that the query cannot be improved by SQL rewriting, so we must rely on indexes.\n\nNow, let's consider the order of the tables in the FROM clause. The query uses an old-style comma separated join. The planner might choose the order of joining based on the table sizes.\n\nBut note: the query has two filters and two joins. The item table has 28,000 rows, the date_dim has 73,049, and store_sales has 57 million.\n\nWithout indexes, the planner might choose to do a nested loop join starting with the smallest table (item) and then join to store_sales. But 28,000 * (number of matching store_sales rows) might be too many.\n\nAlternatively, it might do a hash join or a merge join.\n\nBut without indexes, the joins and filters will be slow.\n\nNow, let's think about the columns that are being used in the joins and filters:\n\n- For the join between store_sales and item: store_sales.ss_item_sk and item.i_item_sk. We can create a B-tree index on store_sales(ss_item_sk) and on item(i_item_sk). But note: the item table is small (28,000 rows) and the filter on item is by i_manufact_id. We might also create an index on item(i_manufact_id, i_item_sk) to cover both the filter and the join.\n\nBut note: the query is filtering item by i_manufact_id and then joining on i_item_sk. So, if we create an index on item(i_manufact_id, i_item_sk), then the planner might use that index to quickly find the matching items and then join to store_sales.\n\nSimilarly, for the join between store_sales and date_dim, we can index store_sales(ss_sold_date_sk) and date_dim(d_date_sk). But date_dim is small, so indexing it might not be necessary. However, the filter on date_dim is by d_moy, so we might index date_dim(d_moy, d_date_sk) to cover the filter and the join.\n\nBut note: the query condition is `dt.d_moy=11` and `dt.d_date_sk = store_sales.ss_sold_date_sk`. We can also consider a composite index on date_dim(d_moy, d_date_sk) to cover both the filter and the join.\n\nHowever, the problem says to return the index(es) that would most reduce the execution cost. We must prioritize the tables with the most rows.\n\nThe store_sales table has 57 million rows. The two joins and the two filters are on columns of store_sales (via joins) and on other tables (item and date_dim). But the other tables are small, so the main bottleneck is the store_sales table.\n\nBut note: the query is grouping and then ordering by the year and the sum. The grouping might be done after the join and filter. The planner might do:\n\n- Filter item by i_manufact_id=816 (28,000 rows, but without index, it's a sequential scan)\n- Filter date_dim by d_moy=11 (73,049 rows, sequential scan)\n- Then, join store_sales with the filtered item and date_dim.\n\nBut without indexes, the joins will be expensive.\n\nAlternatively, the planner might do:\n\n- Seq scan on store_sales, then for each row, check the item and date_dim.\n\nBut that would be 57 million rows * (cost of two table lookups) which is too slow.\n\nAlternatively, the planner might do:\n\n- Create a hash table for the filtered item (by i_item_sk) and then for the filtered date_dim (by d_date_sk) and then join store_sales with these two.\n\nBut without indexes, the filtering of item and date_dim would be sequential scans, and then the join would be a hash join on store_sales with the two small tables.\n\nBut note: the query has two conditions: one on item and one on date_dim. The planner might do:\n\n- Seq scan on item, filter by i_manufact_id=816, then create a hash table for the i_item_sk of those items.\n- Seq scan on date_dim, filter by d_moy=11, then create a hash table for the d_date_sk of those dates.\n- Then, hash join store_sales with the item hash table on ss_item_sk, and then with the date_dim hash table on ss_sold_date_sk.\n\nBut without indexes, the two sequential scans on item and date_dim are still expensive.\n\nNow, let's consider the indexes:\n\n1. On item(i_manufact_id): This would help the filter on item. Since the item table is small (28,000 rows), this might not be a huge bottleneck, but it would help.\n\n2. On date_dim(d_moy): This would help the filter on date_dim.\n\n3. On store_sales(ss_item_sk): This would help the join with item.\n\n4. On store_sales(ss_sold_date_sk): This would help the join with date_dim.\n\nBut note: the query is grouping and then ordering by the year and the sum. The grouping might be done after the join and filter. The planner might use an index on store_sales to quickly find the rows that match the join conditions and then aggregate.\n\nBut the main bottleneck is the large store_sales table. The two joins and the two filters are on store_sales (via the foreign keys). So, indexing the foreign keys in store_sales would help.\n\nHowever, note that the query has a filter on item and date_dim. We can also consider creating an index on item(i_manufact_id, i_item_sk) to cover both the filter and the join. Similarly, an index on date_dim(d_moy, d_date_sk) to cover the filter and the join.\n\nBut the problem says to return the index(es) that would most reduce the execution cost. We must consider the number of rows in the tables.\n\nThe store_sales table has 57 million rows. The other tables are small. Therefore, the most expensive part is the store_sales table.\n\nThe two joins are on store_sales(ss_item_sk) and store_sales(ss_sold_date_sk). We should index these columns.\n\nAdditionally, the filter on item and date_dim are on small tables, so indexing those might help, but the reduction in cost might be less than indexing store_sales.\n\nBut note: the query is filtering item by i_manufact_id=816. Without an index, the planner must scan the entire item table (28,000 rows). With an index, it can quickly jump to the rows with i_manufact_id=816. Similarly for date_dim.\n\nHowever, the store_sales table is the largest, so indexing store_sales might be more beneficial.\n\nBut the query has two joins on store_sales. We can create a composite index on store_sales that includes both ss_item_sk and ss_sold_date_sk? But that might not be necessary because the joins are separate.\n\nAlternatively, we can create two separate indexes on store_sales(ss_item_sk) and store_sales(ss_sold_date_sk).\n\nBut note: the query is grouping by year and brand, and then ordering by the sum. The grouping and aggregation might be done after the join and filter. The planner might use an index on store_sales to quickly find the rows that match the join conditions and then aggregate.\n\nBut the main issue is the join and filter on store_sales.\n\nNow, let's consider the order of the tables in the FROM clause. The query uses:\n\n```sql\nfrom date_dim dt ,store_sales ,item\n```\n\nBut the planner can choose the order. We cannot rely on the order.\n\nGiven the above, we propose:\n\n1. Index on store_sales(ss_item_sk) to help the join with item.\n2. Index on store_sales(ss_sold_date_sk) to help the join with date_dim.\n3. Index on item(i_manufact_id) to help the filter on item.\n4. Index on date_dim(d_moy) to help the filter on date_dim.\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must prioritize the tables with the most rows.\n\nThe store_sales table has 57 million rows, so indexing its columns (ss_item_sk and ss_sold_date_sk) would help the most.\n\nThe item table has 28,000 rows, so indexing i_manufact_id would help, but less than store_sales.\n\nSimilarly, date_dim has 73,049 rows, so indexing d_moy would help, but less than store_sales.\n\nBut note: the query has two filters on small tables and two joins on a large table. The two joins are the main bottlenecks.\n\nTherefore, we should index the columns in store_sales that are used in the joins.\n\nAdditionally, the filter on item might be improved by an index, but the reduction in cost might be less.\n\nBut the problem says to return the index(es) that would most reduce the execution cost. We must consider the total cost.\n\nHowever, without the execution plan, we cannot be sure. But based on the table sizes, the store_sales table is the largest, so indexing its columns is critical.\n\nBut note: the query has a condition `item.i_manufact_id = 816`. This is a filter on item. Without an index, the planner must scan the entire item table. With an index, it can quickly find the rows. Since the item table is small (28,000 rows), the improvement might be noticeable, but not as dramatic as for store_sales.\n\nSimilarly, the date_dim table is small (73,049 rows) and the filter is by d_moy=11. Without an index, it's a sequential scan. With an index, it's a fast lookup.\n\nBut the store_sales table is 57 million rows, and the joins are on two columns. Without indexes, the planner might do a sequential scan on store_sales for each row of the other tables, which is very expensive.\n\nTherefore, we should index store_sales(ss_item_sk) and store_sales(ss_sold_date_sk).\n\nBut note: the query has two joins on store_sales. We can create two separate indexes.\n\nAlternatively, we can create a composite index on store_sales(ss_item_sk, ss_sold_date_sk) but that might not be necessary because the joins are separate.\n\nNow, let's consider the type of index. We are using PostgreSQL, and the columns are:\n\n- store_sales.ss_item_sk: integer\n- store_sales.ss_sold_date_sk: integer\n\nWe can use a B-tree index, which is the default.\n\nAlso, the extensions hypopg and pg_trgm are available, but we don't need them for these indexes.\n\nNow, the problem says to return the index(es) in the form of JSON. We must specify:\n\n- target: the table name\n- property: the column name\n- index_type: the index type (e.g., \"BTREE\")\n- partial_predicate: null (since there is no condition for the index, or if there is, we specify it)\n- estimated_benefit: a string describing what the index eliminates and on how many rows.\n\nBut note: the problem says to set partial_predicate to null unless there is a condition. We don't have a condition for these indexes.\n\nNow, let's write the JSON:\n\nWe will recommend two indexes on store_sales and one on item and one on date_dim.\n\nBut note: the problem says to order the indexes by the number of rows scanned (largest first). The store_sales table has 57 million rows, so the two indexes on store_sales would be the first two.\n\nThen, the item table has 28,000 rows, and the date_dim has 73,049 rows.\n\nBut note: the query has two filters and two joins. The two joins are on store_sales, so the two indexes on store_sales are the most important.\n\nHowever, the filter on item might be improved by an index, but the reduction in cost might be less than the two joins on store_sales.\n\nBut the problem says to return the index(es) that would most reduce the execution cost. We must consider the total cost.\n\nBut without the execution plan, we cannot be sure. However, the store_sales table is the largest, so the two joins on store_sales are the main bottlenecks.\n\nTherefore, we will recommend:\n\n1. Index on store_sales(ss_item_sk)\n2. Index on store_sales(ss_sold_date_sk)\n3. Index on item(i_manufact_id)\n4. Index on date_dim(d_moy)\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must prioritize the largest table.\n\nBut the query has two joins on store_sales and two filters on the other tables. The two joins are the main bottlenecks.\n\nHowever, the problem says to return the index(es) that would most reduce the execution cost. We must consider the total cost.\n\nBut note: the query is grouping and then ordering by the year and the sum. The grouping might be done after the join and filter. The planner might use an index on store_sales to quickly find the rows that match the join conditions and then aggregate.\n\nBut the main issue is the join and filter on store_sales.\n\nNow, let's write the JSON:\n\nWe will return four indexes.\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must consider the impact.\n\nAlternatively, we might consider that the planner might use an index on store_sales to avoid a sequential scan for the join. The two joins are the main bottlenecks.\n\nBut note: the query has two conditions on store_sales: one for the join with item and one for the join with date_dim. We can create two separate indexes.\n\nNow, the JSON structure:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_item_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with item, reducing the cost from 57 million rows to the number of matching rows (which is the number of items with i_manufact_id=816).\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with date_dim, reducing the cost from 57 million rows to the number of matching rows (which is the number of dates with d_moy=11).\"\n    },\n    {\n      \"target\": \"item\",\n      \"property\": \"i_manufact_id\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on item for the filter i_manufact_id=816, reducing the cost from 28,000 rows to the number of rows with i_manufact_id=816.\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_moy\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on date_dim for the filter d_moy=11, reducing the cost from 73,049 rows to the number of rows with d_moy=11.\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The indexes are recommended to improve the performance of the joins and filters on the large store_sales table and the smaller tables. The store_sales table has 57 million rows, so indexing its join columns (ss_item_sk and ss_sold_date_sk) is critical. The other tables are smaller, but indexing their filter columns (item.i_manufact_id and date_dim.d_moy) will also help.\"\n}\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must consider the total cost.\n\nHowever, the store_sales table is the largest, so the two indexes on store_sales are the most important.\n\nBut the problem does not specify the exact cost, so we must rely on the table sizes.\n\nAlternatively, we might consider that the planner might use an index on store_sales to avoid a sequential scan for the join. The two joins are the main bottlenecks.\n\nBut note: the query has two joins on store_sales. We can create two separate indexes.\n\nNow, the estimated_benefit for the store_sales indexes: they eliminate the sequential scan on store_sales for the respective join. The number of rows scanned for the join would be reduced to the number of matching rows.\n\nBut note: the query has two joins. The first join is with item (via ss_item_sk) and the second with date_dim (via ss_sold_date_sk). The planner might use one index for one join and then the other index for the other join.\n\nBut the problem says to return the index(es) that would most reduce the execution cost. We must consider the total cost.\n\nWe are returning four indexes.\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must consider the impact.\n\nAlternatively, we might consider that the planner might use a bitmap index or other, but we are using B-tree.\n\nNow, the JSON structure must be exactly as specified.\n\nBut note: the problem says to set partial_predicate to null. We are doing that.\n\nAlso, the index_type is \"BTREE\".\n\nNow, let's write the JSON.\n\nBut note: the problem says to return the index(es) that would most reduce the execution cost. We must consider the order. We are returning the store_sales indexes first because they are on th",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "BTREE",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2951319.82,
+          "cost_with_index": 2951319.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931023.57,
+          "cost_with_index": 1931023.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369589.24,
+          "cost_with_index": 1369589.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803867.74,
+          "cost_with_index": 803867.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118368.18,
+          "cost_with_index": 118368.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109987.82,
+          "cost_with_index": 21109987.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29035301.21,
+          "cost_with_index": 29035301.21,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178654.28,
+          "cost_with_index": 178654.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81714.98,
+          "cost_with_index": 81714.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712063.14,
+          "cost_with_index": 3664018.49,
+          "benefit_pct": 1.3
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134874.74,
+          "cost_with_index": 134874.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.16,
+          "cost_with_index": 224465.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345287.72,
+          "cost_with_index": 1345287.72,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342668.44,
+          "cost_with_index": 1342668.44,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_manufact_id",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369589.24,
+          "cost_with_index": 1369589.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118368.18,
+          "cost_with_index": 118368.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 938197.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178654.28,
+          "cost_with_index": 178654.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81714.98,
+          "cost_with_index": 81714.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906041.29,
+          "cost_with_index": 906041.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.16,
+          "cost_with_index": 224465.16,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_moy",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.3,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1428791.07,
+          "cost_with_index": 1428791.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2951319.82,
+          "cost_with_index": 2951319.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931023.57,
+          "cost_with_index": 1931023.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369589.24,
+          "cost_with_index": 1369589.24,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803867.74,
+          "cost_with_index": 803350.71,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118368.18,
+          "cost_with_index": 118368.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29035301.21,
+          "cost_with_index": 29035301.21,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1191497.02,
+          "cost_with_index": 1191497.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833949.87,
+          "cost_with_index": 3833949.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938197.95,
+          "cost_with_index": 938197.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178654.28,
+          "cost_with_index": 178654.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81714.98,
+          "cost_with_index": 81714.98,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906041.29,
+          "cost_with_index": 906041.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712063.14,
+          "cost_with_index": 3712063.14,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134874.74,
+          "cost_with_index": 134401.57,
+          "benefit_pct": 0.4
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.16,
+          "cost_with_index": 224465.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345287.72,
+          "cost_with_index": 1345287.72,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91547.72,
+          "cost_with_index": 91547.72,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

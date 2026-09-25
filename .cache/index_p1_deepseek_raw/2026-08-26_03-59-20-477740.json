@@ -1,0 +1,294 @@
+{
+  "timestamp": "2026-08-26T03:59:20.477717",
+  "query_hash": "7aed0fb6af9b",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 266563.3,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting. We must identify indexes to reduce cost.\n\nFirst, let's break down the query:\n\nThe main query is:\n```sql\nselect * from (select i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales \n  from item ,store_sales ,date_dim ,store \n  where ss_item_sk = i_item_sk \n    and ss_sold_date_sk = d_date_sk \n    and ss_store_sk = s_store_sk \n    and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) \n    and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) \n         or ( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) \n  group by i_manager_id, d_moy) tmp1 \nwhere case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 \norder by i_manager_id ,avg_monthly_sales ,sum_sales \nlimit 100\n```\n\nThis is a complex query with multiple joins and aggregations. The inner query (using old-style joins) is:\n\n```sql\nselect i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales \nfrom item ,store_sales ,date_dim ,store \nwhere ss_item_sk = i_item_sk \n  and ss_sold_date_sk = d_date_sk \n  and ss_store_sk = s_store_sk \n  and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) \n  and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) \n       or ( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) \ngroup by i_manager_id, d_moy\n```\n\nThen, the outer query filters the result of the inner query and orders by i_manager_id, avg_monthly_sales, and sum_sales, then limits to 100 rows.\n\nGiven the tables and their sizes:\n\n- item: 28,000 rows (no indexes)\n- store_sales: 57,598,932 rows (no indexes)\n- date_dim: 73,049 rows (no indexes)\n- store: 44 rows (no indexes)\n\nThe inner query is joining four tables: item, store_sales, date_dim, and store. The main driving table is store_sales (57 million rows). The other tables are small except store_sales.\n\nThe inner query has a WHERE clause that filters on:\n1. `ss_item_sk = i_item_sk` (join condition between store_sales and item)\n2. `ss_sold_date_sk = d_date_sk` (join condition between store_sales and date_dim)\n3. `ss_store_sk = s_store_sk` (join condition between store_sales and store)\n4. `d_month_seq` in a list of 12 months (this is a range of months, but note that the month_seq values are given as 1222, 1222+1, ... up to 1222+11, which is 1222 to 1233)\n5. A condition on item that is an OR of two sets of conditions (category, class, brand)\n\nThe grouping is by `i_manager_id` and `d_moy` (day of month). But note: the date_dim is being joined and then grouped by d_moy, which is the month of the year? Actually, the grouping is by d_moy (month of the year) but the filter is on d_month_seq (which is a different column). This might be a mistake, but we are to focus on the given query.\n\nThe outer query then filters on a condition that compares the current row's sum_sales to the average monthly sales (avg_monthly_sales) for that manager. Then it orders and limits to 100.\n\nWithout the execution plan, we must rely on the query structure.\n\nThe main bottlenecks are likely in the joins and the filtering on store_sales.\n\nLet's consider the tables:\n\n1. **store_sales** (57 million rows) is the largest table. The query is joining it with three other tables. The joins are:\n   - `ss_item_sk = i_item_sk` (with item, 28k rows)\n   - `ss_sold_date_sk = d_date_sk` (with date_dim, 73k rows)\n   - `ss_store_sk = s_store_sk` (with store, 44 rows)\n\nThe store table is very small (44 rows) so that join is negligible. The date_dim is 73k rows, so that join is also small. The item table is 28k rows, so that join is small.\n\nBut note: the filter on `d_month_seq` is a range of 12 months. This might be a large fraction of the data (if the date_dim has 73k rows, then 12 months would be about 12/12 * 73k = 73k rows, but note that d_month_seq is a sequence of months, so it might be grouping by year? Actually, the date_dim has a column d_month_seq which is the month sequence (probably starting from 1). The filter is on a range of 12 consecutive months (from 1222 to 1233). This is a fixed set of months, so it's a range of 12 months. The store_sales table has 57 million rows, so the filter on d_month_seq will reduce the number of rows, but we don't know how much.\n\nHowever, the main issue is that the query is doing a full table scan on store_sales because there are no indexes. The joins are using the primary keys (which are not defined in the schema, but note that the tables have composite primary keys or single-column primary keys? The schema shows:\n\n- store_sales: Primary Key (ss_ticket_number, ss_item_sk) \u2014 but note that the join condition is on ss_item_sk and ss_sold_date_sk and ss_store_sk. The primary key is not being used for the joins because the joins are on different columns.\n\nWait, the store_sales table does not have an index on ss_item_sk, ss_sold_date_sk, or ss_store_sk. So the joins and the filtering will be very slow.\n\nNow, let's look at the conditions:\n\n- The join condition `ss_item_sk = i_item_sk` \u2014 we should index store_sales(ss_item_sk) and item(i_item_sk). But note: the item table is small, so it might be better to index store_sales(ss_item_sk) because it is the larger table.\n\n- The join condition `ss_sold_date_sk = d_date_sk` \u2014 we should index store_sales(ss_sold_date_sk) and date_dim(d_date_sk). But date_dim is small, so indexing store_sales(ss_sold_date_sk) would help.\n\n- The join condition `ss_store_sk = s_store_sk` \u2014 we should index store_sales(ss_store_sk) and store(s_store_sk). The store table is tiny, so indexing store_sales(ss_store_sk) would help.\n\nAdditionally, the filter on `d_month_seq` is a range condition. We can use an index on store_sales(ss_sold_date_sk) to quickly find the rows with d_month_seq in the given range, because d_month_seq is derived from d_date_sk (via date_dim). But note: the filter is on d_month_seq, which is in date_dim. We cannot index store_sales on d_month_seq because it is not a column of store_sales. We must index store_sales on ss_sold_date_sk to get the rows and then join with date_dim to get d_month_seq.\n\nAlternatively, we could index date_dim on d_month_seq, but date_dim is small so it doesn't matter.\n\nBut note: the query is filtering by d_month_seq in store_sales via the join with date_dim. So the condition is effectively:\n\n```sql\nWHERE d_month_seq IN (1222, 1223, ... , 1233)\n```\n\nBut d_month_seq is in date_dim, and we are joining store_sales and date_dim on ss_sold_date_sk = d_date_sk. So the condition on d_month_seq is being applied to date_dim, and then we get the matching store_sales rows.\n\nSince date_dim is small, it doesn't matter much. The main issue is the large table store_sales.\n\nNow, the condition on item is:\n\n```sql\n(( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9'))\n or ( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1')))\n```\n\nThis condition is applied to the item table. Since the item table is small (28k rows) and the condition is a set of OR conditions, we might want to index item on the columns used in the condition (i_category, i_class, i_brand). But note: the condition is an OR of two sets, and the sets are not overlapping. We can create a composite index on (i_category, i_class, i_brand) or separate indexes. However, because the item table is small, an index might not be necessary, but it could help if the condition is selective.\n\nBut note: the query is joining store_sales and item on ss_item_sk = i_item_sk. So the item table is being scanned and then joined. Since the item table is small, it might be better to use a sequential scan on item and then join with store_sales. However, if the condition on item is not selective, then we might want to index the item table to quickly find the matching rows.\n\nLet's calculate the selectivity of the condition on item:\n\nThe first part of the OR:\n- i_category in ('Books','Children','Electronics') \u2014 3 out of the total categories? We don't know the total categories, but let's assume there are many. The condition is not very selective if there are many categories.\n\nSimilarly, the second part is for other categories.\n\nBut note: the condition is an OR of two sets. We can use a composite index to cover the condition.\n\nHowever, the main bottleneck is the store_sales table. We need to reduce the number of rows scanned in store_sales.\n\nThe query is grouping by i_manager_id and d_moy (which is the month of the year). The grouping is done after joining with item and date_dim. The grouping might be expensive if there are many rows.\n\nBut note: the outer query then filters and limits to 100 rows. So the inner query must return a lot of rows, but then the outer query only takes 100.\n\nGiven the above, the primary index candidates are:\n\n1. Index on store_sales(ss_item_sk) to speed up the join with item.\n2. Index on store_sales(ss_sold_date_sk) to speed up the join with date_dim and the filter on d_month_seq (via the join).\n3. Index on store_sales(ss_store_sk) to speed up the join with store.\n\nAdditionally, we might want to index store_sales on d_month_seq? But note: the filter is on d_month_seq via the join with date_dim. We cannot index store_sales on d_month_seq because d_month_seq is not a column of store_sales. We must index store_sales on ss_sold_date_sk to get the rows that match the date_dim condition.\n\nAlternatively, we could index date_dim on d_month_seq, but date_dim is small so it doesn't matter.\n\nNow, for the item table, we can create an index to speed up the condition in the WHERE clause. The condition is:\n\n```sql\ni_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')\n```\n\nand\n\n```sql\ni_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1')\n```\n\nWe can create a composite index on item(i_category, i_class, i_brand) to cover the condition. But note: the condition is an OR of two sets. The composite index might help because the first part of the index (i_category) can be used to quickly eliminate rows that don't match the first set of categories, and then the second part of the index (i_class) and then i_brand can be used.\n\nBut note: the condition is an OR, so the index might not be used effectively if the two sets are not ordered by the index. However, since the two sets are disjoint (different categories), it might be okay.\n\nAlternatively, we could use a partial index, but the condition is not a predicate that can be used for a partial index because it is an OR and we don't know which part is true.\n\nBut note: the instruction says that the partial_predicate must reference ONLY columns of the indexed `target` table. The condition on item is entirely on item, so we can create a composite index on item for the condition.\n\nNow, let's consider the order of index creation:\n\nThe store_sales table is the largest, so we should index it first. Then the item table.\n\nBut note: the query is grouping by i_manager_id and d_moy. The i_manager_id comes from item, and d_moy comes from date_dim. We are grouping by these two columns. We might want to index the grouping columns, but the grouping is done after the joins and filters. The main issue is the large table store_sales.\n\nNow, let's list the indexes we would suggest:\n\n1. On store_sales for the columns used in the joins and filters:\n   - ss_item_sk\n   - ss_sold_date_sk\n   - ss_store_sk\n\n2. On item for the condition columns:\n   - i_category, i_class, i_brand\n\nBut note: the condition on item is an OR of two sets. We can create one composite index that covers both sets? Actually, the two sets are disjoint, so we can create one index that includes all the categories, classes, and brands. But that might be a very wide index and not very selective.\n\nAlternatively, we can create two separate indexes, one for each set, but that might not be efficient because the OR condition might use either index.\n\nBut note: the condition is an OR, so we can create a composite index that includes all the distinct values from the two sets. However, that might be too many.\n\nAlternatively, we can create a composite index on (i_category, i_class, i_brand) and hope that the query optimizer uses it.\n\nBut note: the item table is small (28k rows). The condition might be selective enough that a sequential scan is faster. However, if the condition is not very selective, then an index might help.\n\nGiven the instructions, we must consider the tables that are being scanned. The store_sales table is the main one, so we should index it first.\n\nNow, the execution plan without indexes would likely do:\n\n- Seq Scan on store_sales (57 million rows)\n- Then join with date_dim (73k rows) and store (44 rows) and item (28k rows) using the join conditions.\n\nBut note: the condition on d_month_seq is a range of 12 months. Without an index on store_sales(ss_sold_date_sk), the query must scan the entire store_sales table to find the rows that match the date_dim condition. Then, it must join with date_dim to get d_month_seq and then check if it is in the range.\n\nAlternatively, if we index store_sales(ss_sold_date_sk), then the query can quickly find the rows that have d_date_sk in the set of dates that correspond to the given d_month_seq. But note: the filter is on d_month_seq, which is in date_dim. We are joining store_sales and date_dim on ss_sold_date_sk = d_date_sk. So the condition on d_month_seq is being applied to date_dim. We can also index date_dim on d_month_seq, but date_dim is small so it doesn't matter.\n\nBut note: the condition on d_month_seq is a range of 12 months. We can also consider creating a GiST index on store_sales for the date (if we had a date column, but we don't). Alternatively, we can index store_sales on ss_sold_date_sk and then use the index to filter by the date range.\n\nBut note: the filter is on d_month_seq, which is a derived value. We cannot index store_sales on d_month_seq because it is not a column. We must use the join with date_dim.\n\nNow, let's write the JSON for the indexes:\n\nWe are to return a list of indexes, each with:\n- target: table name\n- property: column name\n- index_type: type of index (e.g., btree, hash, gist, etc.)\n- partial_predicate: null or a condition for a partial index\n- estimated_benefit: what the index eliminates and on how many rows\n\nWe are to order the indexes by the number of rows scanned (largest first).\n\nFirst, the store_sales table has three columns that are heavily used:\n\n1. ss_item_sk: used in the join with item (28k rows) and in the grouping by i_manager_id (which comes from item). The join condition is `ss_item_sk = i_item_sk`. We can create a btree index on store_sales(ss_item_sk). This would reduce the sequential scan on store_sales by quickly finding the matching item rows.\n\n2. ss_sold_date_sk: used in the join with date_dim and in the filter on d_month_seq. We can create a btree index on store_sales(ss_sold_date_sk). This would help in quickly finding the rows that match the date_dim condition.\n\n3. ss_store_sk: used in the join with store (44 rows). We can create a btree index on store_sales(ss_store_sk). This is a small table, so this index might help.\n\nThen, for the item table, we can create a composite index on (i_category, i_class, i_brand) to cover the condition. This condition is used in the WHERE clause. The index_type would be btree.\n\nNow, the estimated_benefit:\n\n- For store_sales(ss_item_sk): This index would eliminate the full table scan for the join with item. The join condition is `ss_item_sk = i_item_sk`. The item table has 28k rows, so the index would reduce the number of rows scanned in store_sales from 57 million to at most 28k (if the index is used to look up the item rows). But note: the query is joining store_sales and item, so the item table is small and the store_sales table is large. The index on store_sales(ss_item_sk) would allow the join to be done via an index scan on store_sales for each row in item, or via a nested loop join if the item table is small. But without the index, the join is done by a hash join or merge join, which requires scanning the entire store_sales table.\n\nWithout the index, the join between store_sales and item is done by a hash join (because the item table is small, but store_sales is large). The hash join requires building a hash table for the item table and then probing store_sales. The item table is 28k rows, so building a hash table for 28k rows is acceptable, but then scanning 57 million rows to probe the hash table is expensive.\n\nWith the index on store_sales(ss_item_sk), the join can be done by a nested loop join: for each row in item, look up store_sales using the index. The item table has 28k rows, so we would do 28k index lookups, each of which might return multiple rows (if multiple store_sales rows have the same item_sk). This is efficient because the index is on the large table.\n\nSo the benefit is reducing the 57 million rows to at most 28k * (average fanout). But note: the condition on store_sales is also filtering by date and store, so the index might not be used for the entire query. But it would help the join.\n\nSimilarly, for ss_sold_date_sk: without the index, the join with date_dim requires scanning the entire store_sales table. With the index, we can quickly find the rows that have ss_sold_date_sk matching the date_dim rows that are in the given d_month_seq. But note: the condition is on d_month_seq, which is in date_dim. We are joining store_sales and date_dim on ss_sold_date_sk = d_date_sk. The condition on d_month_seq is applied to date_dim. We can also index date_dim on d_month_seq, but date_dim is small. Alternatively, we can index store_sales on ss_sold_date_sk and then use the index to filter by the date range. But the filter is on d_month_seq, which is not directly on ss_sold_date_sk.\n\nBut note: the filter on d_month_seq is a range of 12 months. We can convert the d_month_seq range to a date range and then index store_sales on ss_sold_date_sk. But we don't have the date_dim table's mapping. However, the query is joining store_sales and date_dim on ss_sold_date_sk = d_date_sk, so the condition on d_month_seq is effectively a condition on the date_dim table. We can also index date_dim on d_month_seq, but date_dim is small so it doesn't matter.\n\nAlternatively, we can create an index on store_sales for the columns used in the filter and joins. The filter on d_month_seq is done via the join with date_dim, so we don't need an index on store_sales for d_month_seq.\n\nBut note: the condition on d_month_seq is a range of 12 months. We can also consider creating an index on store_sales for the date part. But without a date column, we ca",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.4,
+      "baseline_exec_ms": 4719.707,
+      "optimized_exec_ms": 4784.189,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961241.74,
+          "cost_with_index": 2961265.8,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1943704.67,
+          "cost_with_index": 1943723.65,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371395.23,
+          "cost_with_index": 1371409.89,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 843664.77,
+          "cost_with_index": 843713.9,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117867.22,
+          "cost_with_index": 117867.56,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109894.31,
+          "cost_with_index": 21110151.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018197.25,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128132.64,
+          "cost_with_index": 128132.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81498.98,
+          "cost_with_index": 81499.15,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712282.38,
+          "cost_with_index": 3712301.92,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134872.25,
+          "cost_with_index": 134872.25,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345194.19,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342681.41,
+          "cost_with_index": 1342695.47,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.2,
+      "baseline_exec_ms": 4684.86,
+      "optimized_exec_ms": 4692.512,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961265.8,
+          "cost_with_index": 2961265.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1943723.65,
+          "cost_with_index": 1943723.65,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371409.89,
+          "cost_with_index": 1371409.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 843713.9,
+          "cost_with_index": 843713.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117867.56,
+          "cost_with_index": 117867.56,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110151.62,
+          "cost_with_index": 21110151.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128132.64,
+          "cost_with_index": 128132.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81499.15,
+          "cost_with_index": 81499.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712301.92,
+          "cost_with_index": 3712301.92,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134872.25,
+          "cost_with_index": 134872.25,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342695.47,
+          "cost_with_index": 1342695.47,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_category, i_class, i_brand",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.3,
+      "baseline_exec_ms": 4715.376,
+      "optimized_exec_ms": 4702.651,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1371409.89,
+          "cost_with_index": 1371409.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117867.56,
+          "cost_with_index": 117867.56,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128132.64,
+          "cost_with_index": 128132.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938136.34,
+          "cost_with_index": 938136.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179040.74,
+          "cost_with_index": 179040.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81499.15,
+          "cost_with_index": 81499.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906118.83,
+          "cost_with_index": 906118.83,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,425 @@
+{
+  "timestamp": "2026-09-19T08:29:11.129798",
+  "query_hash": "abcb0d20bbc9",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 7100583.8,
+  "reasoning_trace": "<think>\nWe are given a complex query that involves multiple joins and conditions. The goal is to identify the index(es) that would most reduce the execution cost.\n\nFirst, let's break down the query and identify the tables that are being scanned and the conditions that are causing the scans.\n\nThe query is:\n\nSELECT MIN(mi.info) AS movie_budget, MIN(mi_idx.info) AS movie_votes, MIN(n.name) AS writer, MIN(t.title) AS violent_liongate_movie \nFROM cast_info AS ci, company_name AS cn, info_type AS it1, info_type AS it2, keyword AS k, movie_companies AS mc, movie_info AS mi, movie_info_idx AS mi_idx, movie_keyword AS mk, name AS n, title AS t \nWHERE ... \nAND t.id = mi.movie_id \nAND t.id = mi_idx.movie_id \nAND t.id = ci.movie_id \nAND t.id = mk.movie_id \nAND t.id = mc.movie_id \nAND ci.movie_id = mi.movie_id \nAND ci.movie_id = mi_idx.movie_id \nAND ci.movie_id = mk.movie_id \nAND ci.movie_id = mc.movie_id \nAND mi.movie_id = mi_idx.movie_id \nAND mi.movie_id = mk.movie_id \nAND mi.movie_id = mc.movie_id \nAND mi_idx.movie_id = mk.movie_id \nAND mi_idx.movie_id = mc.movie_id \nAND mk.movie_id = mc.movie_id \nAND n.id = ci.person_id \nAND it1.id = mi.info_type_id \nAND it2.id = mi_idx.info_type_id \nAND k.id = mk.keyword_id \nAND cn.id = mc.company_id\n\nThe conditions in the WHERE clause are:\n\n1. ci.note IN ('(writer)', '(head writer)', '(written by)', '(story)', '(story editor)')\n2. cn.name LIKE 'Lionsgate%'\n3. it1.info = 'genres' AND it2.info = 'votes'\n4. k.keyword IN ('murder', 'violence', 'blood', 'gore', 'death', 'female-nudity', 'hospital')\n5. mc.note LIKE '%(Blu-ray)%'\n6. mi.info IN ('Horror', 'Thriller')\n7. n.gender = 'm'\n8. t.production_year > 2000\n9. t.title LIKE '%Freddy%' OR t.title LIKE '%Jason%' OR t.title LIKE 'Saw%'\n\nNow, let's look at the tables and their existing indexes:\n\n- cast_info: has indexes on movie_id, person_id, person_role_id, role_id.\n- company_name: no indexes.\n- info_type: no indexes.\n- keyword: no indexes.\n- movie_companies: has indexes on company_id, company_type_id, movie_id.\n- movie_info: has indexes on info_type_id, movie_id.\n- movie_info_idx: has indexes on info_type_id, movie_id.\n- movie_keyword: has indexes on keyword_id, movie_id.\n- name: no indexes.\n- title: has an index on kind_id.\n\nWe are told that the execution plan has Seq Scans on large tables, and we are to identify the index(es) that would help.\n\nLet's analyze the tables that are being scanned and the conditions:\n\n1. **company_name**: This table has no index. The condition is `cn.name LIKE 'Lionsgate%'`. This is a full table scan. Since the condition is a prefix match, a B-tree index on `name` would be beneficial. However, note that the condition is a LIKE with a wildcard at the end. A prefix index (B-tree) would help because the pattern is a prefix.\n\n2. **info_type**: This table has no index. The conditions are `it1.info = 'genres'` and `it2.info = 'votes'`. Since these are equality conditions, a B-tree index on `info` would help. But note that the table is very small (113 rows). However, without an index, it might be doing a sequential scan. We can consider adding an index on `info` for both tables (it1 and it2 are the same table, so one index would cover both).\n\n3. **keyword**: This table has no index. The condition is `k.keyword IN (...)`. This is a list of keywords. Since the table has 134,170 rows, a B-tree index on `keyword` would help. However, note that the condition is an IN with multiple values. The index would help to quickly find the matching rows.\n\n4. **movie_companies**: This table has an index on `movie_id` and `company_id`. The condition is `mc.note LIKE '%(Blu-ray)%'`. This is a full scan because the LIKE pattern has a wildcard at the beginning. Also, the condition is on `note` which is not indexed. We might consider an index on `note` if the condition is a common filter, but note that the pattern is a substring anywhere in the note. Since the table is large (2.6 million rows), a full scan is expensive. However, without an index, we cannot avoid the sequential scan for this condition. Alternatively, we might consider a GiST index for trigram matching if we have the pg_trgm extension, but the problem states that we have the extension. However, the condition is a LIKE with a pattern that has a wildcard at the beginning, so a trigram index might not be as effective. But note that the condition is on `note` and we are filtering for a substring. We can consider a trigram index on `note` for this condition.\n\n5. **movie_info**: This table has an index on `movie_id` and `info_type_id`. The condition is `mi.info IN ('Horror', 'Thriller')` and `it1.id = mi.info_type_id` (which we are going to index via info_type). Also, note that the condition on `info` is a list of two values. We can consider an index on `info` for movie_info, but note that the condition is an equality on `info_type_id` and then a condition on `info`. The existing index on `info_type_id` is good, but the condition on `info` is not. However, the condition on `info` is a list of two values, so it might not be worth indexing unless the table is very large and the condition is selective. Alternatively, we can consider a partial index on `info` for the values 'Horror' and 'Thriller'. But note that the condition is `mi.info IN ('Horror', 'Thriller')` and we are joining with info_type where `it1.info = 'genres'`. So the `info_type_id` must be the one for genres. We are already indexing info_type by `info`. So the condition on `info` in movie_info is only for two specific genres. We can create a partial index on movie_info for `info` in ('Horror','Thriller') and `info_type_id` equal to the id of the genres info_type. But note that the condition on `info_type_id` is already being handled by the index on info_type. However, without an index on `info` in movie_info, we are doing a sequential scan for the two values. Since the table has 14.8 million rows, we can consider a B-tree index on `info` but only for the two values? That doesn't make sense. Alternatively, we can index the `info` column for the entire table, but that might be too broad. However, the condition is an IN with two values, so the index might help to quickly find rows with those two values. But note that the condition is also on `info_type_id` which is already indexed. We can create a composite index on (info_type_id, info) to cover both conditions. But the existing index is on (info_type_id) and we are adding a condition on `info`. Alternatively, we can create a composite index (info_type_id, info) and then the query would use that index to filter by info_type_id and then by info. But note that the condition on `info` is only two values, so a composite index might help.\n\n6. **title**: This table has an index on `kind_id`. The condition is `t.production_year > 2000` and `t.title` conditions. The `production_year` is not indexed. This condition would require a sequential scan. Also, the title conditions are using LIKE with wildcards at the beginning, so they cannot be efficiently handled by a B-tree index. We can consider an index on `production_year` and also on `title` for the LIKE conditions. But note that the LIKE conditions are on the entire title and have leading wildcards, so they cannot be indexed by B-tree. We can use a GiST index for the title if we have the pg_trgm extension, but the condition is a prefix condition. Alternatively, we can consider a full-text search index, but the problem does not specify. However, the condition is OR of three LIKE conditions. We can create a GIN index on the title for full-text search, but that might be overkill. Alternatively, we can index the `production_year` to avoid the sequential scan for the year condition.\n\nNow, let's consider the joins and the conditions that are causing the joins to be expensive:\n\n- The join conditions are mostly on movie_id and person_id. The tables that are being joined are:\n\n  - t.id = mi.movie_id, mi_idx.movie_id, ci.movie_id, mk.movie_id, mc.movie_id\n  - n.id = ci.person_id\n\nThe existing indexes on movie_id in cast_info, movie_info, movie_info_idx, movie_keyword, and movie_companies are good. But note that the condition on `ci.note` is filtering for specific roles (writer). This condition is on `ci.note` and there is no index on `note` in cast_info. This might be causing a sequential scan on cast_info for the note condition.\n\nAlso, the condition on `n.gender` is on the name table, which has no index. This might be causing a sequential scan on the name table.\n\nNow, let's list the tables that are being scanned and the conditions that are causing the scan:\n\n1. **company_name**: condition `cn.name LIKE 'Lionsgate%'` -> no index.\n2. **info_type**: conditions `it1.info = 'genres'` and `it2.info = 'votes'` -> no index, but table is small.\n3. **keyword**: condition `k.keyword IN (...)` -> no index.\n4. **movie_companies**: condition `mc.note LIKE '%(Blu-ray)%'` -> no index on note.\n5. **movie_info**: condition `mi.info IN ('Horror','Thriller')` and `it1.id = mi.info_type_id` (which we are indexing via info_type) -> no index on info.\n6. **title**: conditions `t.production_year > 2000` and `t.title` conditions -> no index on production_year and title conditions cannot be indexed by B-tree.\n\nAdditionally, the cast_info table has a condition on `ci.note` and `ci.person_id` (which is indexed) but the note condition is not indexed.\n\nNow, let's consider the order of the tables in the FROM clause and the conditions. The query uses old-style joins (without explicit JOIN syntax). The planner might be doing a nested loop join starting with the first table (cast_info) and then joining with others. But note that the condition on cast_info is on `note` and `person_id`. The `person_id` is indexed, so that part is good. But the `note` condition is not.\n\nWe are to recommend indexes that do not already exist. We cannot recommend indexes that already exist.\n\nLet's list the index recommendations:\n\n1. **company_name**: Add a B-tree index on `name` to help with the LIKE condition.\n   - Table: company_name, column: name, index_type: btree, partial_predicate: null.\n\n2. **info_type**: Add a B-tree index on `info` to help with the equality conditions.\n   - Table: info_type, column: info, index_type: btree, partial_predicate: null.\n\n3. **keyword**: Add a B-tree index on `keyword` to help with the IN condition.\n   - Table: keyword, column: keyword, index_type: btree, partial_predicate: null.\n\n4. **movie_companies**: Add a GiST index on `note` using trigram for the LIKE condition with leading wildcard. Since we have the pg_trgm extension, we can use `gist` index on `note` using `gist_trgm_ops`.\n   - Table: movie_companies, column: note, index_type: gist, partial_predicate: null.\n\n5. **movie_info**: Add a B-tree index on `info` to help with the condition `mi.info IN ('Horror','Thriller')`. But note that the condition is an IN with two values. Alternatively, we can create a composite index on (info_type_id, info) to cover the condition on info_type_id and info. However, the condition on info_type_id is already being handled by the index on info_type. But the condition on info is not. We can create a composite index (info_type_id, info) to help the query. But note that the condition on info_type_id is already being used by the index on info_type, so the composite index might not be necessary. Alternatively, we can create a B-tree index on `info` for the entire table. But the table is large (14.8 million rows) and the condition is only two values. The index might help to quickly find the rows, but the cost of building the index might be high. However, the condition is a list of two values, so the index might help to avoid a sequential scan for the two values. We can create a B-tree index on `info` for movie_info.\n   - Table: movie_info, column: info, index_type: btree, partial_predicate: null.\n\n6. **title**: Add a B-tree index on `production_year` to help with the condition `t.production_year > 2000`.\n   - Table: title, column: production_year, index_type: btree, partial_predicate: null.\n\nAdditionally, the cast_info table has a condition on `note` that is not indexed. We can add a B-tree index on `note` for cast_info, but note that the condition is an IN with multiple values. This might not be very selective, but it would help to avoid a sequential scan.\n\n7. **cast_info**: Add a B-tree index on `note` to help with the condition `ci.note IN (...)`.\n   - Table: cast_info, column: note, index_type: btree, partial_predicate: null.\n\n8. **name**: The condition is `n.gender = 'm'`. We can add a B-tree index on `gender` for the name table.\n   - Table: name, column: gender, index_type: btree, partial_predicate: null.\n\nNow, we must consider the order of the indexes by the number of rows scanned. The largest tables are:\n\n- movie_info: 14.8 million rows\n- cast_info: 36.2 million rows\n- movie_keyword: 4.5 million rows\n- movie_companies: 2.6 million rows\n- title: 2.5 million rows\n- name: 4.1 million rows\n- company_name: 235,000 rows\n- keyword: 134,000 rows\n- info_type: 113 rows\n\nThe conditions that are causing the most expensive scans are on the largest tables. So we should prioritize the indexes for the largest tables first.\n\nBut note: the condition on movie_info is `mi.info IN ('Horror','Thriller')` and the table has 14.8 million rows. Without an index, it is doing a sequential scan for the two values. The same for cast_info: 36.2 million rows, condition on note is not indexed.\n\nAlso, the condition on movie_companies is a full scan because of the LIKE condition on note.\n\nLet's order the recommendations by the table size (largest first) and the potential reduction in cost:\n\n1. **cast_info**: 36.2 million rows, condition on note is not indexed. This is a large table and the condition is a filter. Adding an index on note would help.\n2. **movie_info**: 14.8 million rows, condition on info is not indexed. This is a large table and the condition is a filter. Adding an index on info would help.\n3. **movie_keyword**: 4.5 million rows, condition on keyword is not indexed. But note that the condition on movie_keyword is via the movie_id and keyword_id. The condition on keyword is in the outer query and is being handled by the keyword table. We are already recommending an index on keyword. But the movie_keyword table is being joined and the condition is on movie_id, which is already indexed. So the movie_keyword table might not be the bottleneck.\n4. **movie_companies**: 2.6 million rows, condition on note is not indexed. This is a large table and the condition is a full scan. Adding a trigram index on note would help.\n5. **title**: 2.5 million rows, condition on production_year is not indexed. This is a large table and the condition is a range scan. Adding an index on production_year would help.\n6. **name**: 4.1 million rows, condition on gender is not indexed. This is a large table and the condition is an equality. Adding an index on gender would help.\n7. **company_name**: 235,000 rows, condition on name is not indexed. This is a medium table and the condition is a LIKE. Adding an index on name would help.\n8. **keyword**: 134,000 rows, condition on keyword is not indexed. This is a medium table and the condition is an IN. Adding an index on keyword would help.\n9. **info_type**: 113 rows, condition on info is not indexed. This is a very small table, so the index might not be necessary, but it could help the planner to use an index scan.\n\nBut note: the condition on info_type is `it1.info = 'genres'` and `it2.info = 'votes'`. Since the table is small, a sequential scan is acceptable. However, if we are going to index it, we can do it.\n\nNow, we must also consider that the query has multiple conditions and joins. The planner might be doing a sequential scan on the largest tables first. We are to recommend the indexes that would most reduce the execution cost, so we should focus on the largest tables that are being scanned.\n\nHowever, note that the condition on `t.title` is using OR of three LIKE conditions. These conditions cannot be efficiently handled by a B-tree index. We might consider a full-text search index, but the problem does not specify. We are only allowed to use the installed extensions (hypopg, pg_trgm). So we can use a trigram index on `title` for the LIKE conditions. But note that the conditions are leading wildcards, so a trigram index might not be as effective. Alternatively, we can consider a GiST index on `title` for the LIKE conditions, but again, leading wildcards are not efficient.\n\nGiven the above, let's list the indexes in order of the table size (largest first) and the potential benefit:\n\n1. **cast_info**: condition on note -> B-tree index on note.\n2. **movie_info**: condition on info -> B-tree index on info.\n3. **movie_companies**: condition on note -> GiST index on note using trigram.\n4. **title**: condition on production_year -> B-tree index on production_year.\n5. **name**: condition on gender -> B-tree index on gender.\n6. **company_name**: condition on name -> B-tree index on name.\n7. **keyword**: condition on keyword -> B-tree index on keyword.\n8. **info_type**: condition on info -> B-tree index on info.\n\nBut note: the condition on movie_info is `mi.info IN ('Horror','Thriller')` and the condition on info_type_id is `it1.id = mi.info_type_id`. We are already indexing info_type by info, so the condition on info_type_id is fast. The condition on info is the one that is expensive. Similarly, for cast_info, the condition on note is expensive.\n\nAlso, note that the condition on movie_companies is `mc.note LIKE '%(Blu-ray)%'`. This is a full scan because of the leading wildcard. The trigram index would help to quickly find rows that contain the substring, but note that the condition is a substring anywhere in the note. The trigram index is designed for this.\n\nNow, let's write the JSON structure.\n\nWe must not recommend indexes that already exist. The existing indexes are:\n\n- cast_info: movie_id, person_id, person_role_id, role_id.\n- movie_companies: company_id, company_type_id, movie_id.\n- movie_info: info_type_id, movie_id.\n- movie_info_idx: info_type_id, movie_id.\n- movie_keyword: keyword_id, movie_id.\n- title: kind_id.\n\nSo we are not recommending any of these.\n\nWe are to return a JSON array of indexes and a boolean for no_index_possible.\n\nWe are going to recommend:\n\n1. cast_info: note\n2. movie_info: info\n3. movie_companies: note (with GiST and trigram)\n4. title: production_year\n5. name: gender\n6. company_name: name\n7. keyword: keyword\n8. info_type: info\n\nBut note: the condition on info_type is very selective because the table is small. The benefit might be negligible. However, we are to recommend the indexes that would most reduce the cost. Since the table is small, the cost of a sequential scan is low. But the condition is an equality, so an index might help the planner to use an index scan. We can include it.\n\nAlso, note that the condition on movie_info is `mi.info IN ('Horror','Thriller')` and the condition on info_type_id is `it1.id = mi.info_type_id`. The condition on info_type_id is already being handled by the index on info_type. But the condition on info is not. We are recommending an index on movie_info.info.\n\nNow, let's write the JSON.\n\nNote: We must use the exact table and column names.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"<table_name>\",\n      \"property\": \"<column_name>\",\n      \"index_type\": \"<index type>\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"<why these indexes were chosen, or why no index is possible>\"\n}\n\nWe are to explain why these indexes were chosen.\n\nBut note: the problem says to return only the JSON structure. We must not include any explanation outside the JSON.\n\nHowever, the instruction says: \"Return ONLY this JSON structure \u2014 no explanation outside the JSON\"\n\nBut the JSON structure has an \"explanation\"",
+  "recommendations": [
+    {
+      "table": "cast_info",
+      "column": "note",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -51.3,
+      "baseline_exec_ms": 333.889,
+      "optimized_exec_ms": 505.162,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -1.2,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.07,
+          "cost_with_index": 4717.52,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55683.33,
+          "cost_with_index": 55683.33,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10967.24,
+          "benefit_pct": -7.2
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.16,
+          "cost_with_index": 9395.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.68,
+          "cost_with_index": 45696.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 1,
+      "status": null
+    },
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "movie_companies",
+      "column": "note",
+      "index_type": "gist",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.0,
+      "baseline_exec_ms": 346.229,
+      "optimized_exec_ms": 342.857,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.55,
+          "cost_with_index": 20815.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 4717.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55683.33,
+          "cost_with_index": 42199.14,
+          "benefit_pct": 24.2
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19503.62,
+          "cost_with_index": 19503.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66990.51,
+          "cost_with_index": 66991.17,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10967.24,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 6.7
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 3832.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.16,
+          "cost_with_index": 9395.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.68,
+          "cost_with_index": 45696.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "name",
+      "column": "gender",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 6.0,
+      "baseline_exec_ms": 364.047,
+      "optimized_exec_ms": 342.306,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 4717.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.13,
+          "cost_with_index": 9395.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "name",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.6,
+      "baseline_exec_ms": 367.621,
+      "optimized_exec_ms": 361.749,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.54,
+          "cost_with_index": 20815.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 4717.52,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45696.68,
+          "cost_with_index": 45696.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 3818.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 3869.89,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 15.6,
+      "validation": "executed",
+      "measured_read_benefit_pct": -23.9,
+      "baseline_exec_ms": 413.146,
+      "optimized_exec_ms": 511.996,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 42.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4717.52,
+          "cost_with_index": 2099.84,
+          "benefit_pct": 55.5
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 4580.95,
+          "benefit_pct": 39.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3832.49,
+          "cost_with_index": 1214.81,
+          "benefit_pct": 68.3
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3818.2,
+          "cost_with_index": 1200.51,
+          "benefit_pct": 68.6
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3869.89,
+          "cost_with_index": 1252.2,
+          "benefit_pct": 67.6
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -4.3,
+      "baseline_exec_ms": 383.136,
+      "optimized_exec_ms": 399.571,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20815.54,
+          "cost_with_index": 20815.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55684.22,
+          "cost_with_index": 55684.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19503.62,
+          "cost_with_index": 19503.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7514.22,
+          "cost_with_index": 7514.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66991.17,
+          "cost_with_index": 66991.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10231.0,
+          "cost_with_index": 10231.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.13,
+          "cost_with_index": 9395.13,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

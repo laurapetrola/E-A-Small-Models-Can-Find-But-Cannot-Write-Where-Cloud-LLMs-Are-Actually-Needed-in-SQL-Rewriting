@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-08-26T16:52:02.446639",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "materialize intermediate result sets",
+    "split complex grouping into multiple CTEs",
+    "reorder and decompose rollup logic",
+    "separate ranking logic into multiple stages",
+    "pre-filter a large table as a CTE before the join",
+    "split a complex group by rollup into multiple CTEs",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate results",
+    "split rollup into separate steps",
+    "use lateral join for ranking filter",
+    "use materialized CTE for fact table",
+    "rollup as recursive CTE with hierarchical aggregation",
+    "reorder and restructure for hierarchical filtering",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": -257.48,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 662601.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_dim_window AS MATERIALIZED (\n    SELECT d_date_sk, d_year, d_qoy, d_moy\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1217 AND 1217 + 11\n),\nfact_compressed AS MATERIALIZED (\n    SELECT ss_item_sk, ss_store_sk, ss_sold_date_sk,\n           SUM(COALESCE(ss_sales_price * ss_quantity, 0)) AS sumsales\n    FROM store_sales\n    JOIN date_dim_window ON store_sales.ss_sold_date_sk = date_dim_window.d_date_sk\n    GROUP BY ss_item_sk, ss_store_sk, ss_sold_date_sk\n),\ndw1 AS (\n    SELECT\n        i.i_category AS i_category,\n        i.i_class AS i_class,\n        i.i_brand AS i_brand,\n        i.i_product_name AS i_product_name,\n        d.d_year AS d_year,\n        d.d_qoy AS d_qoy,\n        d.d_moy AS d_moy,\n        s.s_store_id AS s_store_id,\n        SUM(f.sumsales) AS sumsales,\n        GROUPING(i.i_category) + GROUPING(i.i_class) + GROUPING(i.i_brand) + GROUPING(i.i_product_name) +\n        GROUPING(d.d_year) + GROUPING(d.d_qoy) + GROUPING(d.d_moy) + GROUPING(s.s_store_id) AS rollup_level\n    FROM fact_compressed f\n    JOIN item i ON f.ss_item_sk = i.i_item_sk\n    JOIN store s ON f.ss_store_sk = s.s_store_sk\n    JOIN date_dim_window d ON f.ss_sold_date_sk = d.d_date_sk\n    GROUP BY ROLLUP(i.i_category, i.i_class, i.i_brand, i.i_product_name,\n                    d.d_year, d.d_qoy, d.d_moy, s.s_store_id)\n),\nlevel_ranked AS (\n    SELECT dw1.*,\n           RANK() OVER (PARTITION BY i_category, rollup_level ORDER BY sumsales DESC) AS rk_level\n    FROM dw1\n),\ncandidates AS (\n    SELECT i_category, i_class, i_brand, i_product_name,\n           d_year, d_qoy, d_moy, s_store_id, sumsales\n    FROM level_ranked\n    WHERE rk_level <= 100\n),\nfinal_ranked AS (\n    SELECT i_category, i_class, i_brand, i_product_name,\n           d_year, d_qoy, d_moy, s_store_id, sumsales,\n           RANK() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS rk\n    FROM candidates\n)\nSELECT i_category, i_class, i_brand, i_product_name,\n       d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nFROM final_ranked\nWHERE rk <= 100\nORDER BY i_category, i_class, i_brand, i_product_name,\n         d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nLIMIT 100",
+  "reasoning_trace": "1. DATE-WINDOW SEMIJOIN \u2014 TARGET: `store_sales.ss_sold_date_sk` + `date_dim.d_month_seq BETWEEN 1217 AND 1228` \u2014 TRANSFORMATION: Resolve the 12-month `d_date_sk` set and filter the `store_sales` scan on it before any grouping, eliminating all non-window fact rows early.\n\n2. FACT PRE-AGGREGATION BY SURROGATE KEYS \u2014 TARGET: `store_sales` rows feeding the inner `sumsales` aggregate \u2014 TRANSFORMATION: Aggregate the filtered fact by `(ss_item_sk, ss_store_sk, ss_sold_date_sk)` with `SUM(coalesce(ss_sales_price*ss_quantity,0))`, so the rollup runs on one row per item/store/day instead of raw ticket rows.\n\n3. MATERIALIZE COMPRESSED FACT \u2014 TARGET: the compressed item/store/day aggregate from op2 \u2014 TRANSFORMATION: Persist it in a temporary table/CTE with an index on the surrogate keys so each rollup level can reuse it without rescanning or reaggregating `store_sales`.\n\n4. DIMENSION JOIN AFTER COMPRESSION \u2014 TARGET: the three joins `ss_item_sk=i_item_sk`, `ss_store_sk=s_store_sk`, `ss_sold_date_sk=d_date_sk` \u2014 TRANSFORMATION: Join the materialized compressed fact to `item`, `store`, and `date_dim` only at this point; since each dimension key is unique, this attaches `i_category`, `i_class`, `i_brand`, `i_product_name`, `d_year`, `d_qoy`, `d_moy`, and `s_store_id` to far fewer rows.\n\n5. PER-LEVEL TOP-100 PREFILTER \u2014 TARGET: `GROUP BY ROLLUP(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id)` + `rank() over (partition by i_category order by sumsales desc)` \u2014 TRANSFORMATION: Replace the single global rank over the full rollup with a two-stage rank: compute `rank()` partitioned by `(i_category, rollup_level)` using `GROUPING()` on the eight group-by columns, keep only per-level rank `<= 100`, union those candidates, then compute the final `rank()` over `i_category` only on that small union.\n\n6. FINAL RANK AND LIMIT ON CANDIDATES \u2014 TARGET: the outer `rk` filter and `ORDER BY ... LIMIT 100` \u2014 TRANSFORMATION: Apply the final `rank()` over `i_category` to the small candidate set from op5, filter `rk <= 100`, then apply the original ordering keys and `LIMIT 100` to only those surviving rows.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 28693.739,
+      "optimized_ms": 102573.284,
+      "delta_ms": -73879.545,
+      "improvement_pct": -257.48,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1368939.63,
+      "optimized": 5311646.63,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 627705.7,
+    "index_advisor_inference_ms": 23505.1,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 11390.2,
+    "total_inference_ms": 662601.0,
+    "writer_inference_ms": 2837611.1,
+    "writer_tokens_in": 16216,
+    "writer_tokens_out": 299896,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1368939.63 \u2192 optimized=5311646.63 (+288.0%)",
+    "Execution time regression: 28693.739ms \u2192 102573.284ms"
+  ],
+  "strategy": "1. DATE-WINDOW SEMIJOIN \u2014 TARGET: `store_sales.ss_sold_date_sk` + `date_dim.d_month_seq BETWEEN 1217 AND 1228` \u2014 TRANSFORMATION: Resolve the 12-month `d_date_sk` set and filter the `store_sales` scan on it before any grouping, eliminating all non-window fact rows early.\n\n2. FACT PRE-AGGREGATION BY SURROGATE KEYS \u2014 TARGET: `store_sales` rows feeding the inner `sumsales` aggregate \u2014 TRANSFORMATION: Aggregate the filtered fact by `(ss_item_sk, ss_store_sk, ss_sold_date_sk)` with `SUM(coalesce(ss_sales_price*ss_quantity,0))`, so the rollup runs on one row per item/store/day instead of raw ticket rows.\n\n3. MATERIALIZE COMPRESSED FACT \u2014 TARGET: the compressed item/store/day aggregate from op2 \u2014 TRANSFORMATION: Persist it in a temporary table/CTE with an index on the surrogate keys so each rollup level can reuse it without rescanning or reaggregating `store_sales`.\n\n4. DIMENSION JOIN AFTER COMPRESSION \u2014 TARGET: the three joins `ss_item_sk=i_item_sk`, `ss_store_sk=s_store_sk`, `ss_sold_date_sk=d_date_sk` \u2014 TRANSFORMATION: Join the materialized compressed fact to `item`, `store`, and `date_dim` only at this point; since each dimension key is unique, this attaches `i_category`, `i_class`, `i_brand`, `i_product_name`, `d_year`, `d_qoy`, `d_moy`, and `s_store_id` to far fewer rows.\n\n5. PER-LEVEL TOP-100 PREFILTER \u2014 TARGET: `GROUP BY ROLLUP(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id)` + `rank() over (partition by i_category order by sumsales desc)` \u2014 TRANSFORMATION: Replace the single global rank over the full rollup with a two-stage rank: compute `rank()` partitioned by `(i_category, rollup_level)` using `GROUPING()` on the eight group-by columns, keep only per-level rank `<= 100`, union those candidates, then compute the final `rank()` over `i_category` only on that small union.\n\n6. FINAL RANK AND LIMIT ON CANDIDATES \u2014 TARGET: the outer `rk` filter and `ORDER BY ... LIMIT 100` \u2014 TRANSFORMATION: Apply the final `rank()` over `i_category` to the small candidate set from op5, filter `rk <= 100`, then apply the original ordering keys and `LIMIT 100` to only those surviving rows.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was per-level top-100 prefiltering, and the rewrite implements this by computing ranks per rollup level, filtering to top 100 per level, and then applying the "
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

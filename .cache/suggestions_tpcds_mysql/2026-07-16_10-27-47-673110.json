@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-07-16T10:27:47.673084",
+  "query_hash": "3505b74fb5bb",
+  "suggestions": [
+    "convert IN subquery to explicit values",
+    "replace CASE expression with direct comparison",
+    "filter store.s_county once instead of multiple times",
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+think+nohw",
+  "arm": "raw",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 294577.4,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "mysql",
+  "scale_divergence": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT \n    c_last_name, \n    c_first_name, \n    c_salutation, \n    c_preferred_cust_flag, \n    ss_ticket_number, \n    cnt \nFROM \n    (SELECT \n        ss_ticket_number, \n        ss_customer_sk, \n        COUNT(*) AS cnt \n     FROM \n        store_sales \n     JOIN \n        date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk \n     JOIN \n        store ON store_sales.ss_store_sk = store.s_store_sk \n     JOIN \n        household_demographics ON store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk \n     WHERE \n        date_dim.d_dom BETWEEN 1 AND 2 \n        AND (household_demographics.hd_buy_potential = '1001-5000' \n             OR household_demographics.hd_buy_potential = '5001-10000') \n        AND household_demographics.hd_vehicle_count > 0 \n        AND household_demographics.hd_dep_count > household_demographics.hd_vehicle_count \n        AND date_dim.d_year IN (2000, 2001, 2002) \n        AND store.s_county = 'Williamson County' \n     GROUP BY \n        ss_ticket_number, \n        ss_customer_sk) dj \nJOIN \n    customer ON dj.ss_customer_sk = customer.c_customer_sk \nWHERE \n    cnt BETWEEN 1 AND 5 \nORDER BY \n    cnt DESC, \n    c_last_name ASC",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants a faster version of the original SQL that returns the same results. Let me start by understanding the original query and the execution plan provided.\n\nThe original query joins store_sales with date_dim, store, and household_demographics. The main filters are on date_dim.d_dom between 1 and 2, specific hd_buy_potential values, hd_vehicle_count > 0, a case expression checking if hd_dep_count divided by hd_vehicle_count is greater than 1, and store.s_county in multiple 'Williamson County' entries. Then it groups by ticket number and customer SK, counts, and joins with customer to get names.\n\nLooking at the execution plan, the main cost is from a nested loop join between the subquery (dj) and customer, which is using a temporary table and filesort. The subquery itself is a group by operation on store_sales, which is joined with other tables. The store_sales table is large, and the joins might be causing full scans or expensive nested loops.\n\nThe hardware context shows 33GB RAM and 1TB disk, but the query is using a lot of memory (253.49 cost). The main issue seems to be the nested loops with high row counts. The subquery (dj) is using a temporary table, which might be due to the group by and the joins. Also, the store.s_county condition has four identical values, which could be simplified.\n\nFirst, I should check if the store.s_county condition can be optimized. The original has 'Williamson County' repeated four times. That's redundant; it's the same value four times. So changing that to a single instance would reduce the number of conditions. That might help the optimizer.\n\nNext, the case expression in the WHERE clause: it checks if hd_vehicle_count > 0, then divides hd_dep_count by it and ensures the result is >1. This can be rewritten as hd_dep_count > hd_vehicle_count, which avoids the division and case statement. This simplifies the condition and might be more efficient.\n\nAlso, the original query has a subquery that's materialized into a temporary table. If I can reduce the number of joins or filter earlier, maybe using indexes or reordering joins, that could help. For example, filtering store_sales first with the date_dim and store conditions before joining with household_demographics.\n\nAnother thing is the use of IN with four identical values. Changing that to a single value would make the query cleaner and possibly more efficient. Also, the date_dim.d_year condition uses 2000, 2000+1, 2000+2, which are 2000, 2001, 2002. Writing them explicitly might help the optimizer.\n\nLet me try rewriting the subquery to simplify the conditions. Replace the case statement with hd_dep_count > hd_vehicle_count. Also, simplify the store.s_county to a single 'Williamson County'. Then, check if the joins can be reordered to filter earlier. For example, joining store_sales with date_dim first, then with store, then with household_demographics.\n\nAlso, ensuring that all joins use appropriate indexes. For example, the store_sales table has indexes on ss_sold_date_sk, ss_store_sk, and ss_hdemo_sk. Using those could speed up the joins.\n\nAnother point is the group by and count. Since we're grouping by ss_ticket_number and ss_customer_sk, maybe we can use a window function or a different aggregation approach, but I'm not sure if that would help here.\n\nPutting it all together, the rewritten query should have simplified conditions, removed redundant values, and possibly reordered joins to allow early filtering. Let me structure the query accordingly, making sure all original conditions are preserved and the result set remains the same.\n\n</think>\n\nSELECT \n    c_last_name, \n    c_first_name, \n    c_salutation, \n    c_preferred_cust_flag, \n    ss_ticket_number, \n    cnt \nFROM \n    (SELECT \n        ss_ticket_number, \n        ss_customer_sk, \n        COUNT(*) AS cnt \n     FROM \n        store_sales \n     JOIN \n        date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk \n     JOIN \n        store ON store_sales.ss_store_sk = store.s_store_sk \n     JOIN \n        household_demographics ON store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk \n     WHERE \n        date_dim.d_dom BETWEEN 1 AND 2 \n        AND (household_demographics.hd_buy_potential = '1001-5000' \n             OR household_demographics.hd_buy_potential = '5001-10000') \n        AND household_demographics.hd_vehicle_count > 0 \n        AND household_demographics.hd_dep_count > household_demographics.hd_vehicle_count \n        AND date_dim.d_year IN (2000, 2001, 2002) \n        AND store.s_county = 'Williamson County' \n     GROUP BY \n        ss_ticket_number, \n        ss_customer_sk) dj \nJOIN \n    customer ON dj.ss_customer_sk = customer.c_customer_sk \nWHERE \n    cnt BETWEEN 1 AND 5 \nORDER BY \n    cnt DESC, \n    c_last_name ASC",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 30000.0,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null
+    },
+    "planner_cost": {
+      "original": 102573.59,
+      "optimized": 24427.11,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 212713.2,
+    "index_advisor_inference_ms": 79940.2,
+    "reflection_iterations": 4,
+    "labeler_inference_ms": 1924.0,
+    "total_inference_ms": 294577.4
+  },
+  "errors": [
+    "duplicate_attempt \u2014 identical SQL was already rejected this session"
+  ],
+  "strategy": null,
+  "writer": null,
+  "strategy_attempts": 0,
+  "adherence": null,
+  "raw_sql": "select c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt from (select ss_ticket_number ,ss_customer_sk ,count(*) cnt from store_sales,date_dim,store,household_demographics where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_store_sk = store.s_store_sk and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk and date_dim.d_dom between 1 and 2 and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') and household_demographics.hd_vehicle_count > 0 and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 and date_dim.d_year in (2000,2000+1,2000+2) and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') group by ss_ticket_number,ss_customer_sk) dj,customer where ss_customer_sk = c_customer_sk and cnt between 1 and 5 order by cnt desc, c_last_name asc"
+}

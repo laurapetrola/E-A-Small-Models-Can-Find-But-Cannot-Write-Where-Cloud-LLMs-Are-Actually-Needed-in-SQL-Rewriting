@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-22T13:44:30.491557",
+  "query_hash": "7ade099a566c",
+  "suggestions": [
+    "materialized subquery",
+    "pre-filter a large table as CTE before the join"
+  ],
+  "improvement_pct": 95.66,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 45600.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT sr_customer_sk AS ctr_customer_sk,\n           sr_store_sk AS ctr_store_sk,\n           sum(SR_FEE) AS ctr_total_return\n    FROM store_returns,\n         date_dim\n    WHERE sr_returned_date_sk = d_date_sk\n      AND d_year = 2000\n    GROUP BY sr_customer_sk,\n             sr_store_sk\n),\navg_returns AS MATERIALIZED (\n    SELECT ctr_store_sk,\n           avg(ctr_total_return) AS avg_return\n    FROM customer_total_return\n    GROUP BY ctr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer AS c\nJOIN customer_total_return AS ctr1\n  ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN store AS s\n  ON s.s_store_sk = ctr1.ctr_store_sk\n AND s.s_state = 'TN'\nJOIN avg_returns AS ar\n  ON ar.ctr_store_sk = ctr1.ctr_store_sk\nWHERE ctr1.ctr_total_return > ar.avg_return * 1.2\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT sr_customer_sk AS ctr_customer_sk,\n           sr_store_sk AS ctr_store_sk,\n           sum(SR_FEE) AS ctr_total_return\n    FROM store_returns,\n         date_dim\n    WHERE sr_returned_date_sk = d_date_sk\n      AND d_year = 2000\n    GROUP BY sr_customer_sk,\n             sr_store_sk\n),\navg_returns AS MATERIALIZED (\n    SELECT ctr_store_sk,\n           avg(ctr_total_return) AS avg_return\n    FROM customer_total_return\n    GROUP BY ctr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer AS c\nJOIN customer_total_return AS ctr1\n  ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN store AS s\n  ON s.s_store_sk = ctr1.ctr_store_sk\n AND s.s_state = 'TN'\nJOIN avg_returns AS ar\n  ON ar.ctr_store_sk = ctr1.ctr_store_sk\nWHERE ctr1.ctr_total_return > ar.avg_return * 1.2\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialize Subquery - TARGET: `ctr2` subquery in the WHERE clause - TRANSFORMATION: Move the subquery to a derived table or CTE and materialize it to avoid repeated evaluation.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer_total_return ctr1, store, customer\nwhere ctr1.ctr_total_return > (select avg_return from avg_returns where ctr1.ctr_store_sk = ctr2.ctr_store_sk)\nand s_store_sk = ctr1.ctr_store_sk\nand s_state = 'TN'\nand ctr1.ctr_customer_sk = c_customer_sk\norder by c_customer_id limit 100\n```\n\n2. N. Filter Pushdown - TARGET: `s_state` filter in the WHERE clause - TRANSFORMATION: Move the filter condition to the join condition to reduce the number of rows passed between tables.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer_total_return ctr1 join store on s_store_sk = ctr1.ctr_store_sk and s_state = 'TN'\njoin customer on ctr1.ctr_customer_sk = c_customer_sk\nwhere ctr1.ctr_total_return > (select avg_return from avg_returns where ctr1.ctr_store_sk = ctr2.ctr_store_sk)\norder by c_customer_id limit 100\n```\n\n3. N. Indexes - TARGET: `customer_total_return`, `avg_returns`, and `customer` tables - TRANSFORMATION: Create indexes on the columns used in the WHERE, JOIN, and GROUP BY clauses to speed up lookups.\n\n```\nCREATE INDEX idx_ctr1_store_sk ON customer_total_return (ctr_store_sk);\nCREATE INDEX idx_avg_returns_store_sk ON avg_returns (ctr_store_sk);\nCREATE INDEX idx_customer_cust_sk ON customer (c_customer_sk);\n```\n\n4. N. Sort-Merge Join - TARGET: join between `customer_total_return` and `customer` - TRANSFORMATION: Rearrange the order of joins to perform a sort-merge join, which can be more efficient for large datasets.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer\njoin (\n    select ctr1.*, row_number() over (order by ctr_total_return desc) as rn\n    from customer_total_return ctr1 join store on s_store_sk = ctr1.ctr_store_sk and s_state = 'TN'\n    join avg_returns ar on ctr1.ctr_store_sk = ar.ctr_store_sk\n    where ctr1.ctr_total_return > (ar.avg_return * 1.2)\n) ctr1 on ctr1.rn = 1 and ctr1.ctr_customer_sk = c_customer_sk\norder by c_customer_id limit 100\n```",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 1951.404,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 95.66,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1428478.3,
+      "optimized": 138528.83,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 42325.9,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 3274.4,
+    "total_inference_ms": 45600.3,
+    "writer_inference_ms": 23568.2,
+    "writer_tokens_in": 1063,
+    "writer_tokens_out": 2302,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. N. Materialize Subquery - TARGET: `ctr2` subquery in the WHERE clause - TRANSFORMATION: Move the subquery to a derived table or CTE and materialize it to avoid repeated evaluation.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer_total_return ctr1, store, customer\nwhere ctr1.ctr_total_return > (select avg_return from avg_returns where ctr1.ctr_store_sk = ctr2.ctr_store_sk)\nand s_store_sk = ctr1.ctr_store_sk\nand s_state = 'TN'\nand ctr1.ctr_customer_sk = c_customer_sk\norder by c_customer_id limit 100\n```\n\n2. N. Filter Pushdown - TARGET: `s_state` filter in the WHERE clause - TRANSFORMATION: Move the filter condition to the join condition to reduce the number of rows passed between tables.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer_total_return ctr1 join store on s_store_sk = ctr1.ctr_store_sk and s_state = 'TN'\njoin customer on ctr1.ctr_customer_sk = c_customer_sk\nwhere ctr1.ctr_total_return > (select avg_return from avg_returns where ctr1.ctr_store_sk = ctr2.ctr_store_sk)\norder by c_customer_id limit 100\n```\n\n3. N. Indexes - TARGET: `customer_total_return`, `avg_returns`, and `customer` tables - TRANSFORMATION: Create indexes on the columns used in the WHERE, JOIN, and GROUP BY clauses to speed up lookups.\n\n```\nCREATE INDEX idx_ctr1_store_sk ON customer_total_return (ctr_store_sk);\nCREATE INDEX idx_avg_returns_store_sk ON avg_returns (ctr_store_sk);\nCREATE INDEX idx_customer_cust_sk ON customer (c_customer_sk);\n```\n\n4. N. Sort-Merge Join - TARGET: join between `customer_total_return` and `customer` - TRANSFORMATION: Rearrange the order of joins to perform a sort-merge join, which can be more efficient for large datasets.\n\n```\nwith customer_total_return as (...),\n     avg_returns as (select ctr_store_sk, avg(ctr_total_return) as avg_return from customer_total_return group by ctr_store_sk)\nselect c_customer_id\nfrom customer\njoin (\n    select ctr1.*, row_number() over (order by ctr_total_return desc) as rn\n    from customer_total_return ctr1 join store on s_store_sk = ctr1.ctr_store_sk and s_state = 'TN'\n    join avg_returns ar on ctr1.ctr_store_sk = ar.ctr_store_sk\n    where ctr1.ctr_total_return > (ar.avg_return * 1.2)\n) ctr1 on ctr1.rn = 1 and ctr1.ctr_customer_sk = c_customer_sk\norder by c_customer_id limit 100\n```",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\nReason: The rewrite materializes the subquery `customer_total_return` as requested by the strategy."
+  },
+  "raw_sql": "with customer_total_return as (select sr_customer_sk as ctr_customer_sk ,sr_store_sk as ctr_store_sk ,sum(SR_FEE) as ctr_total_return from store_returns ,date_dim where sr_returned_date_sk = d_date_sk and d_year =2000 group by sr_customer_sk ,sr_store_sk) select c_customer_id from customer_total_return ctr1 ,store ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk) and s_store_sk = ctr1.ctr_store_sk and s_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id limit 100"
+}

@@ -1,0 +1,305 @@
+{
+  "timestamp": "2026-09-10T10:17:20.545022",
+  "query_hash": "a614cd11c21c",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 222602.9,
+  "reasoning_trace": "<think>\nWe are given a query that is expected to be improved by adding indexes. The query involves multiple tables and has several conditions.\n\nFirst, let's break down the query and identify the tables and columns that are being scanned and filtered.\n\nThe query is:\n\n```sql\nselect substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) \nfrom web_sales, web_returns, web_page, customer_demographics cd1, customer_demographics cd2, customer_address, date_dim, reason \nwhere ... \ngroup by r_reason_desc \norder by ... \nlimit 100\n```\n\nWe are joining the following tables:\n- web_sales\n- web_returns\n- web_page\n- customer_demographics (aliased as cd1 and cd2)\n- customer_address\n- date_dim\n- reason\n\nThe conditions in the WHERE clause are complex and involve multiple OR conditions.\n\nNow, let's look at the physical execution plan. Since the plan is not provided, we must rely on the query structure and the schema.\n\nWe are told that the tables `reason`, `customer_address`, `customer_demographics`, `web_page`, `web_returns`, `web_sales`, and `date_dim` have no indexes.\n\nWe are to identify the tables that are being scanned and the columns that are causing the scan.\n\nLooking at the query, the main tables that are large are:\n- web_sales (14,396,103 rows)\n- web_returns (1,439,266 rows)\n- customer_demographics (1,920,800 rows)\n\nThe other tables are small (web_page has 264 rows, reason has 36 rows, date_dim has 73,049 rows, customer_address has 133,000 rows).\n\nThe query does a join between these tables. The conditions are:\n\n1. `ws_web_page_sk = wp_web_page_sk`\n2. `ws_item_sk = wr_item_sk`\n3. `ws_order_number = wr_order_number`\n4. `ws_sold_date_sk = d_date_sk`\n5. `d_year = 1998`\n6. `cd1.cd_demo_sk = wr_refunded_cdemo_sk`\n7. `cd2.cd_demo_sk = wr_returning_cdemo_sk`\n8. `ca_address_sk = wr_refunded_addr_sk`\n9. `r_reason_sk = wr_reason_sk`\n10. Complex conditions on cd1 and cd2 (education and marital status) and on customer_address (country and state) and on web_sales (sales_price and net_profit)\n\nThe query groups by `r_reason_desc` and orders by the same and the averages, then limits to 100.\n\nGiven that the tables `web_sales` and `web_returns` are large, and the query is joining them, we should look for indexes on the columns used in the joins and filters.\n\nLet's break down the joins and conditions:\n\n1. `web_sales` and `web_returns` are joined on `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number`. This is a composite join condition. We should consider an index on `web_sales(ws_item_sk, ws_order_number)` or on `web_returns(wr_item_sk, wr_order_number)`.\n\n2. `web_sales` and `date_dim` are joined on `ws_sold_date_sk = d_date_sk`. We should consider an index on `web_sales(ws_sold_date_sk)` or on `date_dim(d_date_sk)`.\n\n3. `web_sales` and `customer_demographics` (cd1) are joined via `cd1.cd_demo_sk = wr_refunded_cdemo_sk` (from web_returns). But note: the condition is on `wr_refunded_cdemo_sk` (from web_returns) and `cd1.cd_demo_sk`. So the index should be on the `web_returns` table for `wr_refunded_cdemo_sk` or on `customer_demographics` for `cd_demo_sk`. However, note that the condition is also filtering on `cd1`'s attributes (education and marital status). Since `cd1` is a large table, we might want to index it on the columns used in the filter (education_status and marital_status) but note that the condition is an equality on `cd_demo_sk` and then an equality on the attributes. However, the condition is a correlation condition (cd1.cd_demo_sk = wr_refunded_cdemo_sk) and then a filter on cd1. We can index `customer_demographics` on `cd_demo_sk` to help the join, and then the filter on the attributes might be done by a separate index or not.\n\n4. Similarly, `web_returns` and `customer_demographics` (cd2) are joined via `cd2.cd_demo_sk = wr_returning_cdemo_sk`. We should index `web_returns` on `wr_returning_cdemo_sk` or `customer_demographics` on `cd_demo_sk`.\n\n5. `web_returns` and `customer_address` are joined via `ca_address_sk = wr_refunded_addr_sk`. We should index `web_returns` on `wr_refunded_addr_sk` or `customer_address` on `ca_address_sk`.\n\n6. `web_returns` and `reason` are joined via `r_reason_sk = wr_reason_sk`. We should index `web_returns` on `wr_reason_sk` or `reason` on `r_reason_sk`.\n\n7. The condition `d_year = 1998` is on `date_dim`. We can index `date_dim` on `d_year` to help the join.\n\n8. The conditions on `customer_demographics` (cd1 and cd2) are filtering on `cd_marital_status` and `cd_education_status`. We can index `customer_demographics` on these columns.\n\n9. The conditions on `customer_address` are filtering on `ca_country` and `ca_state`. We can index `customer_address` on these columns.\n\nGiven the above, we can propose the following indexes:\n\n1. On `web_sales` for the join with `web_returns` and `date_dim`:\n   - `ws_item_sk` and `ws_order_number` (composite index) to help the join with `web_returns`.\n   - `ws_sold_date_sk` to help the join with `date_dim`.\n\n2. On `web_returns` for the joins with other tables:\n   - `wr_item_sk` and `wr_order_number` (composite index) to help the join with `web_sales`.\n   - `wr_refunded_cdemo_sk` and `wr_returning_cdemo_sk` (composite index) to help the joins with `customer_demographics`.\n   - `wr_refunded_addr_sk` to help the join with `customer_address`.\n   - `wr_reason_sk` to help the join with `reason`.\n\n3. On `customer_demographics` for the joins and filters:\n   - `cd_demo_sk` to help the joins with `web_returns`.\n   - `cd_marital_status` and `cd_education_status` to help the filter conditions.\n\n4. On `customer_address` for the filter condition:\n   - `ca_country` and `ca_state` to help the filter conditions.\n\n5. On `date_dim` for the join condition and filter:\n   - `d_date_sk` and `d_year` (composite index) to help the join and the filter.\n\nHowever, note that the query is grouping by `r_reason_desc` and ordering by the same and the averages. The `reason` table is small (36 rows) so indexing it is not necessary.\n\nAlso, note that the query has a limit of 100. This might be achieved by a Top N sort, but the grouping and aggregation might still require scanning a lot of data.\n\nNow, let's consider the order of the joins and the conditions. The query is using an old-style join (comma separated) and the conditions are not clearly partitioned. We might need to rewrite the query with explicit joins, but that is beyond the scope.\n\nGiven the above, we propose the following indexes:\n\n1. On `web_sales`:\n   - Index on `(ws_item_sk, ws_order_number)` for the join with `web_returns`.\n   - Index on `ws_sold_date_sk` for the join with `date_dim`.\n\n2. On `web_returns`:\n   - Index on `(wr_item_sk, wr_order_number)` for the join with `web_sales`.\n   - Index on `(wr_refunded_cdemo_sk, wr_returning_cdemo_sk)` for the joins with `customer_demographics`.\n   - Index on `wr_refunded_addr_sk` for the join with `customer_address`.\n   - Index on `wr_reason_sk` for the join with `reason`.\n\n3. On `customer_demographics`:\n   - Index on `cd_demo_sk` for the joins.\n   - Index on `(cd_marital_status, cd_education_status)` for the filter conditions.\n\n4. On `customer_address`:\n   - Index on `(ca_country, ca_state)` for the filter conditions.\n\n5. On `date_dim`:\n   - Index on `(d_date_sk, d_year)` for the join and filter.\n\nBut note: the condition on `date_dim` is `d_year = 1998` and the join is `ws_sold_date_sk = d_date_sk`. We can also consider a composite index on `date_dim` for `(d_year, d_date_sk)` but that might not be necessary because the join condition is on `d_date_sk` and the filter on `d_year`. Alternatively, a composite index on `(d_date_sk, d_year)` would be useful.\n\nHowever, note that the `date_dim` table has a primary key on `d_date_sk`. We can leave that as is and add a separate index on `d_year` if needed.\n\nBut wait, the condition `d_year = 1998` is a filter and the join condition is `ws_sold_date_sk = d_date_sk`. We can use the existing primary key on `d_date_sk` for the join and then filter by `d_year`. Alternatively, we can create a composite index on `(d_year, d_date_sk)` to cover both the filter and the join.\n\nBut note: the join condition is on `d_date_sk` and the filter is on `d_year`. We can also index `date_dim` on `d_year` to help the filter.\n\nNow, let's write the JSON structure.\n\nWe must note that the existing indexes are not provided, so we assume none exist.\n\nWe are to return a list of indexes with the following structure:\n\n{\n  \"target\": \"<table_name>\",\n  \"property\": \"<column_name>\",\n  \"index_type\": \"<index type>\",\n  \"partial_predicate\": null,  // or the predicate if it's a partial index\n  \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n}\n\nWe are to order the indexes by the number of rows scanned (largest first). However, we don't have the exact row counts, so we can estimate based on the table sizes.\n\nBut note: the instructions say to set `partial_predicate` to null unless it's a partial index. We are not creating partial indexes in this case.\n\nLet's list the indexes:\n\n1. `web_sales` on `(ws_item_sk, ws_order_number)` - This will help the join with `web_returns`. The `web_sales` table has 14 million rows. Without an index, the join condition might require a full scan of `web_sales` for each row of `web_returns` or vice versa. This index would reduce the cost of the join.\n\n2. `web_sales` on `ws_sold_date_sk` - This will help the join with `date_dim`. The `date_dim` table has 73,049 rows. Without an index, the join might require a full scan of `date_dim` for each row of `web_sales` or vice versa. This index would help.\n\n3. `web_returns` on `(wr_item_sk, wr_order_number)` - This will help the join with `web_sales`. The `web_returns` table has 1.4 million rows.\n\n4. `web_returns` on `(wr_refunded_cdemo_sk, wr_returning_cdemo_sk)` - This will help the joins with `customer_demographics`. The `customer_demographics` table has 1.9 million rows.\n\n5. `web_returns` on `wr_refunded_addr_sk` - This will help the join with `customer_address`.\n\n6. `web_returns` on `wr_reason_sk` - This will help the join with `reason`.\n\n7. `customer_demographics` on `cd_demo_sk` - This will help the joins with `web_returns`. The `customer_demographics` table has 1.9 million rows.\n\n8. `customer_demographics` on `(cd_marital_status, cd_education_status)` - This will help the filter conditions. The filter conditions are part of an OR condition and might be used to reduce the number of rows in `customer_demographics`.\n\n9. `customer_address` on `(ca_country, ca_state)` - This will help the filter conditions.\n\n10. `date_dim` on `d_year` - This will help the filter condition `d_year = 1998`. The `date_dim` table has 73,049 rows.\n\nBut note: the condition on `date_dim` is also used in the join. We can also index `date_dim` on `d_date_sk` (which is the primary key) so that is already covered.\n\nNow, we must consider the order of the joins. The query might be doing a nested loop join because of the limit 100. But without the execution plan, we cannot be sure.\n\nWe are to return the indexes in the order of the number of rows scanned. The largest tables are `web_sales` and `web_returns`. The joins that involve these tables are the most expensive.\n\nWe will list the indexes in the order of the table they are on, starting with the largest tables.\n\nBut note: the instructions say to order by the number of rows scanned (largest first). We don't have the exact row counts for the scans, but we can estimate:\n\n- The `web_sales` table is the largest (14 million rows). The joins that involve `web_sales` might be the most expensive.\n\nHowever, the query is grouping by `r_reason_desc` and then limiting to 100. It might be that the query is using a hash join or something else. But without the plan, we must rely on the structure.\n\nWe are to return a JSON array of indexes. We must not suggest indexes that already exist, but we are told that none exist.\n\nWe must also consider that the query has multiple OR conditions. This might cause the planner to not use an index effectively. But we are to focus on the columns that are being used in the joins and filters.\n\nNow, let's write the JSON.\n\nWe will create the following indexes:\n\n1. On `web_sales` for `(ws_item_sk, ws_order_number)`\n2. On `web_sales` for `ws_sold_date_sk`\n3. On `web_returns` for `(wr_item_sk, wr_order_number)`\n4. On `web_returns` for `(wr_refunded_cdemo_sk, wr_returning_cdemo_sk)`\n5. On `web_returns` for `wr_refunded_addr_sk`\n6. On `web_returns` for `wr_reason_sk`\n7. On `customer_demographics` for `cd_demo_sk`\n8. On `customer_demographics` for `(cd_marital_status, cd_education_status)`\n9. On `customer_address` for `(ca_country, ca_state)`\n10. On `date_dim` for `d_year`\n\nBut note: the condition on `customer_demographics` is an OR condition and the attributes are being filtered. We might want to create a composite index on `(cd_marital_status, cd_education_status)` to help the filter.\n\nAlso, note that the condition on `customer_demographics` is an equality on `cd_demo_sk` and then an equality on the attributes. The index on `cd_demo_sk` is already proposed.\n\nNow, let's write the JSON.\n\nWe must set `no_index_possible` to false because we are suggesting indexes.\n\nWe must set `estimated_benefit` for each index. We can say:\n\n- For `web_sales` on `(ws_item_sk, ws_order_number)`: This index will eliminate a sequential scan of `web_sales` for the join with `web_returns`, reducing the cost from a full table scan (14 million rows) to an index scan.\n\nBut note: the query is joining `web_sales` and `web_returns` on two columns. Without an index, the planner might do a nested loop join with the primary key of `web_sales` (if available) or a sequential scan. We are not given the primary key of `web_sales`, but the schema shows `ws_item_sk` and `ws_order_number` as part of the primary key? Actually, the primary key of `web_sales` is `(ws_item_sk, ws_order_number)` as per the schema. So the table already has a composite primary key on `(ws_item_sk, ws_order_number)`. Therefore, we don't need to create an index for that.\n\nWait, let's check the schema for `web_sales`:\n\nTable: web_sales (rows: 14,396,103)\n    ws_sold_date_sk  INTEGER  [FK \u2192 date_dim.d_date_sk]\n    ws_sold_time_sk  INTEGER  [FK \u2192 time_dim.t_time_sk]\n    ws_ship_date_sk  INTEGER  [FK \u2192 date_dim.d_date_sk]\n    ws_bill_customer_sk  INTEGER  [FK \u2192 customer.c_customer_sk]\n    ... \n    ws_item_sk  INTEGER  [PK, FK \u2192 item.i_item_sk, NOT NULL]\n    ws_promo_sk  INTEGER  [FK \u2192 promotion.p_promo_sk]\n    ws_order_number  INTEGER  [PK, NOT NULL]\n    ...\n\nThe primary key is `(ws_item_sk, ws_order_number)`. So the table already has an index on `(ws_item_sk, ws_order_number)`. Therefore, we cannot create a new index for that.\n\nSimilarly, for `web_returns`:\n\nTable: web_returns (rows: 1,439,266)\n    wr_returned_date_sk  INTEGER  [FK \u2192 date_dim.d_date_sk]\n    wr_returned_time_sk  INTEGER  [FK \u2192 time_dim.t_time_sk]\n    wr_item_sk  INTEGER  [PK, FK \u2192 item.i_item_sk, NOT NULL]\n    wr_refunded_customer_sk  INTEGER  [FK \u2192 customer.c_customer_sk]\n    ...\n    wr_order_number  INTEGER  [PK, NOT NULL]\n    ...\n\nThe primary key is `(wr_order_number, wr_item_sk)`? Actually, the primary key is `(wr_order_number, wr_item_sk)` as per the schema. So the table already has an index on `(wr_order_number, wr_item_sk)`.\n\nBut note: the join condition is `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number`. The primary key of `web_sales` is `(ws_item_sk, ws_order_number)` and the primary key of `web_returns` is `(wr_order_number, wr_item_sk)`. So the join condition is exactly the primary keys of both tables. Therefore, the planner might use the primary keys for the join.\n\nBut wait, the schema for `web_sales` says the primary key is `(ws_item_sk, ws_order_number)` and for `web_returns` is `(wr_order_number, wr_item_sk)`. So the join condition is `(ws_item_sk, ws_order_number) = (wr_item_sk, wr_order_number)`. This is a composite equality. The planner can use the primary keys of both tables to do an index join.\n\nBut note: the condition is `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number`. The primary key of `web_sales` is `(ws_item_sk, ws_order_number)` and the primary key of `web_returns` is `(wr_order_number, wr_item_sk)`. So the order of columns in the join condition is different. But the planner can still use the index.\n\nHowever, the existing primary keys are covering the join condition. So we don't need to create a new index for the join between `web_sales` and `web_returns`.\n\nBut wait, the schema for `web_sales` says the primary key is `(ws_item_sk, ws_order_number)` and for `web_returns` is `(wr_order_number, wr_item_sk)`. The join condition is `ws_item_sk = wr_item_sk` and `ws_order_number = wr_order_number`. This is the same as the primary keys of both tables, just in a different order. The planner can use the primary keys.\n\nNow, let's look at the other joins:\n\n- `web_sales` and `date_dim`: `ws_sold_date_sk = d_date_sk`. The `web_sales` table has an index on `ws_sold_date_sk`? The schema does not show a separate index, but the primary key does not include `ws_sold_date_sk`. So we should create an index on `web_sales(ws_sold_date_sk)`.\n\n- `web_returns` and `customer_demographics` (cd1): `cd1.cd_demo_sk = wr_refunded_cdemo_sk`. The `customer_demographics` table does not have an index on `cd_demo_sk`. We should create an index on `customer_demographics(cd_demo_sk)`.\n\n- Similarly, `web_returns` and `customer_demographics` (cd2): `cd2.cd_demo_sk = wr_returning_cdemo_sk`. We need an index on `customer_demographics(cd_demo_sk)`.\n\n- `web_returns` and `customer_address`: `ca_address_sk = wr_refunded_addr_sk`. The `customer_address` table does not have an index on `ca_address_sk`. We should create an index on `customer_address(ca_address_sk)`.\n\n- `web_returns` and `reason`: `r_reason_sk = wr_reason_sk`. The `reason` table is small, so we don't need an index.\n\n- `date_dim` and `web_sales`: `ws_sold_date_sk = d_date_sk`. We already proposed an index on `web_sales(ws_sold_date_sk)`. We can also index `date_dim(d_date_sk)` but that is the primary key.\n\nNow, let's update our list:\n\n1. `web_sales` on `ws_sold_date_sk` (since the primary key doesn't cover this join condition)\n\n2. `customer_demographics` on `cd_demo_sk` (for the joins with `web_returns`)\n\n3. `customer_address` on `ca_address_sk` (for the join with `web_returns`)\n\n4. `customer_demographics` on `(cd_marital_status, cd_education_status)` (for the filter conditions)\n\n5. `customer_address` on `(ca_country, ca_state)` (for the filter conditions)\n\n6. `date_dim` on `d_year` (for the filter condition)\n\nBut note: the condition on `date_dim` is `d_year = 1998` and the join is `ws_sold_date_sk = d_date_sk`. We can index `date_dim` on `d_year` to help the filter.\n\nNow, let's write the JSON.\n\nWe must consider that the `customer_demographics` table is being joined twice (with two different conditions). We can create one index on `cd_demo_sk` to cover both.\n\nAlso, note that the filter conditions on `customer_demographics` are on `cd_marital_status` and `cd_education_status`. We can create a composite index on these columns.\n\nSimilarly, the filter conditions on `customer_address` are on `ca_country` and `ca_state`. We can create a composite index on these columns.\n\nNow, the JSON:\n\nWe will list the indexes in the order of the table they are on, starting with the largest tables that are being scanned.\n\nBut note: the instructions say to order by the number of rows scanned (largest first). The `web_sales` table is the largest, then `web_returns`, then `customer_demographics`, then `customer_address`, then `date_dim`.\n\nWe will list:\n\n1. `web_sales` on `ws_sold_date_sk`\n2. `customer_demographics` on `cd_demo_sk`\n3. `customer_demographics` on `(cd_marital_status, cd_education_status)`\n4. `customer_address` on `ca_address_sk`\n5. `customer_address` on `(ca_country, ca_state)`\n6. `date_dim` on `d_year`\n\nBut wait, the `customer_demographics` table is 1.9 million rows, whi",
+  "recommendations": [
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -4.1,
+      "baseline_exec_ms": 482.136,
+      "optimized_exec_ms": 501.984,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961701.61,
+          "cost_with_index": 2961690.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931085.7,
+          "cost_with_index": 1931066.09,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802993.49,
+          "cost_with_index": 802989.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019706.04,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712246.96,
+          "cost_with_index": 3712215.85,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_demo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_marital_status, cd_education_status",
+      "index_type": "btree",
+      "estimated_benefit_pct": 17.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.6,
+      "baseline_exec_ms": 496.205,
+      "optimized_exec_ms": 473.561,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 6.6,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802989.1,
+          "cost_with_index": 802989.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.77,
+          "cost_with_index": 105948.54,
+          "benefit_pct": 10.8
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 937619.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81964.49,
+          "cost_with_index": 69071.51,
+          "benefit_pct": 15.7
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_address_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_country, ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.7,
+      "baseline_exec_ms": 501.717,
+      "optimized_exec_ms": 492.944,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802989.1,
+          "cost_with_index": 802989.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.61,
+          "cost_with_index": 1210560.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3973412.13,
+          "cost_with_index": 3973412.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 937619.68,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 5.3,
+      "baseline_exec_ms": 506.672,
+      "optimized_exec_ms": 479.833,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.5,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.03,
+          "cost_with_index": 1434001.44,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961690.89,
+          "cost_with_index": 2961690.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931066.09,
+          "cost_with_index": 1931066.09,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368787.36,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802989.1,
+          "cost_with_index": 796533.01,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.77,
+          "cost_with_index": 116880.18,
+          "benefit_pct": 1.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.97,
+          "cost_with_index": 29019052.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.61,
+          "cost_with_index": 1208623.02,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3973412.13,
+          "cost_with_index": 3971474.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 935682.09,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 177119.83,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81964.49,
+          "cost_with_index": 80026.9,
+          "benefit_pct": 2.4
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906080.7,
+          "cost_with_index": 906080.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712215.85,
+          "cost_with_index": 3712215.85,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 133009.51,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222650.9,
+          "cost_with_index": 222650.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1343089.26,
+          "benefit_pct": 0.2
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

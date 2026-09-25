@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-08-26T18:36:57.112792",
+  "query_hash": "4d51a0b2a8bc",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 64.87,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 100404.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH target_dates AS (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2002\n      AND d_moy BETWEEN 1 AND 1+2\n),\nstate_filtered_customers AS (\n    SELECT c.c_customer_sk, c.c_current_cdemo_sk\n    FROM customer c\n    JOIN customer_address ca ON c.c_current_addr_sk = ca.ca_address_sk\n    WHERE ca_state IN ('IL','TX','ME')\n),\nstore_sales_customers AS (\n    SELECT DISTINCT ss_customer_sk\n    FROM store_sales ss\n    JOIN target_dates td ON ss.ss_sold_date_sk = td.d_date_sk\n),\nweb_catalog_excluded AS (\n    SELECT ws_bill_customer_sk\n    FROM web_sales ws\n    JOIN target_dates td ON ws.ws_sold_date_sk = td.d_date_sk\n    UNION\n    SELECT cs_ship_customer_sk\n    FROM catalog_sales cs\n    JOIN target_dates td ON cs.cs_sold_date_sk = td.d_date_sk\n),\nfiltered_customers AS (\n    SELECT sfc.c_customer_sk, sfc.c_current_cdemo_sk\n    FROM state_filtered_customers sfc\n    WHERE sfc.c_customer_sk IN (SELECT ss_customer_sk FROM store_sales_customers)\n      AND NOT EXISTS (\n          SELECT 1\n          FROM web_catalog_excluded wce\n          WHERE wce.ws_bill_customer_sk = sfc.c_customer_sk\n      )\n)\nSELECT cd_gender,\n       cd_marital_status,\n       cd_education_status,\n       count(*) AS cnt1,\n       cd_purchase_estimate,\n       count(*) AS cnt2,\n       cd_credit_rating,\n       count(*) AS cnt3\nFROM filtered_customers fc\nJOIN customer_demographics cd ON fc.c_current_cdemo_sk = cd_demo_sk\nGROUP BY cd_gender,\n         cd_marital_status,\n         cd_education_status,\n         cd_purchase_estimate,\n         cd_credit_rating\nORDER BY cd_gender,\n         cd_marital_status,\n         cd_education_status,\n         cd_purchase_estimate,\n         cd_credit_rating\nLIMIT 100",
+  "reached_sql": "WITH target_dates AS (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2002\n      AND d_moy BETWEEN 1 AND 1+2\n),\nstate_filtered_customers AS (\n    SELECT c.c_customer_sk, c.c_current_cdemo_sk\n    FROM customer c\n    JOIN customer_address ca ON c.c_current_addr_sk = ca.ca_address_sk\n    WHERE ca_state IN ('IL','TX','ME')\n),\nstore_sales_customers AS (\n    SELECT DISTINCT ss_customer_sk\n    FROM store_sales ss\n    JOIN target_dates td ON ss.ss_sold_date_sk = td.d_date_sk\n),\nweb_catalog_excluded AS (\n    SELECT ws_bill_customer_sk\n    FROM web_sales ws\n    JOIN target_dates td ON ws.ws_sold_date_sk = td.d_date_sk\n    UNION\n    SELECT cs_ship_customer_sk\n    FROM catalog_sales cs\n    JOIN target_dates td ON cs.cs_sold_date_sk = td.d_date_sk\n),\nfiltered_customers AS (\n    SELECT sfc.c_customer_sk, sfc.c_current_cdemo_sk\n    FROM state_filtered_customers sfc\n    WHERE sfc.c_customer_sk IN (SELECT ss_customer_sk FROM store_sales_customers)\n      AND NOT EXISTS (\n          SELECT 1\n          FROM web_catalog_excluded wce\n          WHERE wce.ws_bill_customer_sk = sfc.c_customer_sk\n      )\n)\nSELECT cd_gender,\n       cd_marital_status,\n       cd_education_status,\n       count(*) AS cnt1,\n       cd_purchase_estimate,\n       count(*) AS cnt2,\n       cd_credit_rating,\n       count(*) AS cnt3\nFROM filtered_customers fc\nJOIN customer_demographics cd ON fc.c_current_cdemo_sk = cd_demo_sk\nGROUP BY cd_gender,\n         cd_marital_status,\n         cd_education_status,\n         cd_purchase_estimate,\n         cd_credit_rating\nORDER BY cd_gender,\n         cd_marital_status,\n         cd_education_status,\n         cd_purchase_estimate,\n         cd_credit_rating\nLIMIT 100",
+  "reasoning_trace": "1. DECORRELATE EXISTS INTO NON-CORRELATED SEMI-JOIN \u2014 TARGET: the `exists` subquery on `store_sales`/`date_dim` (`ss_customer_sk`, `ss_sold_date_sk`, `d_date_sk`, `d_year`, `d_moy`) \u2014 TRANSFORMATION: Compute the `DISTINCT ss_customer_sk` values from `store_sales` joined to a precomputed `target_dates` CTE for `d_year=2002 AND d_moy BETWEEN 1 AND 3` once, then filter customers with `c_customer_sk IN (SELECT ...)` instead of probing `store_sales` per customer.\n\n2. COMBINE THE TWO NOT EXISTS INTO ONE ANTI-JOIN \u2014 TARGET: the `not exists` subquery on `web_sales`/`date_dim` (`ws_bill_customer_sk`) and the `not exists` subquery on `catalog_sales`/`date_dim` (`cs_ship_customer_sk`) \u2014 TRANSFORMATION: Create a single CTE that `UNION`s the distinct `ws_bill_customer_sk` and `cs_ship_customer_sk` values for the same `target_dates` window, and apply one anti-join / `NOT EXISTS` against that combined set to preserve the `AND NOT` logic.\n\n3. PUSH STATE FILTER BEFORE FACT-TABLE FILTERS \u2014 TARGET: the join `customer c` to `customer_address ca` on `c.c_current_addr_sk = ca.ca_address_sk` with `ca_state IN ('IL','TX','ME')` \u2014 TRANSFORMATION: Pre-filter the customer base into a CTE using only the address/state join, then feed only those `c_customer_sk` values into the semi/anti-join logic, drastically cutting the number of rows checked against the large fact tables.\n\n4. DELAY DEMOGRAPHICS JOIN UNTIL AFTER FACT-TABLE FILTERS \u2014 TARGET: the join `customer_demographics` on `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: Apply the `store_sales`/`web_sales`/`catalog_sales` existence checks to the state-filtered customer CTE first, and only afterward join `customer_demographics` to the surviving customers for the `GROUP BY` and counts.\n\n5. PRECOMPUTE SHARED DATE-DIMENSION WINDOW \u2014 TARGET: the repeated `date_dim` joins with `d_year=2002 AND d_moy BETWEEN 1 AND 3` in all three subqueries \u2014 TRANSFORMATION: Materialize a `target_dates` CTE consisting only of the matching `d_date_sk` values and reference that CTE in each fact-table filter, removing the per-subquery scan/join of `date_dim`.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 15806.895,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 64.87,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 781189.01,
+      "optimized": 3925982.78,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 91686.6,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 8718.3,
+    "total_inference_ms": 100404.9,
+    "writer_inference_ms": 316162.7,
+    "writer_tokens_in": 1293,
+    "writer_tokens_out": 38418,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. DECORRELATE EXISTS INTO NON-CORRELATED SEMI-JOIN \u2014 TARGET: the `exists` subquery on `store_sales`/`date_dim` (`ss_customer_sk`, `ss_sold_date_sk`, `d_date_sk`, `d_year`, `d_moy`) \u2014 TRANSFORMATION: Compute the `DISTINCT ss_customer_sk` values from `store_sales` joined to a precomputed `target_dates` CTE for `d_year=2002 AND d_moy BETWEEN 1 AND 3` once, then filter customers with `c_customer_sk IN (SELECT ...)` instead of probing `store_sales` per customer.\n\n2. COMBINE THE TWO NOT EXISTS INTO ONE ANTI-JOIN \u2014 TARGET: the `not exists` subquery on `web_sales`/`date_dim` (`ws_bill_customer_sk`) and the `not exists` subquery on `catalog_sales`/`date_dim` (`cs_ship_customer_sk`) \u2014 TRANSFORMATION: Create a single CTE that `UNION`s the distinct `ws_bill_customer_sk` and `cs_ship_customer_sk` values for the same `target_dates` window, and apply one anti-join / `NOT EXISTS` against that combined set to preserve the `AND NOT` logic.\n\n3. PUSH STATE FILTER BEFORE FACT-TABLE FILTERS \u2014 TARGET: the join `customer c` to `customer_address ca` on `c.c_current_addr_sk = ca.ca_address_sk` with `ca_state IN ('IL','TX','ME')` \u2014 TRANSFORMATION: Pre-filter the customer base into a CTE using only the address/state join, then feed only those `c_customer_sk` values into the semi/anti-join logic, drastically cutting the number of rows checked against the large fact tables.\n\n4. DELAY DEMOGRAPHICS JOIN UNTIL AFTER FACT-TABLE FILTERS \u2014 TARGET: the join `customer_demographics` on `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: Apply the `store_sales`/`web_sales`/`catalog_sales` existence checks to the state-filtered customer CTE first, and only afterward join `customer_demographics` to the surviving customers for the `GROUP BY` and counts.\n\n5. PRECOMPUTE SHARED DATE-DIMENSION WINDOW \u2014 TARGET: the repeated `date_dim` joins with `d_year=2002 AND d_moy BETWEEN 1 AND 3` in all three subqueries \u2014 TRANSFORMATION: Materialize a `target_dates` CTE consisting only of the matching `d_date_sk` values and reference that CTE in each fact-table filter, removing the per-subquery scan/join of `date_dim`.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to decorrelate EXISTS into semi-join and combine NOT EXISTS into anti-join. The rewrite applies both: it uses a CTE to precompute target dates, decorrelate"
+  },
+  "raw_sql": "select cd_gender, cd_marital_status, cd_education_status, count(*) cnt1, cd_purchase_estimate, count(*) cnt2, cd_credit_rating, count(*) cnt3 from customer c,customer_address ca,customer_demographics where c.c_current_addr_sk = ca.ca_address_sk and ca_state in ('IL','TX','ME') and cd_demo_sk = c.c_current_cdemo_sk and exists (select * from store_sales,date_dim where c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and (not exists (select * from web_sales,date_dim where c.c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and not exists (select * from catalog_sales,date_dim where c.c_customer_sk = cs_ship_customer_sk and cs_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2)) group by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating order by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating limit 100"
+}

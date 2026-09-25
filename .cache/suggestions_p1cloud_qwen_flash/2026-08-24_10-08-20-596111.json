@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-08-24T10:08:20.596061",
+  "query_hash": "cddbdcb96bc9",
+  "suggestions": [
+    "materialize a subquery into a CTE",
+    "reorder joins to reduce intermediate rows",
+    "introduce window function for pagination",
+    "materialize filter subquery",
+    "introduce window function for top-N"
+  ],
+  "improvement_pct": 85.16,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 221836.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH filtered_item AS MATERIALIZED (\n    SELECT i_item_sk, i_brand_id, i_brand\n    FROM item\n    WHERE i_manufact_id = 816\n)\nSELECT d_year, brand_id, brand, sum_agg\nFROM (\n    SELECT dt.d_year,\n           i.i_brand_id AS brand_id,\n           MAX(i.i_brand) AS brand,\n           SUM(ss.ss_sales_price) AS sum_agg,\n           ROW_NUMBER() OVER (\n               ORDER BY dt.d_year, SUM(ss.ss_sales_price) DESC, i.i_brand_id\n           ) AS rn\n    FROM store_sales AS ss\n    JOIN filtered_item AS i ON ss.ss_item_sk = i.i_item_sk\n    JOIN (\n        SELECT d_date_sk, d_year\n        FROM date_dim\n        WHERE d_moy = 11\n    ) AS dt ON ss.ss_sold_date_sk = dt.d_date_sk\n    GROUP BY dt.d_year, i.i_brand_id\n) AS ranked\nWHERE rn <= 100\nORDER BY d_year, sum_agg DESC, brand_id\nLIMIT 100",
+  "reached_sql": "WITH filtered_item AS MATERIALIZED (\n    SELECT i_item_sk, i_brand_id, i_brand\n    FROM item\n    WHERE i_manufact_id = 816\n)\nSELECT d_year, brand_id, brand, sum_agg\nFROM (\n    SELECT dt.d_year,\n           i.i_brand_id AS brand_id,\n           MAX(i.i_brand) AS brand,\n           SUM(ss.ss_sales_price) AS sum_agg,\n           ROW_NUMBER() OVER (\n               ORDER BY dt.d_year, SUM(ss.ss_sales_price) DESC, i.i_brand_id\n           ) AS rn\n    FROM store_sales AS ss\n    JOIN filtered_item AS i ON ss.ss_item_sk = i.i_item_sk\n    JOIN (\n        SELECT d_date_sk, d_year\n        FROM date_dim\n        WHERE d_moy = 11\n    ) AS dt ON ss.ss_sold_date_sk = dt.d_date_sk\n    GROUP BY dt.d_year, i.i_brand_id\n) AS ranked\nWHERE rn <= 100\nORDER BY d_year, sum_agg DESC, brand_id\nLIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this SQL optimization problem. The user provided a query and wants me to figure out the optimization strategy based on the query structure and schema. Let me start by understanding the original query.\n\nThe query selects d_year, brand_id, brand, and the sum of ss_sales_price from date_dim, store_sales, and item tables. The where clause joins these tables on date_dim.d_date_sk = store_sales.ss_sold_date_sk and store_sales.ss_item_sk = item.i_item_sk. There's a condition item.i_manufact_id = 816, and they group by d_year, brand, brand_id, ordering by d_year, sum_agg descending, and brand_id, with a limit of 100.\n\nFirst, I need to analyze the query structure. The main tables involved are date_dim, store_sales, and item. The joins are between date_dim and store_sales on d_date_sk, and between store_sales and item on ss_item_sk. The filter is on item.i_manufact_id = 816.\n\nNow, looking at the schema. The store_sales table has a primary key on (ss_ticket_number, ss_item_sk), but the query is grouping by item.i_brand and i_brand_id. Wait, the group by is on dt.d_year, item.i_brand, item.i_brand_id. The sum is over ss_sales_price. \n\nThe first thing that comes to mind is that the item table has a filter on i_manufact_id = 816. Since this is a specific value, maybe we can filter the item table early to reduce the number of rows. But the query is joining store_sales with item, so perhaps the item table is being scanned fully, but with the filter. However, if there's an index on i_manufact_id, that could help. But the user mentioned PostgreSQL 16.14 with hypopg and pg_trgm extensions. Hypopg is for hypertable partitioning, but maybe not relevant here. Pg_trgm is for text similarity, which might not apply here. \n\nAnother point is the joins. The store_sales table is joined with date_dim on d_date_sk. Since date_dim is a large table (73k rows), but the query is filtering on dt.d_moy=11 (month 11). So, if there's an index on d_moy, that could help. Also, the group by and order by might be causing full table scans or expensive sorts. \n\nThe query is grouping by d_year, brand, brand_id, and ordering by d_year, sum_agg desc, brand_id. The limit is 100, so maybe the optimizer can use a limit to stop early. But without an execution plan, I have to rely on the structure.\n\nPossible optimizations:\n\n1. **Filtering the item table early**: Since item.i_manufact_id = 816 is a filter, maybe the item table can be filtered first. However, the query is joining store_sales with item, so the filter is applied after the join. Wait, no. The where clause has item.i_manufact_id = 816. So the item table is scanned, and only rows with that manufact_id are considered. If there's an index on i_manufact_id, that would speed up this filter. But the user might not have that index. So, maybe the first optimization is to ensure that the item table is filtered as early as possible. However, since the query is joining store_sales with item, perhaps the join is on ss_item_sk, which is a foreign key to item.i_item_sk. So, the item table is being joined, and the filter is applied. \n\n2. **Join order**: The original query uses a comma-separated list for the FROM clause, which in PostgreSQL is equivalent to a cross join, but with the WHERE clause filtering. However, the optimizer might reorganize the joins. But in this case, the joins are between date_dim and store_sales, and store_sales and item. The order of joins might affect performance. Maybe joining store_sales with item first, then with date_dim would be better. But without knowing the data distribution, it's hard to say. \n\n3. **Index on store_sales.ss_item_sk**: Since the join is on store_sales.ss_item_sk = item.i_item_sk, and the item table has a filter, maybe an index on store_sales.ss_item_sk would help. But the query is filtering item.i_manufact_id, which is a separate condition. \n\n4. **Filtering date_dim**: The date_dim is filtered on d_moy=11. If there's an index on d_moy, that would help. Since d_moy is a column in date_dim, an index on that column could speed up the filter. \n\n5. **Group by and order by**: The group by is on d_year, brand, brand_id. The order by is on d_year, sum_agg desc, brand_id. Since there's a limit of 100, maybe the query can be optimized to find the top 100 rows without sorting all the data. However, without knowing the data, it's hard to say. \n\n6. **Subquery for item filtering**: Since the item table is filtered on i_manufact_id = 816, maybe we can rewrite the query to first select the relevant items and then join with store_sales. This would reduce the number of rows in the join. For example, creating a subquery that selects item details where i_manufact_id = 816, then joining that with store_sales and date_dim. This could reduce the number of rows processed in the join. \n\n7. **Materializing the item filter**: If the item table is large, filtering it first would reduce the number of rows to join with store_sales. \n\n8. **Using indexes on join columns**: Ensuring that the join columns (ss_sold_date_sk, ss_item_sk) have indexes could speed up the joins. \n\n9. **Reducing the number of rows in the date_dim join**: Since date_dim is filtered on d_moy=11, which is a specific month, maybe that's a small subset of the date_dim table. If there's an index on d_moy, that would help. \n\nPutting this together, the main optimizations would be:\n\n- Filter the item table first to reduce the number of rows before joining with store_sales.\n- Use indexes on the join columns and the filtered columns (d_moy, i_manufact_id) to speed up the joins and filters.\n- Possibly reorganize the joins to process the filtered data first.\n\nSo, the structured list of optimizations would focus on these points, targeting the specific tables and columns involved.\n\n</think>\n\n1. **Filtering Early**: item \u2014 TRANSFORMATION: Pre-filter item table using i_manufact_id = 816 to reduce join rows  \n2. **Join Order**: store_sales \u2192 item \u2014 TRANSFORMATION: Join store_sales with filtered item first, then date_dim  \n3. **Index on Join Columns**: store_sales.ss_item_sk \u2014 TRANSFORMATION: Ensure index on ss_item_sk for faster join with item  \n4. **Index on Date Filter**: date_dim.d_moy \u2014 TRANSFORMATION: Add index on d_moy to accelerate dt.d_moy = 11 filter  \n5. **Materialize Subquery**: item \u2014 TRANSFORMATION: Rewrite item filter as subquery to isolate manufacturing ID constraint  \n6. **Reduce Grouping Columns**: item.i_brand_id \u2014 TRANSFORMATION: Replace i_brand with i_brand_id in GROUP BY to match ORDER BY  \n7. **Limit Early**: sum_agg \u2014 TRANSFORMATION: Use window functions to enable early limit application during aggregation  \n8. **Index on Store Sales Date**: store_sales.ss_sold_date_sk \u2014 TRANSFORMATION: Index this column for faster join with date_dim  \n9. **Avoid Redundant Joins**: date_dim \u2014 TRANSFORMATION: Filter date_dim first to minimize rows before joining with store_sales  \n10. **Column Pruning**: store_sales.ss_sales_price \u2014 TRANSFORMATION: Ensure only required columns are scanned from store_sales",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 1205.463,
+      "optimized_ms": 178.944,
+      "delta_ms": 1026.519,
+      "improvement_pct": 85.16,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 129201.77,
+      "optimized": 217372.56,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 217484.2,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4351.9,
+    "total_inference_ms": 221836.1,
+    "writer_inference_ms": 313859.5,
+    "writer_tokens_in": 1522,
+    "writer_tokens_out": 35325,
+    "writer_calls": 2
+  },
+  "errors": [],
+  "strategy": "1. **Filtering Early**: item \u2014 TRANSFORMATION: Pre-filter item table using i_manufact_id = 816 to reduce join rows  \n2. **Join Order**: store_sales \u2192 item \u2014 TRANSFORMATION: Join store_sales with filtered item first, then date_dim  \n3. **Index on Join Columns**: store_sales.ss_item_sk \u2014 TRANSFORMATION: Ensure index on ss_item_sk for faster join with item  \n4. **Index on Date Filter**: date_dim.d_moy \u2014 TRANSFORMATION: Add index on d_moy to accelerate dt.d_moy = 11 filter  \n5. **Materialize Subquery**: item \u2014 TRANSFORMATION: Rewrite item filter as subquery to isolate manufacturing ID constraint  \n6. **Reduce Grouping Columns**: item.i_brand_id \u2014 TRANSFORMATION: Replace i_brand with i_brand_id in GROUP BY to match ORDER BY  \n7. **Limit Early**: sum_agg \u2014 TRANSFORMATION: Use window functions to enable early limit application during aggregation  \n8. **Index on Store Sales Date**: store_sales.ss_sold_date_sk \u2014 TRANSFORMATION: Index this column for faster join with date_dim  \n9. **Avoid Redundant Joins**: date_dim \u2014 TRANSFORMATION: Filter date_dim first to minimize rows before joining with store_sales  \n10. **Column Pruning**: store_sales.ss_sales_price \u2014 TRANSFORMATION: Ensure only required columns are scanned from store_sales",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy requested materialization of the item filter (rule 5) and filtering item early (rule 1), which the rewrite achieves via the `filtered_item` CTE. The rewrite also applies the jo"
+  },
+  "raw_sql": "select dt.d_year ,item.i_brand_id brand_id ,item.i_brand brand ,sum(ss_sales_price) sum_agg from date_dim dt ,store_sales ,item where dt.d_date_sk = store_sales.ss_sold_date_sk and store_sales.ss_item_sk = item.i_item_sk and item.i_manufact_id = 816 and dt.d_moy=11 group by dt.d_year ,item.i_brand ,item.i_brand_id order by dt.d_year ,sum_agg desc ,brand_id limit 100"
+}

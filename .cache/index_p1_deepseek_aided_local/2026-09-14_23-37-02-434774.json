@@ -1,0 +1,260 @@
+{
+  "timestamp": "2026-09-14T23:37:02.434460",
+  "query_hash": "42c4d0640cfb",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 172499.5,
+  "reasoning_trace": "<think>\nWe are given a query that joins several tables and uses multiple date dimensions to filter.\n The tables involved in the main query are: store_sales, store_returns, catalog_sales, date_dim (three times), store, item.\n\n The query filters by:\n   d1: d1.d_moy = 4 and d1.d_year = 1999\n   d2: d2.d_moy between 4 and 10 and d2.d_year = 1999\n   d3: d3.d_moy between 4 and 10 and d3.d_year = 1999\n\n And then joins:\n   store_sales (ss) with store, item, and date_dim (d1, d3)\n   store_returns (sr) with store_sales (via multiple conditions) and date_dim (d2)\n\n The main goal is to reduce the cost of the query by adding indexes.\n\n Let's break down the tables and the joins:\n\n 1. store_sales (57,598,932 rows) is joined with:\n      - store (44 rows) via s_store_sk = ss_store_sk\n      - item (28,000 rows) via i_item_sk = ss_item_sk\n      - date_dim (d1) via d1.d_date_sk = ss_sold_date_sk\n      - date_dim (d3) via d3.d_date_sk = cs_sold_date_sk (but note: the query also uses d3 for catalog_sales)\n\n 2. store_returns (5,755,095 rows) is joined with:\n      - store_sales (via multiple conditions: ss_customer_sk = sr_customer_sk, ss_item_sk = sr_item_sk, ss_ticket_number = sr_ticket_number)\n      - date_dim (d2) via d2.d_date_sk = sr_returned_date_sk\n\n 3. catalog_sales (28,803,583 rows) is joined with:\n      - store_returns (via sr_customer_sk = cs_bill_customer_sk, sr_item_sk = cs_item_sk)\n      - date_dim (d3) via d3.d_date_sk = cs_sold_date_sk\n\n The query groups by i_item_id, i_item_desc, s_store_id, s_store_name and then orders and limits.\n\n Without indexes, the planner might be doing sequential scans on the large tables (store_sales, store_returns, catalog_sales) and then using index scans on the small tables (store, item, date_dim) for the joins.\n\n However, note that the query uses multiple date dimensions (d1, d2, d3) and the date_dim table has 73,049 rows. Since the date_dim is small, it might be using an index on date_dim, but the other tables are large.\n\n Let's look for the most expensive parts:\n\n - The store_sales table has 57 million rows and is joined with store, item, and two date_dim lookups. The join conditions are:\n        d1.d_date_sk = ss_sold_date_sk\n        i_item_sk = ss_item_sk\n        s_store_sk = ss_store_sk\n\n   The store_sales table is also used in the join with store_returns via multiple conditions.\n\n - The store_returns table has 5.7 million rows and is joined with store_sales and date_dim (d2). The join conditions are:\n        ss_customer_sk = sr_customer_sk\n        ss_item_sk = sr_item_sk\n        ss_ticket_number = sr_ticket_number\n        d2.d_date_sk = sr_returned_date_sk\n\n - The catalog_sales table has 28.8 million rows and is joined with store_returns and date_dim (d3). The join conditions are:\n        sr_customer_sk = cs_bill_customer_sk\n        sr_item_sk = cs_item_sk\n        d3.d_date_sk = cs_sold_date_sk\n\n The query also uses grouping and aggregation (max) on the net_profit columns.\n\n Since the query is filtering by date (d1, d2, d3) and the date_dim tables are small, the main bottlenecks are the large tables.\n\n We can consider adding indexes on the columns used in the joins and filters of the large tables.\n\n Steps:\n\n 1. For store_sales:\n    - The join condition with date_dim (d1) uses ss_sold_date_sk. We can create an index on ss_sold_date_sk.\n    - The join condition with item uses ss_item_sk. We can create an index on ss_item_sk.\n    - The join condition with store uses ss_store_sk. We can create an index on ss_store_sk.\n\n 2. For store_returns:\n    - The join condition with store_sales uses multiple columns: (ss_customer_sk, ss_item_sk, ss_ticket_number). We can create a composite index on (ss_customer_sk, ss_item_sk, ss_ticket_number) or separate indexes? But note: the join condition is a composite of three columns. However, the query is joining store_sales and store_returns, so the index on store_sales might be more beneficial. Alternatively, we can index store_returns on the columns that are being joined from store_sales: (ss_customer_sk, ss_item_sk, ss_ticket_number). But note: the condition is from store_sales to store_returns, so the index on store_sales might be more effective. However, the planner might choose to do a nested loop join if there is an index on store_sales and the store_returns table is small enough. But store_returns has 5.7 million rows, so it might be better to have an index on store_sales for the columns that are being looked up in store_returns.\n\n    Alternatively, we can index store_returns on the columns that are being used to join with store_sales. But note: the condition is from store_sales to store_returns, so the index on store_sales might be more beneficial. However, the query is filtering store_sales by date and then joining with store_returns. The store_sales table is large, so an index on store_sales for the join columns would help.\n\n    But note: the query is joining store_sales and store_returns via three columns. We can create an index on store_sales (ss_customer_sk, ss_item_sk, ss_ticket_number) to help the join.\n\n 3. For catalog_sales:\n    - The join condition with store_returns uses two columns: (sr_customer_sk, sr_item_sk). We can create an index on store_returns (sr_customer_sk, sr_item_sk) to help the join.\n\n However, note that the query is grouping by item and store, and then ordering. The aggregation might be done after the joins.\n\n Let's consider the execution plan without indexes:\n\n   - The planner might do a sequential scan on store_sales, then join with store, item, and date_dim (using index on date_dim for d1). Then, for each row of store_sales, it would do a sequential scan on store_returns to find matching rows (using the composite condition). Then, for each matching store_returns row, it would do a sequential scan on catalog_sales to find matching rows.\n\n   This would be very expensive.\n\n We can try to break down the query and see which joins are the most expensive.\n\n Since the query is complex, we might not have the exact execution plan, but we can assume that the joins on the large tables are the bottlenecks.\n\n Proposed indexes:\n\n 1. On store_sales:\n    - Index on ss_sold_date_sk (for d1)\n    - Index on ss_item_sk (for item join)\n    - Index on ss_store_sk (for store join)\n    - Composite index on (ss_customer_sk, ss_item_sk, ss_ticket_number) for the join with store_returns\n\n 2. On store_returns:\n    - Composite index on (sr_customer_sk, sr_item_sk, sr_ticket_number) for the join with store_sales? But note: the condition is from store_sales to store_returns, so the index on store_sales might be more beneficial. However, if the planner chooses to do a nested loop join, then an index on store_returns would help.\n\n    Alternatively, we can index store_returns on the columns that are being used to join with catalog_sales: (sr_customer_sk, sr_item_sk)\n\n 3. On catalog_sales:\n    - Index on cs_bill_customer_sk and cs_item_sk? But note: the join condition is with store_returns (sr_customer_sk, sr_item_sk). So we can index catalog_sales on (cs_bill_customer_sk, cs_item_sk) or separate indexes.\n\n However, note that the query is grouping by item and store, and then ordering. The aggregation might be done after the joins.\n\n Let's focus on the joins:\n\n   - The join between store_sales and store_returns is on three columns. We can create an index on store_sales for (ss_customer_sk, ss_item_sk, ss_ticket_number) to help the join.\n\n   - The join between store_returns and catalog_sales is on two columns (sr_customer_sk, sr_item_sk). We can create an index on store_returns for (sr_customer_sk, sr_item_sk) to help the join.\n\n   - The join between catalog_sales and date_dim (d3) uses cs_sold_date_sk. We can index catalog_sales on cs_sold_date_sk.\n\n But note: the query also uses date_dim for d1 and d2. Since date_dim is small, we don't need an index on it.\n\n However, the query uses three date_dim tables (d1, d2, d3) and the conditions are on d_moy and d_year. We can create an index on date_dim for d_moy and d_year? But note: the date_dim table is small (73k rows) and the conditions are on two columns. But the planner might use an index on date_dim for d_moy and d_year to quickly find the rows for 1999 and moy=4, etc.\n\n But the date_dim table is small, so an index might not be necessary. However, if the planner is doing a sequential scan on date_dim, then an index might help.\n\n Let's consider the tables and the columns that are being filtered:\n\n   - store_sales: filtered by d1.d_date_sk (which is from date_dim). We can index store_sales on ss_sold_date_sk.\n\n   - store_returns: filtered by d2.d_date_sk (from date_dim). We can index store_returns on sr_returned_date_sk.\n\n   - catalog_sales: filtered by d3.d_date_sk (from date_dim). We can index catalog_sales on cs_sold_date_sk.\n\n But note: the date_dim table is small, so the planner might use a sequential scan on date_dim and then use an index on the large tables for the join.\n\n However, the query uses three date_dim tables and the conditions are on d_moy and d_year. We can create an index on date_dim for (d_year, d_moy) to quickly find the rows for 1999 and moy=4, etc.\n\n But again, date_dim is small, so it might not be necessary.\n\n Let's focus on the large tables and the joins.\n\n We are going to suggest indexes on the large tables for the columns that are being used in the joins and filters.\n\n Proposed indexes:\n\n 1. store_sales:\n    - index on ss_sold_date_sk (for d1)\n    - index on ss_item_sk (for item join)\n    - index on ss_store_sk (for store join)\n    - composite index on (ss_customer_sk, ss_item_sk, ss_ticket_number) for the join with store_returns\n\n 2. store_returns:\n    - composite index on (sr_customer_sk, sr_item_sk, sr_ticket_number) for the join with store_sales\n    - index on sr_returned_date_sk (for d2)\n\n 3. catalog_sales:\n    - composite index on (cs_bill_customer_sk, cs_item_sk) for the join with store_returns\n    - index on cs_sold_date_sk (for d3)\n\n But note: the query also uses the columns in the grouping and ordering, but these are not used in the joins or filters, so we don't need indexes on them for performance.\n\n However, the query uses max on the net_profit columns. These columns are not used in the joins or filters, so we don't need indexes for them.\n\n Let's write the JSON for the indexes:\n\n We are only allowed to suggest indexes on the tables that are part of the query and that are large.\n\n We are not allowed to suggest indexes on tables that already have indexes, but the problem states that the tables have no indexes.\n\n We are to return a JSON array of indexes.\n\n We must specify:\n   - target: the table name\n   - property: the column name (or composite index: list of columns)\n   - index_type: the type of index (e.g., btree, hash, etc. \u2014 but PostgreSQL uses btree by default unless specified, so we can use 'btree')\n   - partial_predicate: null (unless we are creating a partial index, but we don't have a condition for the index)\n   - estimated_benefit: a string describing what the index eliminates and on how many rows.\n\n We are to order the indexes by the number of rows scanned (largest first). But note: the query is filtering by date, so the number of rows in the large tables that match the date condition might be reduced by the index.\n\n However, we don't know the exact distribution, so we can estimate by the table size.\n\n Let's list the indexes in order of the table size (largest to smallest) and the columns that are being filtered.\n\n The largest tables are:\n   - store_sales: 57 million rows\n   - catalog_sales: 28.8 million rows\n   - store_returns: 5.7 million rows\n\n We are going to suggest:\n\n 1. Index on store_sales for ss_sold_date_sk (to filter by d1). This would reduce the 57 million rows to maybe a few million (depending on the date distribution). Let's say it eliminates a sequential scan on store_sales and reduces the rows to 1 million.\n\n 2. Index on store_sales for ss_item_sk (to join with item). This would help the join, but the item table is small (28k rows). The planner might do a nested loop join using the index on store_sales and then use the small item table. So the benefit is in the join.\n\n 3. Index on store_sales for ss_store_sk (to join with store). The store table is very small (44 rows). The planner might do a nested loop join using the index on store_sales and then use the small store table.\n\n 4. Composite index on store_sales for (ss_customer_sk, ss_item_sk, ss_ticket_number) for the join with store_returns. This would help the join condition that matches three columns.\n\n 5. Index on store_returns for sr_returned_date_sk (to filter by d2). This would reduce the 5.7 million rows to maybe a few million.\n\n 6. Composite index on store_returns for (sr_customer_sk, sr_item_sk, sr_ticket_number) for the join with store_sales.\n\n 7. Index on catalog_sales for cs_sold_date_sk (to filter by d3). This would reduce the 28.8 million rows to maybe a few million.\n\n 8. Composite index on catalog_sales for (cs_bill_customer_sk, cs_item_sk) for the join with store_returns.\n\n However, note that the query uses the store_sales table in two places: once directly and then via the join with store_returns and catalog_sales. We must consider the entire query.\n\n But note: the query is grouping by item and store, so the item and store joins are important.\n\n We are to return the indexes that would most reduce the cost. We should focus on the tables that are being scanned first.\n\n The query starts with store_sales, store_returns, and catalog_sales. The planner might start with the largest table, which is store_sales.\n\n Let's break down the query:\n\n   - The query has three main tables: store_sales, store_returns, catalog_sales.\n\n   - The query uses date_dim three times, but they are small.\n\n   - The query groups by item and store.\n\n   - The query uses max on the net_profit columns.\n\n   - The query orders by item and store.\n\n   - The query limits to 100 rows.\n\n   The planner might do:\n\n        Start with store_sales (57M rows) and filter by d1 (date condition). Then join with store and item.\n\n        Then, for each row of store_sales, join with store_returns (using the composite condition). Then, for each matching store_returns row, join with catalog_sales (using two columns).\n\n   The first join (store_sales to store_returns) is on three columns. We can index store_sales on those three columns.\n\n   Then, the join between store_returns and catalog_sales is on two columns. We can index store_returns on those two columns.\n\n   Also, the date conditions on store_sales, store_returns, and catalog_sales can be helped by indexes.\n\n   We are going to suggest:\n\n        store_sales: index on ss_sold_date_sk (for d1)\n        store_sales: index on (ss_customer_sk, ss_item_sk, ss_ticket_number) (for the join with store_returns)\n        store_sales: index on ss_item_sk (for the join with item) \u2014 but note: the item table is small, so the planner might do a nested loop join using the index on store_sales and then use the small item table. This index might be less critical.\n\n        store_returns: index on sr_returned_date_sk (for d2)\n        store_returns: index on (sr_customer_sk, sr_item_sk, sr_ticket_number) (for the join with store_sales) \u2014 but note: the condition is from store_sales to store_returns, so the index on store_sales might be more beneficial. However, if the planner does a hash join or merge join, then an index on store_returns might not be used. But if the planner does a nested loop join, then an index on store_returns would help.\n\n        catalog_sales: index on cs_sold_date_sk (for d3)\n        catalog_sales: index on (cs_bill_customer_sk, cs_item_sk) (for the join with store_returns)\n\n   But note: the query uses the store_sales table to join with store_returns and then catalog_sales. The store_sales table is the largest, so we should focus on indexing it.\n\n   Also, the query uses the item table (28k rows) and store table (44 rows). Since they are small, we don't need indexes on them.\n\n   We are to return the indexes in the order of the number of rows scanned (largest first). The store_sales table has the most rows, so we should index it first.\n\n   We are to return the JSON for each index.\n\n   We are to use the index_type: 'btree' (default for PostgreSQL) unless we are using a different one.\n\n   We are to set partial_predicate to null.\n\n   We are to write an explanation.\n\n   We are to return:\n\n   {\n     \"indexes\": [\n        { ... },\n        { ... }\n     ],\n     \"no_index_possible\": false,\n     \"explanation\": \"...\"\n   }\n\n   Let's list the indexes in the order of the table size (from largest to smallest) and the columns that are being filtered:\n\n   1. store_sales: index on ss_sold_date_sk (for d1) \u2014 eliminates a sequential scan on store_sales for the date condition, reducing 57M rows to maybe 1M rows.\n   2. store_sales: composite index on (ss_customer_sk, ss_item_sk, ss_ticket_number) \u2014 helps the join with store_returns, which has 5.7M rows. This index might reduce the cost of the join.\n   3. store_sales: index on ss_item_sk \u2014 helps the join with item (small table), but the planner might not use it because the item table is small.\n   4. store_returns: index on sr_returned_date_sk \u2014 reduces 5.7M rows to maybe 1M rows.\n   5. store_returns: composite index on (sr_customer_sk, sr_item_sk, sr_ticket_number) \u2014 helps the join with store_sales (already indexed) but note: the condition is from store_sales to store_returns, so the index on store_sales might be more beneficial. However, if the planner does a nested loop join, then this index would help.\n   6. catalog_sales: index on cs_sold_date_sk \u2014 reduces 28.8M rows to maybe 1M rows.\n   7. catalog_sales: composite index on (cs_bill_customer_sk, cs_item_sk) \u2014 helps the join with store_returns (already indexed) but note: the condition is from store_returns to catalog_sales, so the index on store_returns might be more beneficial.\n\n   However, note that the query uses the store_sales table to join with store_returns and then catalog_sales. The store_sales table is the largest, so we should index it first.\n\n   We are to return the indexes that would most reduce the cost. We should focus on the tables that are being scanned first.\n\n   The query might start with store_sales, then store_returns, then catalog_sales.\n\n   We are going to suggest:\n\n        store_sales: index on ss_sold_date_sk\n        store_sales: composite index on (ss_customer_sk, ss_item_sk, ss_ticket_number)\n        store_returns: index on sr_returned_date_sk\n        store_returns: composite index on (sr_customer_sk, sr_item_sk, sr_ticket_number)\n        catalog_sales: index on cs_sold_date_sk\n        catalog_sales: composite index on (cs_bill_customer_sk, cs_item_sk)\n\n   But note: the query uses the store_sales table to join with store_returns and then catalog_sales. The store_sales table is the largest, so we should index it first.\n\n   We are to return the JSON for each index.\n\n   We are to write the estimated_benefit for each index.\n\n   Example: \n        {\n          \"target\": \"store_sales\",\n          \"property\": \"ss_sold_date_sk\",\n          \"index_type\": \"btree\",\n          \"partial_predicate\": null,\n          \"estimated_benefit\": \"Reduces the sequential scan on store_sales by filtering on the date condition, potentially reducing the number of rows from 57 million to 1 million.\"\n        }\n\n   We are to return the indexes in the order of the table size (largest first) and then by the column (alphabetically).\n\n   Let's order by table size (store_sales, catalog_sales, store_returns) and then by the column name.\n\n   We are to return:\n\n   [\n        { ... store_sales index on ss_sold_date_sk ... },\n        { ... store_sales composite index ... },\n        { ... store_returns index on sr_returned_date_sk ... },\n        { ... store_returns composite index ... },\n        { ... catalog_sales index on cs_sold_date_sk ... },\n        { ... catalog_sales composite index ... }\n   ]\n\n   But note: the composit",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.5,
+      "baseline_exec_ms": 286473.647,
+      "optimized_exec_ms": 285023.374,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956713.3,
+          "cost_with_index": 2956649.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1941348.84,
+          "cost_with_index": 1941282.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370636.44,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793327.1,
+          "cost_with_index": 793230.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117184.54,
+          "cost_with_index": 117183.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21111391.59,
+          "cost_with_index": 21110547.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29022148.5,
+          "cost_with_index": 29019331.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130008.05,
+          "cost_with_index": 130008.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81516.39,
+          "cost_with_index": 81515.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712262.98,
+          "cost_with_index": 3657960.93,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134867.11,
+          "cost_with_index": 134867.11,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223892.01,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345302.02,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342787.83,
+          "cost_with_index": 1342741.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": [
+        "ss_customer_sk",
+        "ss_item_sk",
+        "ss_ticket_number"
+      ],
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "store_returns",
+      "column": "sr_returned_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -5.1,
+      "baseline_exec_ms": 282924.656,
+      "optimized_exec_ms": 297411.863,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 9.9,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435750.72,
+          "cost_with_index": 1435939.22,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712154.32,
+          "cost_with_index": 3712223.49,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134873.98,
+          "cost_with_index": 94615.91,
+          "benefit_pct": 29.8
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_returns",
+      "column": [
+        "sr_customer_sk",
+        "sr_item_sk"
+      ],
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.0,
+      "baseline_exec_ms": 312943.082,
+      "optimized_exec_ms": 309893.925,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 38.5,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956671.23,
+          "cost_with_index": 2350448.55,
+          "benefit_pct": 20.5
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793236.18,
+          "cost_with_index": 776452.58,
+          "benefit_pct": 2.1
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937645.67,
+          "cost_with_index": 337008.02,
+          "benefit_pct": 64.1
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906079.0,
+          "cost_with_index": 58781.02,
+          "benefit_pct": 93.5
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712223.49,
+          "cost_with_index": 3250085.64,
+          "benefit_pct": 12.4
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": [
+        "cs_bill_customer_sk",
+        "cs_item_sk"
+      ],
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

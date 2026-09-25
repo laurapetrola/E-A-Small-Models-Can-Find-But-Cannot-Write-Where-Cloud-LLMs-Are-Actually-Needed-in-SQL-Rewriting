@@ -1,0 +1,331 @@
+{
+  "timestamp": "2026-08-30T22:01:13.272453",
+  "query_hash": "8ebe2727407b",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 124824.7,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of their SQL query. The query is complex, involving multiple joins and aggregations. Let me break it down step by step.\n\nFirst, I need to understand the query structure. The main goal is to compute several averages from the catalog_sales table, joined with customer, customer_demographics, customer_address, and date_dim. The filters include specific conditions on c_birth_month, d_year, and ca_state. The result is grouped by i_item_id, ca_country, ca_state, ca_county, with a rollup.\n\nLooking at the relevant tables and their existing indexes (none), I need to find which tables are being scanned sequentially and which columns are causing those scans. The query has joins on several tables, so the primary candidates for indexing are the tables involved in these joins and the ones with large row counts.\n\nThe catalog_sales table has 28 million rows, which is a big table. The query joins catalog_sales with customer, customer_demographics, customer_address, and date_dim. Let's look at the join conditions and filters.\n\nThe join conditions include:\n- cs_sold_date_sk = d_date_sk (linking catalog_sales to date_dim)\n- cs_item_sk = i_item_sk (linking to item)\n- cs_bill_cdemo_sk = cd1.cd_demo_sk (customer_demographics)\n- cs_bill_customer_sk = c_customer_sk (customer)\n- c_current_cdemo_sk = cd2.cd_demo_sk (another customer_demographics)\n- c_current_addr_sk = ca_address_sk (customer_address)\n\nThe filters are:\n- cd1.cd_gender = 'F' and cd1.cd_education_status = 'Primary' (on customer_demographics)\n- c_birth_month in (1,3,7,11,10,4) (on customer)\n- d_year = 2001 (on date_dim)\n- ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA') (on customer_address)\n\nThe main issue here is that the query is performing a full table scan on catalog_sales, which is a large table. To optimize, we need indexes that can help filter the data early, reducing the number of rows processed.\n\nLet's consider each table involved:\n\n1. **catalog_sales**: This table is the main source of data. The joins with date_dim, customer_demographics, and customer are critical. The filters on d_year and the join with date_dim (d_date_sk) could benefit from an index. Also, the join with customer_demographics (cd1.cd_demo_sk) and customer (c_customer_sk) might need indexes.\n\n2. **date_dim**: The filter d_year = 2001 is a common condition. An index on d_year would help quickly locate the relevant rows. Since date_dim has 73k rows, an index here would speed up the join.\n\n3. **customer_demographics (cd1)**: The filter cd_gender = 'F' and cd_education_status = 'Primary' are specific. An index on these columns would allow the database to quickly find the relevant rows in cd1.\n\n4. **customer**: The filter on c_birth_month and the join with c_customer_sk (from catalog_sales) could benefit from an index. Also, the join with c_current_cdemo_sk (cd2) and c_current_addr_sk (customer_address) might need indexes.\n\n5. **customer_address**: The filter on ca_state is a common condition. An index on ca_state would help quickly find the relevant rows.\n\nNow, looking at the execution plan, the main problem is the sequential scan on catalog_sales. To reduce this, we need indexes that can filter the catalog_sales table early. Let's focus on the join conditions and filters that are applied to catalog_sales.\n\nThe join with date_dim uses cs_sold_date_sk = d_date_sk. If we have an index on catalog_sales.cs_sold_date_sk, that could help, but since we're joining with date_dim where d_year = 2001, maybe an index on cs_sold_date_sk combined with the d_year condition would be better. However, since the date_dim is already being filtered by d_year, perhaps the main benefit is in the catalog_sales table's own filters.\n\nThe query also has a join with customer_demographics (cd1) via cs_bill_cdemo_sk. If we can index the cs_bill_cdemo_sk in catalog_sales, that might help, but the real filter is on cd1's columns. However, since cd1 is being filtered by cd_gender and cd_education_status, an index on those columns in cd1 would be more impactful.\n\nSimilarly, the customer table is joined via cs_bill_customer_sk, and the customer has a filter on c_birth_month. An index on c_birth_month in customer would help, but the main join is on c_customer_sk, which is part of the catalog_sales table.\n\nWait, the customer table is joined via cs_bill_customer_sk = c_customer_sk. So, if we have an index on c_customer_sk in customer, that might help, but the customer table is being filtered by c_birth_month. So an index on c_birth_month would help filter the customer table.\n\nBut the main issue is the catalog_sales table's scan. Let's think about the join conditions and filters that can be applied to catalog_sales. The cs_sold_date_sk is joined with date_dim's d_date_sk, and the date_dim has a filter on d_year = 2001. So, if we can index the cs_sold_date_sk in catalog_sales, that might help, but the date_dim's index would also help.\n\nAlternatively, since the date_dim is filtered by d_year, maybe the main benefit is in the catalog_sales table's cs_sold_date_sk. However, without an index on cs_sold_date_sk, the join with date_dim would require a full scan of catalog_sales, which is expensive.\n\nAnother angle: the query has a group by rollup, which might involve aggregating data. But the main issue is the initial join and filtering.\n\nLet me list the tables and their potential index candidates:\n\n- **date_dim**: index on d_year to quickly find rows where d_year = 2001.\n- **customer_demographics (cd1)**: index on (cd_gender, cd_education_status) to filter rows where cd_gender = 'F' and cd_education_status = 'Primary'.\n- **customer**: index on c_birth_month to filter rows where c_birth_month is in (1,3,7,11,10,4).\n- **customer_address**: index on ca_state to filter rows where ca_state is in the specified list.\n- **catalog_sales**: indexes on cs_sold_date_sk (to join with date_dim), cs_bill_cdemo_sk (to join with cd1), cs_bill_customer_sk (to join with customer), and possibly other columns involved in joins or filters.\n\nBut the user mentioned that the query cannot be improved through SQL rewriting, so the focus is on indexes.\n\nThe main tables involved in the joins are catalog_sales, customer, customer_demographics, customer_address, and date_dim. The large tables are catalog_sales (28M rows), customer_demographics (1.9M rows), customer (266k rows), customer_address (133k rows), and date_dim (73k rows). The indexes should target the tables with the largest rows first.\n\nThe catalog_sales table is the largest, so any index that can reduce the number of rows scanned here would have the most impact. The joins with date_dim, customer_demographics, and customer are all on columns that could benefit from indexes.\n\nLet me consider the join conditions and filters:\n\n1. **date_dim**: The filter is d_year = 2001. An index on d_year would help quickly find the relevant rows. Since date_dim is small (73k rows), this is manageable.\n\n2. **customer_demographics (cd1)**: The filter is cd_gender = 'F' and cd_education_status = 'Primary'. An index on (cd_gender, cd_education_status) would allow the database to quickly find these rows. Since cd1 has 1.9M rows, this could significantly reduce the number of rows scanned.\n\n3. **customer**: The filter is c_birth_month in (1,3,7,11,10,4). An index on c_birth_month would help filter these rows. The customer table has 266k rows, so this could be beneficial.\n\n4. **customer_address**: The filter is ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA'). An index on ca_state would help quickly find these rows. The customer_address table has 133k rows, so this is a good candidate.\n\n5. **catalog_sales**: The joins are on cs_sold_date_sk (with date_dim), cs_bill_cdemo_sk (with cd1), cs_bill_customer_sk (with customer), and possibly other columns. However, the main issue is that the catalog_sales table is being scanned without any indexes. If we can create indexes on the columns involved in the joins and filters, that would help.\n\nBut the user's query has a join between catalog_sales and date_dim via cs_sold_date_sk = d_date_sk. If we have an index on catalog_sales.cs_sold_date_sk, that might help, but the date_dim's index on d_year would also help. However, the main problem is the catalog_sales table's scan. So, creating an index on catalog_sales.cs_sold_date_sk would allow the join with date_dim to be faster, but since date_dim is already being filtered by d_year, maybe the main benefit is in the catalog_sales table's own filters.\n\nWait, the query has a filter on d_year = 2,001. So, the date_dim table is being filtered to only rows where d_year is 2001. If we have an index on date_dim.d_year, that would help quickly find those rows. Then, the join with catalog_sales on cs_sold_date_sk = d_date_sk would be efficient.\n\nBut the main issue is the catalog_sales table's scan. Let's think about the join conditions and filters on catalog_sales. The query has:\n\n- cs_sold_date_sk = d_date_sk (join with date_dim)\n- cs_bill_cdemo_sk = cd1.cd_demo_sk (join with customer_demographics)\n- cs_bill_customer_sk = c_customer_sk (join with customer)\n\nIf we can create indexes on these columns in catalog_sales, that would help. For example, an index on (cs_sold_date_sk, cs_bill_cdemo_sk, cs_bill_customer_sk) might help, but that's a composite index. However, the user's query might benefit from indexes on each of these columns individually.\n\nBut the user's query is complex, and the main problem is the sequential scan on catalog_sales. To reduce that, we need indexes that can filter the catalog_sales table early. The filters on the other tables (date_dim, customer_demographics, customer, customer_address) are also important, but the largest table is catalog_sales.\n\nSo, the primary candidates for indexes are:\n\n1. **date_dim**: index on d_year to quickly find rows where d_year = 2001.\n2. **customer_demographics (cd1)**: index on (cd_gender, cd_education_status) to filter rows where cd_gender = 'F' and cd_education_status = 'Primary'.\n3. **customer**: index on c_birth_month to filter rows where c_birth_month is in the specified list.\n4. **customer_address**: index on ca_state to filter rows where ca_state is in the specified list.\n5. **catalog_sales**: indexes on cs_sold_date_sk (to join with date_dim), cs_bill_cdemo_sk (to join with cd1), and cs_bill_customer_sk (to join with customer).\n\nBut the user's query has a group by rollup, which might involve aggregating data. However, the main issue is the initial join and filtering.\n\nNow, considering the extensions available (hypopg, pg_trgm), but the user didn't mention any specific need for those. The main focus is on standard indexes.\n\nThe user's query has a join between catalog_sales and date_dim on cs_sold_date_sk = d_date_sk. If we can create an index on catalog_sales.cs_sold_date_sk, that would help. However, since date_dim is being filtered by d_year, maybe the main benefit is in the date_dim's index.\n\nBut the user's query is about the catalog_sales table's scan. So, the indexes should target the tables that are being scanned sequentially. The main tables involved in the joins are catalog_sales, customer_demographics, customer, customer_address, and date_dim.\n\nThe largest table is catalog_sales (28M rows), so any index that can reduce the number of rows scanned here would have the most impact. The joins with date_dim, customer_demographics, and customer are all on columns that could benefit from indexes.\n\nSo, the indexes to consider are:\n\n- **date_dim**: index on d_year to filter d_year = 2001.\n- **customer_demographics (cd1)**: index on (cd_gender, cd_education_status) to filter the specific rows.\n- **customer**: index on c_birth_month to filter the birth months.\n- **customer_address**: index on ca_state to filter the states.\n- **catalog_sales**: indexes on cs_sold_date_sk, cs_bill_cdemo_sk, and cs_bill_customer_sk to speed up the joins.\n\nBut the user's query has a group by rollup, which might involve aggregating data. However, the main issue is the initial join and filtering.\n\nIn the absence of existing indexes, the primary candidates are the tables that are being scanned sequentially. The catalog_sales table is the largest, so creating indexes on the columns involved in the joins and filters would help.\n\nTherefore, the indexes to suggest are:\n\n1. **date_dim**: index on d_year to filter d_year = 2001.\n2. **customer_demographics (cd1)**: index on (cd_gender, cd_education_status) to filter the specific rows.\n3. **customer**: index on c_birth_month to filter the birth months.\n4. **customer_address**: index on ca_state to filter the states.\n5. **catalog_sales**: indexes on cs_sold_date_sk, cs_bill_cdemo_sk, and cs_bill_customer_sk.\n\nBut the user's query has a join between catalog_sales and date_dim, so an index on catalog_sales.cs_sold_date_sk would help. However, since date_dim is being filtered by d_year, maybe the main benefit is in the date_dim's index.\n\nBut the user's query is about the catalog_sales table's scan. So, the indexes should target the tables that are being scanned sequentially. The main tables involved in the joins are catalog_sales, customer_demographics, customer, customer_address, and date_dim.\n\nThe largest table is catalog_sales, so the indexes on the columns involved in the joins and filters would be most beneficial. For example, an index on catalog_sales.cs_sold_date_sk would help with the join to date_dim. An index on cs_bill_cdemo_sk would help with the join to customer_demographics. An index on cs_bill_customer_sk would help with the join to customer.\n\nAdditionally, the customer_demographics table has a filter on cd_gender and cd_education_status, so an index on those columns would help. The customer table has a filter on c_birth_month, so an index on that column would help. The customer_address table has a filter on ca_state, so an index on that column would help.\n\nTherefore, the indexes to suggest are:\n\n- **date_dim**: index on d_year.\n- **customer_demographics**: index on (cd_gender, cd_education_status).\n- **customer**: index on c_birth_month.\n- **customer_address**: index on ca_state.\n- **catalog_sales**: indexes on cs_sold_date_sk, cs_bill_cdemo_sk, and cs_bill_customer_sk.\n\nBut the user's query has a group by rollup, which might involve aggregating data. However, the main issue is the initial join and filtering.\n\nIn the end, the most impactful indexes would be on the tables that are being scanned sequentially and have the largest row counts. The catalog_sales table is the largest, so indexes on its columns involved in joins and filters would be most beneficial. The other tables (customer_demographics, customer, customer_address, date_dim) also have filters that can be optimized with indexes.\n\nSo, the final answer would include indexes on these tables and columns.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_year\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full scan of date_dim (73,049 rows) by filtering d_year = 2001\"\n    },\n    {\n      \"target\": \"customer_demographics\",\n      \"property\": \"cd_gender, cd_education_status\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full scan of customer_demographics (1,920,800 rows) by filtering cd_gender='F' and cd_education_status='Primary'\"\n    },\n    {\n      \"target\": \"customer\",\n      \"property\": \"c_birth_month\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full scan of customer (266,000 rows) by filtering c_birth_month in (1,3,7,11,10,4)\"\n    },\n    {\n      \"target\": \"customer_address\",\n      \"property\": \"ca_state\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full scan of customer_address (133,000 rows) by filtering ca_state in ('AL','MO','TN' ,'GA','MT','IN','CA')\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_sold_date_sk, cs_bill_cdemo_sk, cs_bill_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full scan of catalog_sales (28,803,583 rows) by filtering joins with date_dim, customer_demographics, and customer\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs full table scans on large tables (catalog_sales, customer_demographics, customer, customer_address) due to lack of indexes. Indexes on d_year (date_dim), (cd_gender, cd_education_status) (customer_demographics), c_birth_month (customer), ca_state (customer_address), and composite keys in catalog_sales will reduce sequential scans and improve join performance.\"\n}",
+  "recommendations": [
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.2,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.9,
+      "baseline_exec_ms": 2766.247,
+      "optimized_exec_ms": 2740.857,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.4,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1438081.22,
+          "cost_with_index": 1436143.65,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960817.59,
+          "cost_with_index": 2960817.59,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1926389.04,
+          "cost_with_index": 1926389.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368570.87,
+          "cost_with_index": 1368570.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817829.33,
+          "cost_with_index": 811373.3,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117661.51,
+          "cost_with_index": 115723.94,
+          "benefit_pct": 1.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019159.08,
+          "cost_with_index": 29019159.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129420.69,
+          "cost_with_index": 129420.69,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1217053.87,
+          "cost_with_index": 1215116.3,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3991658.87,
+          "cost_with_index": 3989721.3,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179494.55,
+          "cost_with_index": 177343.18,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81486.97,
+          "cost_with_index": 79549.4,
+          "benefit_pct": 2.4
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906042.9,
+          "cost_with_index": 906042.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712183.1,
+          "cost_with_index": 3712183.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135223.37,
+          "cost_with_index": 133177.58,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222935.84,
+          "cost_with_index": 222935.84,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345261.18,
+          "cost_with_index": 1343094.37,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91632.58,
+          "cost_with_index": 91632.58,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_gender, cd_education_status",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.2,
+      "baseline_exec_ms": 2746.897,
+      "optimized_exec_ms": 2779.369,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 5.8,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817829.33,
+          "cost_with_index": 817829.33,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117661.51,
+          "cost_with_index": 106561.13,
+          "benefit_pct": 9.4
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81486.97,
+          "cost_with_index": 70304.57,
+          "benefit_pct": 13.7
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91632.58,
+          "cost_with_index": 91632.58,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer",
+      "column": "c_birth_month",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.1,
+      "baseline_exec_ms": 2749.116,
+      "optimized_exec_ms": 2747.184,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1438081.22,
+          "cost_with_index": 1438081.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960817.59,
+          "cost_with_index": 2960817.59,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817829.33,
+          "cost_with_index": 817829.33,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019159.08,
+          "cost_with_index": 29019159.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1217053.87,
+          "cost_with_index": 1217053.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3991658.87,
+          "cost_with_index": 3991658.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345261.18,
+          "cost_with_index": 1345261.18,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.6,
+      "baseline_exec_ms": 2754.124,
+      "optimized_exec_ms": 2771.211,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.2,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817829.33,
+          "cost_with_index": 817065.3,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1217053.87,
+          "cost_with_index": 1217053.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3991658.87,
+          "cost_with_index": 3990912.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91632.58,
+          "cost_with_index": 90943.57,
+          "benefit_pct": 0.8
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_sold_date_sk, cs_bill_cdemo_sk, cs_bill_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.2,
+      "baseline_exec_ms": 2739.766,
+      "optimized_exec_ms": 2745.491,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 17.3,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2960817.59,
+          "cost_with_index": 2138966.38,
+          "benefit_pct": 27.8
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 817829.33,
+          "cost_with_index": 815116.79,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179494.55,
+          "cost_with_index": 179494.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906042.9,
+          "cost_with_index": 457514.46,
+          "benefit_pct": 49.5
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712183.1,
+          "cost_with_index": 3387963.09,
+          "benefit_pct": 8.7
+        }
+      ],
+      "workload_queries_improved": 3,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

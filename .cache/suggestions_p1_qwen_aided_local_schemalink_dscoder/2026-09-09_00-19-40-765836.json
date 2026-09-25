@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-09T00:19:40.765807",
+  "query_hash": "3505b74fb5bb",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 324797.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH hd_filtered AS (\n    SELECT hd_demo_sk, hd_buy_potential, hd_vehicle_count\n    FROM household_demographics\n    WHERE   (hd_buy_potential = '1001-5000' OR hd_buy_potential = '5001-10000') \n        AND hd_vehicle_count > 0\n), store_sales_filtered AS (\n    SELECT ss_ticket_number, ss_customer_sk, COUNT(*) cnt \n    FROM store_sales JOIN date_dim ON store_sales.ss_sold_date_sk = date_dim.d_date_sk\n        JOIN hd_filtered ON store_sales.ss_hdemo_sk = hd_filtered.hd_demo_sk\n    WHERE date_dim.d_dom BETWEEN 1 AND 2\n      AND date_dim.d_year IN (2000, 2001, 2002)\n      AND hd_filtered.hd_dep_count > hd_filtered.hd_vehicle_count\n    GROUP BY ss_ticket_number, ss_customer_sk\n), customer_sales AS (\n    SELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, \n           ss_ticket_number, cnt\n    FROM store_sales_filtered JOIN customer ON store_sales_filtered.ss_customer_sk = customer.c_customer_sk\n)\nSELECT * \nFROM customer_sales\nWHERE cnt BETWEEN 1 AND 5\nORDER BY cnt DESC, c_last_name ASC",
+  "reasoning_trace": "<think>\nOkay, let's take a look at this query. The user wants me to figure out optimization strategies for their PostgreSQL query. The original query is a bit complex with multiple joins and a subquery. Let me break it down step by step.\n\nFirst, the main query selects customer details and counts from store_sales, joined with several other tables. The subquery groups store_sales data with some conditions on date_dim, store, and household_demographics. Then, it joins with the customer table and filters by cnt between 1 and 5, ordering by cnt and name.\n\nLooking at the previous strategies, they tried things like adding HAVING clauses, indexing, reducing joins, etc. Now, I need to come up with a different approach. Let me think about what's causing performance issues here.\n\nOne thing I notice is the subquery has a lot of conditions. The CASE statement in the WHERE clause might be expensive. The CASE is checking if hd_vehicle_count > 0, then dividing hd_dep_count by it. But division can be slow. Also, the CASE result is compared to > 1. Maybe replacing that with a simpler condition could help. Like, if hd_dep_count > hd_vehicle_count, then the division would be greater than 1. So, replacing the CASE with hd_dep_count > hd_vehicle_count would eliminate the division and simplify the condition. That's one of the previous strategies, but maybe there's another angle.\n\nAnother thing is the join between store_sales and store. The store.s_county is in a list of four 'Williamson County's. Since they're all the same, simplifying that to store.s_county = 'Williamson County' would reduce the number of rows early. But the user mentioned that this was already done, so maybe that's not the main issue.\n\nLooking at the subquery's GROUP BY, they're grouping by ss_ticket_number and ss_customer_sk. If there's a functional dependency where ss_ticket_number is determined by ss_customer_sk, then grouping by just the customer_sk would reduce the group count. But I need to check the schema. The item table has i_item_sk as PK, but the store_sales has ss_ticket_number as part of the PK. Not sure if there's a dependency here.\n\nThe subquery also has a date_dim.d_year in (2000, 2001, 2002). Maybe pre-filtering the date_dim for those years first would reduce the rows joined. Also, the date_dim.d_dom between 1 and 2 is a small range, so filtering that early could help.\n\nAnother thought: the subquery is joined with the customer table on ss_customer_sk = c_customer_sk. If the subquery's result is large, joining with customer could be expensive. Maybe materializing the subquery's result into a CTE or a temporary table would help, but that's similar to the previous strategy.\n\nWait, the original query has a subquery that's joined with customer. The subquery's cnt is between 1 and 5. If we can pre-filter that in the subquery using HAVING, that would reduce the number of rows before joining. But the previous strategy already mentioned adding HAVING. Maybe there's another way to optimize the joins.\n\nLooking at the joins: store_sales is joined with date_dim, store, and household_demographics. The date_dim is joined on ss_sold_date_sk, which is part of the date_dim's primary key. Maybe creating an index on store_sales.ss_sold_date_sk would speed up that join. But the user already considered indexing.\n\nAnother angle: the household_demographics table has hd_buy_potential in two specific values. Maybe creating a filtered index on hd_buy_potential for those values would speed up the join. But again, the user might have already considered that.\n\nWait, the CASE condition is part of the WHERE clause. The CASE is checking if hd_vehicle_count > 0, then dividing hd_dep_count by it. The result of that division is compared to > 1. But if hd_vehicle_count is zero, it's NULL. So the CASE is effectively checking if hd_dep_count / hd_vehicle_count > 1, but only when hd_vehicle_count > 0. However, division can be slow. Instead, we can rewrite this condition as hd_dep_count > hd_vehicle_count. Because if hd_vehicle_count is positive, then dividing hd_dep_count by it and checking if it's greater than 1 is equivalent to hd_dep_count > hd_vehicle_count. This would eliminate the division and simplify the condition, making it faster. That's one of the previous strategies, but maybe there's another way.\n\nAlternatively, maybe the CASE is causing the query to evaluate more conditions. By replacing it with a simpler condition, the query can avoid the division and reduce computational overhead. So, the transformation would be to replace the CASE with hd_dep_count > hd_vehicle_count. That's a valid optimization.\n\nAnother thing: the subquery is joined with customer. If the subquery's result is large, joining with customer could be expensive. Maybe using a CTE to materialize the subquery's result would help, but that's similar to the previous strategy.\n\nWait, the original query has a subquery that's joined with customer. The subquery's cnt is between 1 and 5. If we can pre-filter that in the subquery using HAVING, that would reduce the number of rows before joining. But the previous strategy already mentioned adding HAVING. However, maybe the HAVING clause can be combined with other conditions to further reduce the rows.\n\nAlternatively, maybe the subquery can be restructured to use a CTE with the HAVING clause, which would make the join more efficient. But again, that's similar to previous strategies.\n\nAnother thought: the store.s_county is in a list of four identical values. Since they're all the same, simplifying that to store.s_county = 'Williamson County' would reduce the number of rows early. But the user mentioned that this was already done, so maybe that's not the main issue.\n\nLooking back, the main performance issues might be the CASE condition and the multiple joins. The CASE is causing division, which is computationally expensive. Replacing that with a simpler condition would help. So, the optimization strategy would be to rewrite the CASE condition into a simpler comparison, which would eliminate the division and make the predicate faster to evaluate.\n\n</think>\n\n1. REWRITE CASE CONDITION \u2014 TARGET: `household_demographics.hd_vehicle_count` \u2014 TRANSFORMATION: Replace the CASE expression with `hd_dep_count > hd_vehicle_count` to eliminate division and simplify predicate evaluation  \n2. INDEX-ENABLED JOIN \u2014 TARGET: `store_sales.ss_sold_date_sk = date_dim.d_date_sk` \u2014 TRANSFORMATION: Create a composite index on `date_dim(d_date_sk, d_year)` to accelerate filtering by `d_year` and `d_dom`  \n3. MATERIALIZE SUBQUERY \u2014 TARGET: subquery with `GROUP BY` \u2014 TRANSFORMATION: Use a CTE to materialize the aggregated result before joining with `customer` to avoid repeated computation  \n4. REDUCE JOIN VARIANTS \u2014 TARGET: `household_demographics` join \u2014 TRANSFORMATION: Filter `hd_buy_potential` and `hd_vehicle_count` in a CTE to minimize rows before joining with `store_sales`  \n5. INDEX-ENABLED FILTER \u2014 TARGET: `date_dim.d_year` \u2014 TRANSFORMATION: Create a functional index on `date_dim(d_year)` to speed up the `d_year IN (2000, 2001, 2002)` condition",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2316.745,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1345159.9,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 199925.3,
+    "index_advisor_inference_ms": 119927.5,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 4944.2,
+    "total_inference_ms": 324797.0,
+    "writer_inference_ms": 93698.6,
+    "writer_tokens_in": 19434,
+    "writer_tokens_out": 2560,
+    "writer_calls": 6
+  },
+  "errors": [
+    "duplicate_attempt \u2014 identical SQL was already rejected this session"
+  ],
+  "strategy": "1. REWRITE CASE CONDITION \u2014 TARGET: `household_demographics.hd_vehicle_count` \u2014 TRANSFORMATION: Replace the CASE expression with `hd_dep_count > hd_vehicle_count` to eliminate division and simplify predicate evaluation  \n2. INDEX-ENABLED JOIN \u2014 TARGET: `store_sales.ss_sold_date_sk = date_dim.d_date_sk` \u2014 TRANSFORMATION: Create a composite index on `date_dim(d_date_sk, d_year)` to accelerate filtering by `d_year` and `d_dom`  \n3. MATERIALIZE SUBQUERY \u2014 TARGET: subquery with `GROUP BY` \u2014 TRANSFORMATION: Use a CTE to materialize the aggregated result before joining with `customer` to avoid repeated computation  \n4. REDUCE JOIN VARIANTS \u2014 TARGET: `household_demographics` join \u2014 TRANSFORMATION: Filter `hd_buy_potential` and `hd_vehicle_count` in a CTE to minimize rows before joining with `store_sales`  \n5. INDEX-ENABLED FILTER \u2014 TARGET: `date_dim.d_year` \u2014 TRANSFORMATION: Create a functional index on `date_dim(d_year)` to speed up the `d_year IN (2000, 2001, 2002)` condition",
+  "writer": "local:deepseek-coder:6.7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to filter `hd_buy_potential` and `hd_vehicle_count` in a CTE to minimize rows before joining. The rewrite applies this by creating `hd_filtered` and using "
+  },
+  "raw_sql": "select c_last_name ,c_first_name ,c_salutation ,c_preferred_cust_flag ,ss_ticket_number ,cnt from (select ss_ticket_number ,ss_customer_sk ,count(*) cnt from store_sales,date_dim,store,household_demographics where store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_store_sk = store.s_store_sk and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk and date_dim.d_dom between 1 and 2 and (household_demographics.hd_buy_potential = '1001-5000' or household_demographics.hd_buy_potential = '5001-10000') and household_demographics.hd_vehicle_count > 0 and case when household_demographics.hd_vehicle_count > 0 then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1 and date_dim.d_year in (2000,2000+1,2000+2) and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County') group by ss_ticket_number,ss_customer_sk) dj,customer where ss_customer_sk = c_customer_sk and cnt between 1 and 5 order by cnt desc, c_last_name asc"
+}

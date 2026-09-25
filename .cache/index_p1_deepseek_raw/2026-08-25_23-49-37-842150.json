@@ -1,0 +1,360 @@
+{
+  "timestamp": "2026-08-25T23:49:37.842133",
+  "query_hash": "7436b3a51256",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 143763.5,
+  "reasoning_trace": "<think>\nWe are given a query that is too expensive to rewrite and we are to suggest indexes to improve it.\n\nThe query structure:\n\n1. The outermost query selects from a derived table (dw2) and filters by rk <= 100, then orders and limits to 100.\n2. The derived table (dw2) comes from a derived table (dw1).\n3. The innermost derived table (dw1) is a query that joins store_sales, date_dim, store, and item, and groups by rollup.\n\nThe innermost query (dw1) is:\n\n```sql\nselect i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, \n       sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales\nfrom store_sales, date_dim, store, item\nwhere ss_sold_date_sk = d_date_sk\n  and ss_item_sk = i_item_sk\n  and ss_store_sk = s_store_sk\n  and d_month_seq between 1217 and 1217+11\ngroup by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id)\n```\n\nThis query is doing a full scan on store_sales (57 million rows) and then joining with date_dim, store, and item.\n\nThe execution plan (withheld) likely shows a Seq Scan on store_sales and then joins with the other tables.\n\nWe are to suggest indexes that would help.\n\nLet's break down the tables and the joins:\n\n- store_sales: 57 million rows, and it is the main table.\n- date_dim: 73,049 rows\n- store: 44 rows\n- item: 28,000 rows\n\nThe joins:\n\n1. store_sales to date_dim: condition `ss_sold_date_sk = d_date_sk`\n2. store_sales to store: condition `ss_store_sk = s_store_sk`\n3. store_sales to item: condition `ss_item_sk = i_item_sk`\n\nThe filter: `d_month_seq between 1217 and 1217+11`\n\nThe group by rollup is on many columns, but note that the rollup is on the item and date dimensions.\n\nSince the innermost query is the most expensive, we should focus on indexing the joins and the filter.\n\nThe tables that are being joined and scanned are:\n\n1. store_sales: 57 million rows\n2. date_dim: 73,049 rows\n3. store: 44 rows\n4. item: 28,000 rows\n\nThe query does a full scan on store_sales because there is no index on store_sales to help with the joins or the filter.\n\nWe can suggest indexes on:\n\n1. store_sales: \n   - On `ss_sold_date_sk` for the join with date_dim.\n   - On `ss_store_sk` for the join with store.\n   - On `ss_item_sk` for the join with item.\n   - On `d_month_seq` for the filter (but note: the filter is on date_dim, so we cannot index store_sales for that).\n\nBut note: the filter is on `d_month_seq` which is in date_dim. We can index date_dim on `d_month_seq` to help the join condition? However, the join condition is `ss_sold_date_sk = d_date_sk`. We cannot index store_sales on `d_month_seq` because that column does not exist in store_sales.\n\nAlternatively, we can index store_sales on `ss_sold_date_sk` to help the join with date_dim. Similarly, index store_sales on `ss_store_sk` and `ss_item_sk`.\n\nBut note: the query is grouping by rollup, which might require a covering index or a composite index? However, the rollup is on many columns and the grouping might be expensive, but the main issue is the join and the filter.\n\nAlso, note that the filter is on `d_month_seq` in date_dim. We can index date_dim on `d_month_seq` to help the join condition? Actually, the join condition is `ss_sold_date_sk = d_date_sk`. We cannot use an index on date_dim for `d_month_seq` to help the join because the join condition is on `d_date_sk`. However, the filter is on `d_month_seq` and we are joining on `d_date_sk`. We can index date_dim on `d_date_sk` (which is the primary key) so that is already an index. But note: the date_dim table has no indexes. So we can suggest an index on date_dim for `d_date_sk`? But wait, `d_date_sk` is the primary key, so it already has an index. So that is not needed.\n\nAlternatively, we can index store_sales on `ss_sold_date_sk` to help the join with date_dim. But note: the join condition is `ss_sold_date_sk = d_date_sk`. Since `d_date_sk` is the primary key of date_dim, the join condition is a primary key lookup. However, without an index on store_sales for `ss_sold_date_sk`, the planner might do a sequential scan on store_sales and then look up each row in date_dim. With an index on store_sales for `ss_sold_date_sk`, the planner might do an index scan on store_sales and then look up the matching row in date_dim.\n\nBut note: the query is filtering by `d_month_seq` which is in date_dim. We can also index date_dim on `d_month_seq` to help the planner when it is filtering the date_dim table. However, the filter is applied after the join? Actually, the filter is on `d_month_seq` and the join condition is `ss_sold_date_sk = d_date_sk`. The filter is on date_dim, so we can push the filter to date_dim and index date_dim on `d_month_seq` to make the filter efficient.\n\nBut note: the query is joining store_sales and date_dim, and then filtering date_dim by `d_month_seq`. We can do:\n\n1. Index date_dim on `d_month_seq` to quickly find the rows of date_dim that satisfy the filter.\n2. Then, for each row of date_dim, we can join with store_sales via `ss_sold_date_sk = d_date_sk`.\n\nBut note: the join condition is an equality, so we can also index store_sales on `ss_sold_date_sk` to make the join efficient.\n\nHowever, the query is grouping by rollup, which might require a lot of rows. We are not sure, but the main bottleneck is the large table store_sales.\n\nLet's consider the tables:\n\n- store_sales: 57 million rows, so we want to avoid a sequential scan on this table.\n- date_dim: 73,049 rows, so indexing it might help the filter and the join.\n\nWe can suggest:\n\n1. An index on store_sales for `ss_sold_date_sk` to help the join with date_dim.\n2. An index on store_sales for `ss_store_sk` to help the join with store.\n3. An index on store_sales for `ss_item_sk` to help the join with item.\n\nBut note: the query is filtering by `d_month_seq` in date_dim. We can also index date_dim on `d_month_seq` to help the filter.\n\nBut wait: the filter is on `d_month_seq` and the join condition is `ss_sold_date_sk = d_date_sk`. We can also consider creating an index on store_sales for `d_month_seq`? But store_sales doesn't have `d_month_seq`. We can compute it from `ss_sold_date_sk`? Not directly.\n\nAlternatively, we can index store_sales on `ss_sold_date_sk` and then use the index to join with date_dim, and then filter date_dim by `d_month_seq`. But the filter is on date_dim, so we can do:\n\n- First, get the set of `d_date_sk` from date_dim where `d_month_seq` is in the range. Then, join store_sales with that set.\n\nBut note: the query is written as a single SQL. We cannot change the query structure.\n\nGiven the instructions, we are to suggest indexes that would help the given query.\n\nWe are to look for Seq Scans on large tables. The store_sales table has 57 million rows and is being scanned. We can index store_sales on the join columns.\n\nAlso, note that the query is grouping by rollup, which might require a lot of rows. But the main issue is the join and the filter.\n\nLet's break down the query:\n\nThe innermost query is:\n\n```sql\nselect i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, \n       sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales\nfrom store_sales, date_dim, store, item\nwhere ss_sold_date_sk = d_date_sk\n  and ss_item_sk = i_item_sk\n  and ss_store_sk = s_store_sk\n  and d_month_seq between 1217 and 1217+11\ngroup by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id)\n```\n\nThis is a full join between store_sales and the other tables. The planner might do:\n\n- Seq Scan on store_sales (57 million rows)\n- Then, for each row, look up date_dim by `d_date_sk` (using the index on date_dim for `d_date_sk` if exists, but it doesn't)\n- Then, look up store by `ss_store_sk`\n- Then, look up item by `ss_item_sk`\n\nBut note: the filter is on `d_month_seq` in date_dim. We can push the filter to date_dim and then join store_sales with the filtered date_dim.\n\nBut without indexes, the planner might not do that.\n\nWe can suggest:\n\n1. Index store_sales on `ss_sold_date_sk` to help the join with date_dim.\n2. Index store_sales on `ss_store_sk` to help the join with store.\n3. Index store_sales on `ss_item_sk` to help the join with item.\n4. Index date_dim on `d_month_seq` to help the filter.\n\nBut note: the query is filtering date_dim by `d_month_seq` and then joining. We can index date_dim on `d_month_seq` to quickly find the rows of date_dim that satisfy the filter. Then, we can join store_sales with these rows.\n\nBut note: the join condition is `ss_sold_date_sk = d_date_sk`. We can also index store_sales on `ss_sold_date_sk` to make the join efficient.\n\nHowever, the query is grouping by rollup, which might require a lot of rows. We are not sure, but the main issue is the large table.\n\nBut note: the query is also grouping by rollup, which means it will return a lot of rows (one for each combination and one for each subtotal). This might be expensive, but the problem is the initial join.\n\nWe are to suggest indexes that would most reduce execution cost.\n\nWe are to return a JSON with indexes and an explanation.\n\nWe are not allowed to suggest indexes that already exist. The tables have no indexes.\n\nWe are to consider the following:\n\n- The table with the most rows is store_sales (57 million). We can index the columns that are used in joins and filters.\n\nThe joins are:\n\n- store_sales to date_dim: `ss_sold_date_sk = d_date_sk`\n- store_sales to store: `ss_store_sk = s_store_sk`\n- store_sales to item: `ss_item_sk = i_item_sk`\n\nThe filter is on date_dim: `d_month_seq between 1217 and 1217+11`\n\nWe can suggest:\n\n1. Index on store_sales for `ss_sold_date_sk`\n2. Index on store_sales for `ss_store_sk`\n3. Index on store_sales for `ss_item_sk`\n4. Index on date_dim for `d_month_seq`\n\nBut note: the filter is on date_dim, so we can index date_dim on `d_month_seq` to help the filter. Then, the join condition `ss_sold_date_sk = d_date_sk` can be done by looking up the date_dim row by `d_date_sk` (which is the primary key, so it's fast).\n\nBut wait: the filter is on `d_month_seq` and the join condition is `ss_sold_date_sk = d_date_sk`. We can also consider creating an index on store_sales for `d_month_seq`? But store_sales doesn't have `d_month_seq`. We can compute it from `ss_sold_date_sk`? Not directly.\n\nAlternatively, we can index store_sales on `ss_sold_date_sk` and then use the index to join with date_dim, and then filter date_dim by `d_month_seq`. But the filter is on date_dim, so we can do:\n\n- First, get the set of `d_date_sk` from date_dim where `d_month_seq` is in the range. Then, join store_sales with that set.\n\nBut note: the query is written as a single SQL and the planner might not do that without an index on date_dim for `d_month_seq`.\n\nWe are to suggest indexes that would help.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"<table_name>\",\n      \"property\": \"<column_name>\",\n      \"index_type\": \"<index type>\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"<why these indexes were chosen, or why no index is possible>\"\n}\n\nWe are to choose the index(es) that would most reduce execution cost.\n\nWe are to order the indexes by the number of rows scanned \u2014 largest first.\n\nBut note: the query is complex and we are not sure of the exact execution plan, but we can assume that the store_sales table is the largest and is being scanned.\n\nWe are to consider:\n\n- The filter on date_dim: `d_month_seq between 1217 and 1217+11` \u2014 this might return a significant portion of date_dim (about 12 months, so about 12/12 * 73,049 \u2248 73,049 rows). So indexing date_dim on `d_month_seq` would help the filter.\n\nBut note: the join condition is `ss_sold_date_sk = d_date_sk`. We can also index store_sales on `ss_sold_date_sk` to help the join.\n\nWe are to suggest:\n\n1. Index on store_sales for `ss_sold_date_sk` (Btree) \u2014 this would help the join with date_dim.\n2. Index on store_sales for `ss_store_sk` (Btree) \u2014 helps the join with store.\n3. Index on store_sales for `ss_item_sk` (Btree) \u2014 helps the join with item.\n4. Index on date_dim for `d_month_seq` (Btree) \u2014 helps the filter.\n\nBut note: the query is grouping by rollup, which might require a lot of rows. We are not sure, but the main issue is the large table.\n\nWe are to return the indexes in order of the number of rows scanned. The store_sales table has 57 million rows, so indexing the join columns would reduce the number of rows scanned for the joins.\n\nBut note: the query is filtering by `d_month_seq` in date_dim. We can index date_dim on `d_month_seq` to reduce the number of rows in date_dim that are scanned.\n\nWe are to return the JSON.\n\nWe are to set `partial_predicate` to null for all, because the predicates are on the table itself.\n\nWe are to set `no_index_possible` to false.\n\nWe are to write an explanation.\n\nLet's structure the JSON:\n\nWe are to return an array of indexes.\n\nWe are to choose the most beneficial ones. The store_sales table is the largest, so we should index its columns that are used in joins.\n\nWe are to consider the filter on date_dim.\n\nWe are to return:\n\n[\n  {\n    \"target\": \"store_sales\",\n    \"property\": \"ss_sold_date_sk\",\n    \"index_type\": \"btree\",\n    \"partial_predicate\": null,\n    \"estimated_benefit\": \"Reduces the join with date_dim from a sequential scan to an index scan, potentially saving 57 million rows\"\n  },\n  {\n    \"target\": \"store_sales\",\n    \"property\": \"ss_store_sk\",\n    \"index_type\": \"btree\",\n    \"partial_predicate\": null,\n    \"estimated_benefit\": \"Reduces the join with store from a sequential scan to an index scan, potentially saving 57 million rows\"\n  },\n  {\n    \"target\": \"store_sales\",\n    \"property\": \"ss_item_sk\",\n    \"index_type\": \"btree\",\n    \"partial_predicate\": null,\n    \"estimated_benefit\": \"Reduces the join with item from a sequential scan to an index scan, potentially saving 57 million rows\"\n  },\n  {\n    \"target\": \"date_dim\",\n    \"property\": \"d_month_seq\",\n    \"index_type\": \"btree\",\n    \"partial_predicate\": null,\n    \"estimated_benefit\": \"Reduces the filter on date_dim from a sequential scan to an index scan, potentially saving 73,049 rows\"\n  }\n]\n\nBut note: the estimated_benefit is a bit rough. We are to describe what the index eliminates and on how many rows.\n\nAlternatively, we can say:\n\n- For store_sales: the index on `ss_sold_date_sk` would eliminate the sequential scan on store_sales for the join with date_dim, reducing the number of rows to be joined from 57 million to the number of distinct `ss_sold_date_sk` (which is the number of days, about 73,049). But note: the join condition is an equality, so the index would allow a tag join.\n\nBut note: the query is filtering by `d_month_seq` in date_dim, so the set of `d_date_sk` is limited. We can also consider creating an index on store_sales for `ss_sold_date_sk` and then use the index to join only with the filtered date_dim.\n\nBut the planner might not do that without an index on date_dim for `d_month_seq`.\n\nWe are to return the JSON.\n\nWe are to order the indexes by the number of rows scanned. The store_sales table has 57 million rows, so the index on store_sales would reduce the number of rows scanned for the join. The date_dim table has 73,049 rows, so the index on date_dim would reduce the number of rows scanned for the filter.\n\nBut note: the query is grouping by rollup, which might require a lot of rows. We are not sure, but the main issue is the large table.\n\nWe are to return the JSON.\n\nWe are to set `no_index_possible` to false.\n\nWe are to write an explanation.\n\nLet's write the JSON.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the sequential scan on store_sales for the join with date_dim, potentially saving 57 million rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_store_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the sequential scan on store_sales for the join with store, potentially saving 57 million rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_item_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the sequential scan on store_sales for the join with item, potentially saving 57 million rows\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_month_seq\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Reduces the sequential scan on date_dim for the filter by d_month_seq, potentially saving 73,049 rows\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs expensive sequential scans on store_sales (57 million rows) and date_dim (73,049 rows) due to joins and filtering. Indexes on store_sales' join columns (ss_sold_date_sk, ss_store_sk, ss_item_sk) and date_dim' filter column (d_month_seq) will significantly reduce the number of rows scanned during these operations, improving overall query performance.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -27.0,
+      "baseline_exec_ms": 29521.999,
+      "optimized_exec_ms": 37501.199,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968266.59,
+          "cost_with_index": 2968258.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933445.02,
+          "cost_with_index": 1933435.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832946.94,
+          "cost_with_index": 832938.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118147.2,
+          "cost_with_index": 118154.9,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110389.06,
+          "cost_with_index": 21110265.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019464.31,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.15,
+          "cost_with_index": 128129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.82,
+          "cost_with_index": 81511.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712199.24,
+          "cost_with_index": 3656929.47,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 220636.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345166.62,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342705.48,
+          "cost_with_index": 1342698.74,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 8.4,
+      "baseline_exec_ms": 32926.384,
+      "optimized_exec_ms": 30163.603,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968258.07,
+          "cost_with_index": 2968258.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933435.64,
+          "cost_with_index": 1933435.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832938.36,
+          "cost_with_index": 832938.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118154.9,
+          "cost_with_index": 118154.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110265.62,
+          "cost_with_index": 21110265.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.95,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.15,
+          "cost_with_index": 128129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.73,
+          "cost_with_index": 81511.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712189.87,
+          "cost_with_index": 3712189.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 220636.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345159.9,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342698.74,
+          "cost_with_index": 1342698.74,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_month_seq",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.6,
+      "baseline_exec_ms": 30427.947,
+      "optimized_exec_ms": 30604.246,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435814.01,
+          "cost_with_index": 1435814.01,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968258.07,
+          "cost_with_index": 2962126.46,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933435.64,
+          "cost_with_index": 1929347.37,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 832938.36,
+          "cost_with_index": 832938.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118154.9,
+          "cost_with_index": 118154.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019052.95,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128129.15,
+          "cost_with_index": 128129.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.53,
+          "cost_with_index": 1210560.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3844542.86,
+          "cost_with_index": 3844542.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937861.86,
+          "cost_with_index": 937861.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179069.64,
+          "cost_with_index": 179069.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81511.73,
+          "cost_with_index": 81511.73,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906035.82,
+          "cost_with_index": 906035.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712189.87,
+          "cost_with_index": 3712189.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135053.48,
+          "cost_with_index": 135053.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220636.46,
+          "cost_with_index": 218638.6,
+          "benefit_pct": 0.9
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345159.9,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91688.69,
+          "cost_with_index": 91688.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

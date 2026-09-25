@@ -1,0 +1,211 @@
+{
+  "timestamp": "2026-08-23T11:54:23.441940",
+  "query_hash": "dc308c52049e",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 58632.7,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The query is using INTERSECT between three subqueries from store_sales, catalog_sales, and web_sales, all joined with date_dim and customer tables. The main goal is to find distinct customer names and dates where their sales occurred in all three channels within a specific month range.\n\nFirst, I need to understand the query structure. The main query is selecting distinct c_last_name, c_first_name, d_date from three different sales tables (store_sales, catalog_sales, web_sales), each joined with date_dim and customer. The INTERSECT operation means that the result must be present in all three subqueries. The final result is limited to 100 rows, but the main issue is the efficiency of the subqueries.\n\nLooking at the schema, the relevant tables are customer, catalog_sales, store_sales, web_sales, and date_dim. All these tables currently have no indexes. The user mentioned that the execution plan has Seq Scans on large tables, which are the primary candidates for indexing.\n\nThe query involves three subqueries, each joining three tables. Let's break down each subquery:\n\n1. **store_sales subquery**: Joins store_sales with date_dim and customer. The conditions are store_sales.ss_sold_date_sk = date_dim.d_date_sk and store_sales.ss_customer_sk = customer.c_customer_sk. The filter is d_month_seq between 1189 and 1189 + 11.\n\n2. **catalog_sales subquery**: Similar structure, joining catalog_sales with date_dim and customer. Conditions are cs_sold_date_sk = d_date_sk and cs_bill_customer_sk = c_customer_sk. Same d_month_seq filter.\n\n3. **web_sales subquery**: Same pattern, joining web_sales with date_dim and customer. Conditions are ws_sold_date_sk = d_date_sk and ws_bill_customer_sk = c_customer_sk. Same d_month_seq filter.\n\nSince all three subqueries are using INTERSECT, the database has to find the common rows across all three. The main challenge is that each subquery is scanning a large table (store_sales, catalog_sales, web_sales) and joining with other tables. Without indexes, these joins are causing full table scans, which are expensive.\n\nNow, considering the tables involved:\n\n- **store_sales** has 57 million rows. The join condition is on ss_sold_date_sk (which is a foreign key to date_dim.d_date_sk) and ss_customer_sk (foreign key to customer.c_customer_sk). The d_month_seq is a filter on date_dim.\n\n- **catalog_sales** has 28 million rows. Similar join conditions on cs_sold_date_sk and cs_bill_customer_sk, with the same d_month_seq filter.\n\n- **web_sales** has 14 million rows. Join conditions on ws_sold_date_sk and ws_bill_customer_sk, same d_month_seq.\n\nThe customer table has 266k rows, but since it's joined with the sales tables, the main issue is the sales tables.\n\nThe key here is that each subquery is performing a join between the sales table and date_dim, and then with customer. The d_month_seq filter is on date_dim, which has 73k rows. However, without indexes on the sales tables' date_sk columns and customer_sk columns, the joins are causing full scans.\n\nSo, the first step is to index the columns involved in the join conditions and the filter. For each sales table (store_sales, catalog_sales, web_sales), the date_sk column (ss_sold_date_sk, cs_sold_date_sk, ws_sold_date_sk) is used in the join with date_dim. Also, the customer_sk columns (ss_customer_sk, cs_bill_customer_sk, ws_bill_customer_sk) are joined with customer.c_customer_sk.\n\nAdditionally, the d_month_seq is a filter on date_dim. Since date_dim is joined with the sales tables, an index on date_dim's d_month_seq would help, but the user mentioned that date_dim has no indexes. However, the main problem is the sales tables' joins.\n\nSo, for each sales table, creating an index on the date_sk column (since it's used in the join with date_dim) and on the customer_sk column (since it's joined with customer). Also, since the d_month_seq is a range filter, an index on date_dim's d_month_seq would help, but since date_dim is small, maybe it's not the main issue. However, the sales tables are the big ones.\n\nWait, the query's main issue is that each subquery is scanning a large sales table (store_sales, catalog_sales, web_sales) and joining with date_dim and customer. Without indexes on the join columns, these are full table scans.\n\nTherefore, the best approach is to create indexes on the sales tables' date_sk and customer_sk columns. For example:\n\n- For store_sales: index on (ss_sold_date_sk, ss_customer_sk)\n- For catalog_sales: index on (cs_sold_date_sk, cs_bill_customer_sk)\n- For web_sales: index on (ws_sold_date_sk, ws_bill_customer_sk)\n\nThese indexes would speed up the joins with date_dim and customer tables. Additionally, since the d_month_seq is a filter on date_dim, an index on date_dim's d_month_seq would help, but since date_dim is small, maybe it's not necessary. However, the sales tables are the main problem.\n\nAnother thing to consider is that the INTERSECT operation requires the subqueries to return the same set of rows. The distinct keyword in each subquery means that the database has to eliminate duplicates, which could be expensive. However, the main issue is the initial joins and filtering.\n\nSo, the indexes should be on the join columns of the sales tables. Each sales table has a date_sk and a customer_sk column that are joined with date_dim and customer. Creating a composite index on these columns would allow the database to quickly find the relevant rows for the join, reducing the need for full table scans.\n\nTherefore, the recommended indexes are:\n\n1. On store_sales: (ss_sold_date_sk, ss_customer_sk)\n2. On catalog_sales: (cs_sold_date_sk, cs_bill_customer_sk)\n3. On web_sales: (ws_sold_date_sk, ws_bill_customer_sk)\n\nThese indexes would cover the join conditions and the date filter, significantly reducing the scan time for each subquery. Since the query is using INTERSECT, the performance gain from faster subqueries would reduce the overall execution time.\n\nThe estimated benefit for each index would be the number of rows scanned in each sales table. For example, store_sales has 57 million rows, but with the index, the join with date_dim and customer would be much faster, especially since the d_month_seq filter is applied. The same applies to the other sales tables.\n\nSo, the JSON response should list these three indexes, each targeting their respective sales tables, with the appropriate columns and index types. Since the user mentioned PostgreSQL 16.14 with hypopg and pg_trgm extensions, but the index types here are standard B-tree indexes. The partial_predicate is null because the filters are on the joined tables, not the target tables. The estimated benefit is the reduction in scanning the large sales tables.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk, ss_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on store_sales (57.6M rows) for join with date_dim and customer\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_sold_date_sk, cs_bill_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on catalog_sales (28.8M rows) for join with date_dim and customer\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_sold_date_sk, ws_bill_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates seq scan on web_sales (14.4M rows) for join with date_dim and customer\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs three INTERSECT operations on large sales tables (store_sales, catalog_sales, web_sales) joined with date_dim and customer. These tables lack indexes on the join columns (date_sk and customer_sk) which are critical for filtering and joining. Creating composite B-tree indexes on these columns will eliminate full table scans and enable efficient join operations with the date_dim and customer tables.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk, ss_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 40.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": -3.7,
+      "baseline_exec_ms": 17736.4,
+      "optimized_exec_ms": 18395.317,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 5.3,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933516.07,
+          "cost_with_index": 1933459.07,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369279.22,
+          "cost_with_index": 1369238.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 819862.47,
+          "cost_with_index": 219061.88,
+          "benefit_pct": 73.3
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118696.92,
+          "cost_with_index": 118695.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110881.57,
+          "cost_with_index": 21110157.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29022263.54,
+          "cost_with_index": 29019840.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129315.8,
+          "cost_with_index": 129315.79,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179046.22,
+          "cost_with_index": 179046.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81239.34,
+          "cost_with_index": 81242.84,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712175.92,
+          "cost_with_index": 3663278.92,
+          "benefit_pct": 1.3
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135058.35,
+          "cost_with_index": 135058.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222744.75,
+          "cost_with_index": 222744.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.14,
+          "cost_with_index": 1345159.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342788.7,
+          "cost_with_index": 1342749.12,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_sold_date_sk, cs_bill_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 28.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.7,
+      "baseline_exec_ms": 17004.548,
+      "optimized_exec_ms": 16543.377,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 11.7,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 819772.49,
+          "cost_with_index": 817045.27,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938061.95,
+          "cost_with_index": 938063.76,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179046.22,
+          "cost_with_index": 179046.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906034.02,
+          "cost_with_index": 457110.23,
+          "benefit_pct": 49.5
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712120.96,
+          "cost_with_index": 3389159.36,
+          "benefit_pct": 8.7
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk, ws_bill_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 13.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 6.6,
+      "baseline_exec_ms": 16819.66,
+      "optimized_exec_ms": 15702.977,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.9,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1933459.07,
+          "cost_with_index": 1933435.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 819772.52,
+          "cost_with_index": 741350.77,
+          "benefit_pct": 9.6
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019840.36,
+          "cost_with_index": 29019052.95,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712123.48,
+          "cost_with_index": 3712085.58,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91700.53,
+          "cost_with_index": 91700.53,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

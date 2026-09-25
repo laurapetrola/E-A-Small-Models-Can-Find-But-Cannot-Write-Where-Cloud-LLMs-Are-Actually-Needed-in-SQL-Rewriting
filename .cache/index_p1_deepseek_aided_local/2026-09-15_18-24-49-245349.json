@@ -1,0 +1,308 @@
+{
+  "timestamp": "2026-09-15T18:24:49.245243",
+  "query_hash": "a614cd11c21c",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 614787.1,
+  "reasoning_trace": "<think>\nWe are given a query that is too expensive to rewrite and we are to suggest indexes to improve it.\n\nFirst, let's break down the query:\n\nThe query joins several tables: web_sales, web_returns, web_page, customer_demographics (twice), customer_address, date_dim, and reason.\n\nThe goal is to compute some aggregates (avg(ws_quantity), avg(wr_refunded_cash), avg(wr_fee)) and then group by r_reason_desc, and order by the substring of r_reason_desc and the averages.\n\nThe query has several conditions:\n\n1. ws_web_page_sk = wp_web_page_sk\n2. ws_item_sk = wr_item_sk\n3. ws_order_number = wr_order_number\n4. ws_sold_date_sk = d_date_sk and d_year = 1998\n5. cd1.cd_demo_sk = wr_refunded_cdemo_sk\n6. cd2.cd_demo_sk = wr_returning_cdemo_sk\n7. ca_address_sk = wr_refunded_addr_sk\n8. r_reason_sk = wr_reason_sk\n9. A complex OR condition on customer_demographics (cd1 and cd2) and ws_sales_price\n10. A complex OR condition on customer_address (ca_country, ca_state, and ws_net_profit)\n\nWe are told that the execution plan is not provided, but we can analyze the query structure.\n\nWe are to look for Seq Scans on large tables. The tables with many rows are:\n\n- web_sales: 14,396,103 rows\n- web_returns: 1,439,266 rows\n- customer_demographics: 1,920,800 rows (appears twice, but it's the same table)\n\nThe other tables are small or medium in size.\n\nThe query does a join between web_sales and web_returns on (ws_item_sk = wr_item_sk and ws_order_number = wr_order_number). This is a primary candidate for an index on web_sales (ws_item_sk, ws_order_number) or on web_returns (wr_item_sk, wr_order_number). However, note that the join condition uses two columns. We can create a composite index on web_sales (ws_item_sk, ws_order_number) or on web_returns (wr_item_sk, wr_order_number). Since the join is between two tables, we can index either side. But note that the query is filtering web_sales by d_year=1998 and other conditions, so we might want to index the web_sales table for the join and the filter.\n\nAdditionally, the query filters web_sales by d_year=1998 (from date_dim). We can index date_dim on d_year, but note that date_dim has 73,049 rows and is small. Alternatively, we can index web_sales on d_date_sk (which is already a foreign key) and then use the condition on d_year. But note that the condition is on date_dim.d_year, so we might need to index date_dim or use a join that can be optimized.\n\nBut note: the condition ws_sold_date_sk = d_date_sk and d_year=1998. We can also index web_sales on d_date_sk and then filter by d_year in the join condition? However, the condition on d_year is on date_dim, so we might need to index date_dim on d_year. But date_dim is small, so a sequential scan might be acceptable.\n\nNow, let's look at the OR conditions:\n\nThe OR conditions are complex and involve multiple conditions on customer_demographics and customer_address. We have two customer_demographics tables (cd1 and cd2) and one customer_address. The OR conditions are:\n\n1. (cd1.cd_marital_status = 'D' and ... and ws_sales_price between 100 and 150)\n2. (cd1.cd_marital_status = 'S' and ... and ws_sales_price between 50 and 100)\n3. (cd1.cd_marital_status = 'U' and ... and ws_sales_price between 150 and 200)\n\nand\n\n1. (ca_country = 'United States' and ... and ws_net_profit between 100 and 200)\n2. (ca_country = 'United States' and ... and ws_net_profit between 150 and 300)\n3. (ca_country = 'United States' and ... and ws_net_profit between 50 and 250)\n\nThese OR conditions might cause a performance issue because the planner cannot effectively use an index to cover multiple OR conditions. However, note that the conditions on customer_demographics are on cd1 and cd2, which are joined to web_returns. We can index customer_demographics on cd_marital_status and cd_education_status, but note that the condition requires both cd_marital_status and cd_education_status to be the same and equal to a specific value. We can create an index on customer_demographics (cd_marital_status, cd_education_status) to help with the OR conditions.\n\nSimilarly, the conditions on customer_address are on ca_country and ca_state. We can index customer_address on (ca_country, ca_state) to help with the OR conditions.\n\nBut note: the query is joining customer_demographics twice and customer_address once. We might need to index these tables to avoid sequential scans.\n\nNow, let's consider the joins:\n\n- web_sales and web_returns: we can index web_sales on (ws_item_sk, ws_order_number) and/or web_returns on (wr_item_sk, wr_order_number). Since the join condition is on two columns, a composite index would be beneficial.\n\n- web_sales and date_dim: condition ws_sold_date_sk = d_date_sk. We can index web_sales on ws_sold_date_sk and/or date_dim on d_date_sk. But note that date_dim is small, so we might not need an index on date_dim. However, if the planner is doing a sequential scan on date_dim, we can index it on d_date_sk to make the join faster.\n\n- web_sales and customer_demographics (via web_returns): condition cd1.cd_demo_sk = wr_refunded_cdemo_sk and cd2.cd_demo_sk = wr_returning_cdemo_sk. We can index web_returns on (wr_refunded_cdemo_sk, wr_returning_cdemo_sk) or index customer_demographics on cd_demo_sk. But note that the condition is on two different customer_demographics columns. We can index customer_demographics on cd_demo_sk, but that doesn't help with the two conditions. Alternatively, we can index web_returns on (wr_refunded_cdemo_sk, wr_returning_cdemo_sk) to avoid a join that requires two separate lookups.\n\n- web_sales and customer_address: condition ca_address_sk = wr_refunded_addr_sk. We can index web_returns on wr_refunded_addr_sk or index customer_address on ca_address_sk.\n\n- web_sales and reason: condition r_reason_sk = wr_reason_sk. We can index web_returns on wr_reason_sk or index reason on r_reason_sk.\n\nGiven the above, let's list the tables that are being scanned sequentially (if no index) and the columns that are being used for filtering and joining:\n\n1. web_sales: \n   - Joined with web_returns on (ws_item_sk, ws_order_number) -> index on (ws_item_sk, ws_order_number)\n   - Filtered by d_year=1998 (via date_dim) -> index on date_dim.d_year or d_date_sk\n   - Filtered by the OR conditions (via customer_demographics and customer_address) -> no direct index on web_sales for these, but the joins might be optimized by indexing the other tables.\n\n2. web_returns: \n   - Joined with web_sales on (ws_item_sk, ws_order_number) -> index on (wr_item_sk, wr_order_number)\n   - Joined with customer_demographics (twice) on cd_demo_sk -> index on customer_demographics.cd_demo_sk\n   - Joined with customer_address on ca_address_sk -> index on customer_address.ca_address_sk\n   - Joined with reason on r_reason_sk -> index on reason.r_reason_sk\n\n3. customer_demographics: \n   - Joined twice, so we need to index on cd_demo_sk and also on the columns used in the OR conditions (cd_marital_status, cd_education_status) -> index on (cd_marital_status, cd_education_status)\n\n4. customer_address: \n   - Joined once, so index on ca_address_sk and also on ca_country, ca_state for the OR conditions -> index on (ca_country, ca_state)\n\n5. date_dim: \n   - Filtered by d_year=1998 -> index on d_year or d_date_sk\n\n6. reason: \n   - Joined with web_returns -> index on r_reason_sk\n\nNow, note that the query has two OR conditions (one on customer_demographics and one on customer_address) and these OR conditions are complex. We might also consider creating indexes to help with the OR conditions, but note that the OR conditions are part of the join conditions and the filtering. The OR conditions are broken down into three parts, and each part has a specific set of conditions. We can create indexes that help with the specific conditions, but note that the OR condition might still be expensive.\n\nGiven the above, we can propose the following indexes:\n\n1. On web_sales: index on (ws_item_sk, ws_order_number) to speed up the join with web_returns.\n2. On web_returns: index on (wr_item_sk, wr_order_number) to speed up the join with web_sales.\n3. On customer_demographics: index on (cd_marital_status, cd_education_status) to help with the OR conditions (since the conditions require both columns to be equal to specific values).\n4. On customer_address: index on (ca_country, ca_state) to help with the OR conditions (since the conditions require ca_country and ca_state to be specific values).\n5. On date_dim: index on d_year to quickly filter by d_year=1998.\n6. On reason: index on r_reason_sk to speed up the join with web_returns.\n\nBut note: the query also has a condition on web_sales.ws_sales_price and ws_net_profit. We might want to index web_sales on ws_sales_price and ws_net_profit, but note that the conditions are part of the OR conditions and are not directly filtering the web_sales table. However, if the OR conditions are causing a large number of rows to be considered, an index on web_sales for these columns might help. But note that the OR conditions are broken down by customer_demographics and customer_address, so the filtering might be done by the joins and then the OR conditions. We can leave this for now.\n\nAlso, note that the query is grouping by r_reason_desc and ordering by the substring and the averages. This might require a sort and aggregation, so we want to minimize the number of rows.\n\nNow, let's consider the order of the indexes. The largest tables are web_sales and web_returns. The web_sales table has 14 million rows and web_returns has 1.4 million rows. The joins between these two tables are the most expensive. Therefore, we should prioritize indexes on these two tables for the join condition.\n\nAdditionally, the OR conditions are filtering the data, so we want to index the columns used in the OR conditions to avoid sequential scans on the large tables.\n\nBut note: the OR conditions are on customer_demographics and customer_address, which are being joined to web_returns. So if we index customer_demographics and customer_address, then the joins to these tables might be faster, and then the OR conditions can be checked quickly.\n\nNow, let's write the index suggestions in the required format.\n\nWe are to return a JSON array of indexes, each with:\n- target: table name\n- property: column name\n- index_type: type of index (e.g., btree, hash, etc. but PostgreSQL typically uses btree unless specified)\n- partial_predicate: null or a condition (but note the instruction: partial_predicate must reference ONLY columns of the indexed `target` table. Since the OR conditions involve columns from other tables, we cannot use a partial index for the OR conditions on the large tables. We can only index the columns that are being joined or filtered by the OR conditions, but the OR conditions are not on the large tables (web_sales, web_returns) but on the customer_demographics and customer_address.\n\nTherefore, we will focus on the tables that are being scanned sequentially and the columns that are being used for filtering and joining.\n\nWe are not to suggest indexes that already exist. The problem states that the relevant tables have no indexes.\n\nLet's list the indexes:\n\n1. Table: web_sales, column: ws_item_sk, ws_order_number -> composite index\n   - This will help the join with web_returns.\n\n2. Table: web_returns, column: wr_item_sk, wr_order_number -> composite index\n   - This will help the join with web_sales.\n\n3. Table: customer_demographics, column: cd_demo_sk -> index on cd_demo_sk\n   - This will help the joins with web_returns (twice).\n\n4. Table: customer_demographics, column: cd_marital_status, cd_education_status -> composite index\n   - This will help the OR conditions (since the conditions require both columns to be equal to specific values).\n\n5. Table: customer_address, column: ca_address_sk -> index on ca_address_sk\n   - This will help the join with web_returns.\n\n6. Table: customer_address, column: ca_country, ca_state -> composite index\n   - This will help the OR conditions.\n\n7. Table: date_dim, column: d_date_sk -> index on d_date_sk\n   - This will help the join with web_sales.\n\n8. Table: reason, column: r_reason_sk -> index on r_reason_sk\n   - This will help the join with web_returns.\n\nBut note: the condition on date_dim is d_year=1998. We can also index date_dim on d_year. However, the condition is on d_year, and the join is on d_date_sk. We can index date_dim on d_year to quickly filter by year. But note that the join condition is on d_date_sk, so we might need to index both. However, the condition d_year=1998 is a filter, so we can index date_dim on d_year.\n\nAlternatively, we can index date_dim on d_date_sk and then use the condition on d_year in the join condition? But the condition is on date_dim.d_year, so we cannot change that. We can index date_dim on d_year.\n\nNow, let's write the JSON.\n\nNote: We are to return only the JSON structure.\n\nWe must choose the index_type. Since we are using PostgreSQL and the columns are of various types, we can use btree for most. For the OR conditions, we are using equality and range conditions, so btree is appropriate.\n\nWe are to set partial_predicate to null for all, because the OR conditions are not on the large tables and we are not creating partial indexes.\n\nNow, let's list the indexes in the order of the largest tables first (web_sales and web_returns) and then the other tables.\n\nWe'll create:\n\n1. Index on web_sales (ws_item_sk, ws_order_number)\n2. Index on web_returns (wr_item_sk, wr_order_number)\n3. Index on customer_demographics (cd_demo_sk)\n4. Index on customer_demographics (cd_marital_status, cd_education_status)\n5. Index on customer_address (ca_address_sk)\n6. Index on customer_address (ca_country, ca_state)\n7. Index on date_dim (d_date_sk) [or d_year?]\n8. Index on reason (r_reason_sk)\n\nBut note: the condition on date_dim is d_year=1998. We can index date_dim on d_year to avoid a sequential scan. However, the join condition is on d_date_sk, so we might need to index d_date_sk as well. But note that the condition d_year=1998 is a filter, so we can index d_year.\n\nAlternatively, we can index date_dim on d_year and d_date_sk? But that might be overkill. We can index d_year and then the planner can use that to filter the date_dim table.\n\nBut note: the condition is d_year=1998 and the join condition is d_date_sk. We can index date_dim on d_year to quickly find the rows with d_year=1998, and then the join condition on d_date_sk can be done by the index on d_date_sk (if we index that). However, the condition d_year=1998 is a filter, so we can index d_year.\n\nBut note: the condition d_year=1998 is used in the join condition? Actually, the condition is in the WHERE clause: d_year=1998. So we can index date_dim on d_year.\n\nNow, let's write the JSON.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    { ... },\n    { ... }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"...\"\n}\n\nBut note: the instruction says to return only the JSON structure. We must not explain outside.\n\nHowever, the problem says: \"Return ONLY this JSON structure \u2014 no explanation outside the JSON\"\n\nBut the example JSON has an explanation. We must include the explanation.\n\nBut note: the instruction says \"explanation\": \"<why these indexes were chosen, or why no index is possible>\"\n\nWe must write an explanation.\n\nBut note: the problem says \"Return ONLY this JSON structure\", so we must return the JSON exactly as specified.\n\nLet's write the JSON.\n\nWe are to list the indexes in the order of the number of rows scanned (largest first). The largest tables are web_sales and web_returns, then customer_demographics, then customer_address, then date_dim, then reason.\n\nWe'll list:\n\n1. web_sales: index on (ws_item_sk, ws_order_number)\n2. web_returns: index on (wr_item_sk, wr_order_number)\n3. customer_demographics: index on (cd_demo_sk) and (cd_marital_status, cd_education_status)\n4. customer_address: index on (ca_address_sk) and (ca_country, ca_state)\n5. date_dim: index on (d_date_sk) and (d_year) [but note: the condition is d_year=1998, so we can index d_year]\n6. reason: index on (r_reason_sk)\n\nBut note: the condition on date_dim is d_year=1998, so we can index d_year. However, the join condition is on d_date_sk, so we might need to index d_date_sk as well. But the condition d_year=1998 is a filter, so we can index d_year.\n\nAlternatively, we can index date_dim on d_date_sk and d_year? But that might be redundant. We can index d_year.\n\nNow, let's write the JSON.\n\nNote: We are to use the table name exactly as given in the schema.\n\nWe are to use the column name exactly as given.\n\nWe are to set partial_predicate to null.\n\nWe are to set index_type to the appropriate type. For PostgreSQL, we can use 'btree' for most.\n\nWe are to set the estimated_benefit to a string describing what the index eliminates and on how many rows.\n\nBut note: the problem says: \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n\nWe don't have the exact row counts, but we can estimate:\n\n- web_sales: 14 million rows -> the index on (ws_item_sk, ws_order_number) will eliminate a sequential scan on web_sales for the join with web_returns. Without the index, the planner might do a sequential scan on web_sales for each row of web_returns, which is 1.4 million rows. With the index, it can do an index join.\n\nBut note: the query is joining web_sales and web_returns, so we can index either side. We are indexing web_sales.\n\nSimilarly, for web_returns: 1.4 million rows, the index on (wr_item_sk, wr_order_number) will help the join with web_sales.\n\nFor customer_demographics: 1.9 million rows, the index on cd_demo_sk will help the joins (two joins) and the OR conditions.\n\nFor customer_address: 133,000 rows, the index on ca_address_sk will help the join with web_returns, and the index on (ca_country, ca_state) will help the OR conditions.\n\nFor date_dim: 73,000 rows, the index on d_year will help the filter by d_year=1998.\n\nFor reason: 36 rows, the index on r_reason_sk will help the join with web_returns.\n\nNow, let's write the JSON.\n\nWe must list the indexes in the order of the number of rows scanned (largest first). The largest tables are web_sales and web_returns, then customer_demographics, then customer_address, then date_dim, then reason.\n\nWe'll list:\n\n1. web_sales: index on (ws_item_sk, ws_order_number)\n2. web_returns: index on (wr_item_sk, wr_order_number)\n3. customer_demographics: index on (cd_demo_sk) and (cd_marital_status, cd_education_status)\n4. customer_address: index on (ca_address_sk) and (ca_country, ca_state)\n5. date_dim: index on (d_year) [or d_date_sk?]\n6. reason: index on (r_reason_sk)\n\nBut note: the condition on date_dim is d_year=1998, so we can index d_year. However, the join condition is on d_date_sk, so we might need to index d_date_sk as well. But the condition d_year=1998 is a filter, so we can index d_year.\n\nAlternatively, we can index date_dim on d_date_sk to help the join, and then index d_year for the filter. But note that the condition d_year=1998 is a filter, so we can index d_year.\n\nBut note: the condition d_year=1998 is used in the join condition? Actually, the condition is in the WHERE clause: d_year=1998. So we can index d_year.\n\nNow, let's write the JSON.\n\nWe are to return:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_item_sk, ws_order_number\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on web_sales for the join with web_returns, reducing the cost from 14 million rows to an index scan.\"\n    },\n    {\n      \"target\": \"web_returns\",\n      \"property\": \"wr_item_sk, wr_order_number\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates sequential scan on web_returns for the join with web_sales, reducing the cost from 1.4 million rows to an index scan.\"\n    },\n    {\n      \"target\": \"customer_demographics\",\n      \"property\": \"cd_demo_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": n",
+  "recommendations": [
+    {
+      "table": "web_sales",
+      "column": "ws_item_sk, ws_order_number",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "web_returns",
+      "column": "wr_item_sk, wr_order_number",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_demo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_marital_status, cd_education_status",
+      "index_type": "btree",
+      "estimated_benefit_pct": 17.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": -5.8,
+      "baseline_exec_ms": 483.281,
+      "optimized_exec_ms": 511.21,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 6.7,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793234.29,
+          "cost_with_index": 793234.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117183.46,
+          "cost_with_index": 104368.06,
+          "benefit_pct": 10.9
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937635.55,
+          "cost_with_index": 937635.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81515.81,
+          "cost_with_index": 68654.73,
+          "benefit_pct": 15.8
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_address_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_country, ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": -15.7,
+      "baseline_exec_ms": 647.441,
+      "optimized_exec_ms": 749.245,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793234.29,
+          "cost_with_index": 793234.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.42,
+          "cost_with_index": 1210560.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4067237.38,
+          "cost_with_index": 4067237.38,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937635.55,
+          "cost_with_index": 937635.55,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 17.0,
+      "baseline_exec_ms": 827.457,
+      "optimized_exec_ms": 686.938,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.5,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.22,
+          "cost_with_index": 1434001.63,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2956664.64,
+          "cost_with_index": 2956664.64,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1941292.8,
+          "cost_with_index": 1941292.8,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370584.93,
+          "cost_with_index": 1370584.93,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 793234.29,
+          "cost_with_index": 786778.2,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117183.46,
+          "cost_with_index": 115245.88,
+          "benefit_pct": 1.7
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019740.86,
+          "cost_with_index": 29019740.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130008.04,
+          "cost_with_index": 130008.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.42,
+          "cost_with_index": 1208622.83,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4067237.38,
+          "cost_with_index": 4065299.79,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937635.55,
+          "cost_with_index": 935697.96,
+          "benefit_pct": 0.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179533.18,
+          "cost_with_index": 177381.79,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81515.81,
+          "cost_with_index": 79578.23,
+          "benefit_pct": 2.4
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906068.83,
+          "cost_with_index": 906068.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712224.42,
+          "cost_with_index": 3712224.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 132825.22,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223891.99,
+          "cost_with_index": 223891.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.11,
+          "cost_with_index": 1343089.24,
+          "benefit_pct": 0.2
+        }
+      ],
+      "workload_queries_improved": 5,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "reason",
+      "column": "r_reason_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-08-28T10:12:12.648801",
+  "query_hash": "7aed0fb6af9b",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate results"
+  ],
+  "improvement_pct": 80.86,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 169171.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH filtered_items AS MATERIALIZED (\n    SELECT i_item_sk, i_manager_id\n    FROM item\n    WHERE ( i_category IN ('Books','Children','Electronics')\n            AND i_class IN ('personal','portable','reference','self-help')\n            AND i_brand IN ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9') )\n       OR ( i_category IN ('Women','Music','Men')\n            AND i_class IN ('accessories','classical','fragrances','pants')\n            AND i_brand IN ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1') )\n),\nmonth_dates AS MATERIALIZED (\n    SELECT d_date_sk, d_moy\n    FROM date_dim\n    WHERE d_month_seq IN (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11)\n),\nmonthly_sales AS MATERIALIZED (\n    SELECT fi.i_manager_id,\n           SUM(ss.ss_sales_price) AS sum_sales\n    FROM filtered_items fi\n    JOIN store_sales ss ON fi.i_item_sk = ss.ss_item_sk\n    JOIN month_dates md ON ss.ss_sold_date_sk = md.d_date_sk\n    JOIN store st ON ss.ss_store_sk = st.s_store_sk\n    GROUP BY fi.i_manager_id, md.d_moy\n),\nmanager_avgs AS (\n    SELECT i_manager_id,\n           sum_sales,\n           AVG(sum_sales) OVER (PARTITION BY i_manager_id) AS avg_monthly_sales\n    FROM monthly_sales\n)\nSELECT i_manager_id,\n       sum_sales,\n       avg_monthly_sales\nFROM manager_avgs\nWHERE CASE WHEN avg_monthly_sales > 0 THEN abs(sum_sales - avg_monthly_sales) / avg_monthly_sales ELSE NULL END > 0.1\nORDER BY i_manager_id, avg_monthly_sales, sum_sales\nLIMIT 100",
+  "reached_sql": "WITH filtered_items AS MATERIALIZED (\n    SELECT i_item_sk, i_manager_id\n    FROM item\n    WHERE ( i_category IN ('Books','Children','Electronics')\n            AND i_class IN ('personal','portable','reference','self-help')\n            AND i_brand IN ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9') )\n       OR ( i_category IN ('Women','Music','Men')\n            AND i_class IN ('accessories','classical','fragrances','pants')\n            AND i_brand IN ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1') )\n),\nmonth_dates AS MATERIALIZED (\n    SELECT d_date_sk, d_moy\n    FROM date_dim\n    WHERE d_month_seq IN (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11)\n),\nmonthly_sales AS MATERIALIZED (\n    SELECT fi.i_manager_id,\n           SUM(ss.ss_sales_price) AS sum_sales\n    FROM filtered_items fi\n    JOIN store_sales ss ON fi.i_item_sk = ss.ss_item_sk\n    JOIN month_dates md ON ss.ss_sold_date_sk = md.d_date_sk\n    JOIN store st ON ss.ss_store_sk = st.s_store_sk\n    GROUP BY fi.i_manager_id, md.d_moy\n),\nmanager_avgs AS (\n    SELECT i_manager_id,\n           sum_sales,\n           AVG(sum_sales) OVER (PARTITION BY i_manager_id) AS avg_monthly_sales\n    FROM monthly_sales\n)\nSELECT i_manager_id,\n       sum_sales,\n       avg_monthly_sales\nFROM manager_avgs\nWHERE CASE WHEN avg_monthly_sales > 0 THEN abs(sum_sales - avg_monthly_sales) / avg_monthly_sales ELSE NULL END > 0.1\nORDER BY i_manager_id, avg_monthly_sales, sum_sales\nLIMIT 100",
+  "reasoning_trace": "1. Predicate pushdown / join reordering \u2014 TARGET: the OR filter on `item(i_category, i_class, i_brand)` and the `store_sales` join \u2014 TRANSFORMATION: Prefilter `item` to only `i_item_sk, i_manager_id` for the qualifying rows and drive `store_sales` from that tiny item set, so the 57M-row fact table is probed only for qualifying items instead of scanned or joined first.\n\n2. Composite fact index \u2014 TARGET: `store_sales` access on `ss_item_sk`, `ss_sold_date_sk`, `ss_sales_price` \u2014 TRANSFORMATION: Use a covering index on `(ss_item_sk, ss_sold_date_sk, ss_sales_price)` so the item-driven probe can filter the 12-month date range and compute `SUM(ss_sales_price)` without heap lookups.\n\n3. Date dimension prefilter \u2014 TARGET: `date_dim.d_month_seq` / `d_date_sk` \u2014 TRANSFORMATION: Precompute the 12-month `d_date_sk` set with `d_moy` as a small CTE, replacing the 12-element `IN`-list with the equivalent `d_month_seq` range, and join `store_sales` to that compact date set rather than the full `date_dim`.\n\n4. Redundant join elimination \u2014 TARGET: the `store_sales.ss_store_sk = store.s_store_sk` join \u2014 TRANSFORMATION: Remove `store` from the join entirely because no `store` column is referenced and `s_store_sk` is the primary key, so the join cannot filter or change the result.\n\n5. Window/top-N on reduced rows \u2014 TARGET: the inner aggregate and `avg(...) OVER (PARTITION BY i_manager_id)` plus the final `ORDER BY ... LIMIT 100` \u2014 TRANSFORMATION: Materialize the per-`(i_manager_id, d_moy)` monthly sums in a CTE first, then compute the window average and deviation filter on that small grouped set, and apply the final top-100 sort only to the filtered aggregate rows.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 8612.315,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 80.86,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 221692.89,
+      "optimized": 384555.68,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 163100.5,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 6070.5,
+    "total_inference_ms": 169171.0,
+    "writer_inference_ms": 804909.3,
+    "writer_tokens_in": 2901,
+    "writer_tokens_out": 81884,
+    "writer_calls": 2
+  },
+  "errors": [],
+  "strategy": "1. Predicate pushdown / join reordering \u2014 TARGET: the OR filter on `item(i_category, i_class, i_brand)` and the `store_sales` join \u2014 TRANSFORMATION: Prefilter `item` to only `i_item_sk, i_manager_id` for the qualifying rows and drive `store_sales` from that tiny item set, so the 57M-row fact table is probed only for qualifying items instead of scanned or joined first.\n\n2. Composite fact index \u2014 TARGET: `store_sales` access on `ss_item_sk`, `ss_sold_date_sk`, `ss_sales_price` \u2014 TRANSFORMATION: Use a covering index on `(ss_item_sk, ss_sold_date_sk, ss_sales_price)` so the item-driven probe can filter the 12-month date range and compute `SUM(ss_sales_price)` without heap lookups.\n\n3. Date dimension prefilter \u2014 TARGET: `date_dim.d_month_seq` / `d_date_sk` \u2014 TRANSFORMATION: Precompute the 12-month `d_date_sk` set with `d_moy` as a small CTE, replacing the 12-element `IN`-list with the equivalent `d_month_seq` range, and join `store_sales` to that compact date set rather than the full `date_dim`.\n\n4. Redundant join elimination \u2014 TARGET: the `store_sales.ss_store_sk = store.s_store_sk` join \u2014 TRANSFORMATION: Remove `store` from the join entirely because no `store` column is referenced and `s_store_sk` is the primary key, so the join cannot filter or change the result.\n\n5. Window/top-N on reduced rows \u2014 TARGET: the inner aggregate and `avg(...) OVER (PARTITION BY i_manager_id)` plus the final `ORDER BY ... LIMIT 100` \u2014 TRANSFORMATION: Materialize the per-`(i_manager_id, d_moy)` monthly sums in a CTE first, then compute the window average and deviation filter on that small grouped set, and apply the final top-100 sort only to the filtered aggregate rows.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was materialization of grouped aggregates (CTE for monthly sales), which the rewrite applies. The rewrite also includes predicate pushdown (filtered_items), jo"
+  },
+  "raw_sql": "select * from (select i_manager_id ,sum(ss_sales_price) sum_sales ,avg(sum(ss_sales_price)) over (partition by i_manager_id) avg_monthly_sales from item ,store_sales ,date_dim ,store where ss_item_sk = i_item_sk and ss_sold_date_sk = d_date_sk and ss_store_sk = s_store_sk and d_month_seq in (1222,1222+1,1222+2,1222+3,1222+4,1222+5,1222+6,1222+7,1222+8,1222+9,1222+10,1222+11) and (( i_category in ('Books','Children','Electronics') and i_class in ('personal','portable','reference','self-help') and i_brand in ('scholaramalgamalg #14','scholaramalgamalg #7', 'exportiunivamalg #9','scholaramalgamalg #9')) or( i_category in ('Women','Music','Men') and i_class in ('accessories','classical','fragrances','pants') and i_brand in ('amalgimporto #1','edu packscholar #1','exportiimporto #1', 'importoamalg #1'))) group by i_manager_id, d_moy) tmp1 where case when avg_monthly_sales > 0 then abs (sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 order by i_manager_id ,avg_monthly_sales ,sum_sales limit 100"
+}

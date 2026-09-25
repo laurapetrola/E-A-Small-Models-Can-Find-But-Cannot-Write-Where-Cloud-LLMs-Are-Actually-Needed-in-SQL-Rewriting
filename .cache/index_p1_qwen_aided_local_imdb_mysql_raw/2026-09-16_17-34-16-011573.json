@@ -1,0 +1,427 @@
+{
+  "timestamp": "2026-09-16T17:34:16.011545",
+  "query_hash": "abcb0d20bbc9",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 67185.8,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The database is MySQL 8.0.46, and the existing indexes are provided for some tables. \n\nFirst, I need to understand the query. The query is selecting MIN values from several tables, joining them with various conditions. The main goal is to find movies related to certain keywords, directed by male writers from Lionsgate, with specific genres and votes, and released after 2000. \n\nLooking at the schema and existing indexes, I notice that some tables don't have indexes. The tables involved in the query are cast_info, company_name, info_type, keyword, movie_companies, movie_info, movie_info_idx, movie_keyword, name, and title. \n\nThe first thing to check is for full table scans. The execution plan (which is withheld, but based on the schema) would likely have full table scans on tables that don't have appropriate indexes. Let's go through each table and see where the joins or filters are happening.\n\nStarting with company_name: the query has a condition cn.name LIKE 'Lionsgate%'. Since company_name doesn't have any indexes, a full scan is happening here. An index on cn.name would help here. But since the condition is a LIKE with a prefix, maybe a prefix index on name with a prefix length. However, the exact length isn't specified, but in MySQL, for LIKE 'Lionsgate%', a prefix of 255 would cover it. So, an index on company_name(name) with prefix_length 255.\n\nNext, info_type tables (it1 and it2) are used in the WHERE clause with info = 'genres' and 'votes'. Since info_type has no indexes, a full scan is happening. Adding an index on info would help. For example, an index on info_type(info) would allow quick lookups for these values.\n\nThe keyword table is filtered with k.keyword IN ('murder', ...). Since keyword has no indexes, a full scan is happening. An index on keyword.keyword would speed up this condition.\n\nThe name table is joined with n.id = ci.person_id and filtered by n.gender = 'm'. Since name has no indexes, a full scan is happening. An index on name.gender would help, but since the join is on n.id, maybe a composite index on (gender, id) would be better. However, the primary key is id, so maybe an index on gender would suffice for the filter, but the join on id is already covered by the primary key. Wait, the join is on n.id = ci.person_id, which is part of the primary key. So maybe the index on name.gender would help filter the rows before joining.\n\nThe title table is joined with multiple tables and has an index on kind_id. The query has conditions on t.production_year > 2000 and t.title LIKE '%Freddy%' etc. The title table's existing index is on kind_id, which isn't used in the query's WHERE clause. So, a full scan on title might be happening. Adding an index on production_year and title would help for the production_year condition and the LIKE on title. However, since title is a large table, an index on (production_year, title) could help. But the LIKE conditions are on the title column, which is text. For LIKE '%Freddy%', a prefix index might not help, but an index on title would allow the database to scan the index for those patterns. However, in MySQL, full-text indexes are better for LIKE with wildcards, but the user hasn't mentioned that. So, maybe a regular index on title would help, but the exact benefit depends on the query.\n\nLooking at the joins: the query has multiple joins between tables like movie_companies, movie_info, etc. For example, movie_companies has an index on movie_id, which is used in the join. But the condition mc.note LIKE '%(Blu-ray)%' is on the note column, which isn't indexed. So, a full scan on movie_companies is happening here. An index on mc.note would help, but since it's a text field with a LIKE condition, maybe a prefix index on note with a certain length. However, the exact value is unknown, so perhaps an index on note would be useful. Alternatively, if the note is a text field, a full-text index might be better, but the user hasn't mentioned that.\n\nAnother point: the movie_info and movie_info_idx tables are joined with conditions on info_type_id and info. Since movie_info has an index on info_type_id, but the info column is filtered with mi.info IN ('Horror', 'Thriller'), which isn't indexed. So, a full scan on movie_info is happening. An index on info would help here. Similarly for movie_info_idx, the info is filtered with mi_idx.info, which isn't indexed. So, indexes on info for these tables would help.\n\nAlso, the movie_keyword table is joined with mk.keyword_id, which is indexed (keyword_id_movie_keyword). But the keyword is filtered with k.keyword IN (...), which is on the keyword table. Since keyword has no index, a full scan is happening. So, an index on keyword.keyword would help.\n\nPutting this all together, the main tables causing full scans are company_name, info_type, keyword, name, and possibly title. The indexes needed would be on the columns used in the WHERE clauses or JOIN conditions that are not currently indexed. \n\nFor company_name, index on name. For info_type, index on info. For keyword, index on keyword. For name, index on gender. For title, index on production_year and title. However, the user's schema shows that title has an index on kind_id, which isn't used here. \n\nBut the user's instructions say to look for full table scans on large tables. The tables with large rows are cast_info (36M), movie_info (14.8M), movie_keyword (4.5M), etc. So, the tables that are being scanned are company_name (235k), info_type (113), keyword (134k), name (4.1M), and title (2.5M). \n\nSo, the indexes needed would be:\n\n- company_name(name) for the LIKE 'Lionsgate%'\n- info_type(info) for the info = 'genres' and 'votes'\n- keyword(keyword) for the IN clause\n- name(gender) for the gender = 'm'\n- title(production_year) for the production_year > 2000\n- title(title) for the LIKE conditions on title\n\nBut the user's schema shows that title has an index on kind_id, which isn't used here. So, adding an index on title(production_year, title) might help for the production_year and title LIKE conditions. However, in MySQL, the index on (production_year, title) would allow the query to use the index for the production_year condition and scan the title part for the LIKE. \n\nBut the user's query has multiple LIKE conditions on title. For example, t.title LIKE '%Freddy%' OR t.title LIKE '%Jason%' etc. These are full-text searches, but without a full-text index, a regular index might not be efficient. However, the user might not have full-text indexes, so a regular index on title could help, but it's not perfect. \n\nIn any case, the main tables causing full scans are company_name, info_type, keyword, name, and title. So, the indexes to suggest would be on those columns. \n\nNow, checking the existing indexes. The user says that for example, movie_companies has indexes on company_id, company_type_id, and movie_id. The movie_info has indexes on info_type_id and movie_id. So, the existing indexes are already on the columns used in the joins. \n\nTherefore, the missing indexes are on the columns used in the WHERE clauses that are not indexed. \n\nSo, the indexes to add would be:\n\n1. company_name(name) for the LIKE 'Lionsgate%'\n2. info_type(info) for the info = 'genres' and 'votes'\n3. keyword(keyword) for the IN clause\n4. name(gender) for the gender = 'm'\n5. title(production_year) for the production_year > 2000\n6. title(title) for the LIKE conditions on title\n\nBut the user's instructions say to set prefix_length for TEXT/BLOB columns. For example, the name column in company_name is TEXT, so an index on name with prefix_length 255 would be appropriate. Similarly, the title column in title is TEXT, so an index on title with prefix_length 255. \n\nHowever, the user's query has multiple LIKE conditions on title, which are partial matches. An index on title would help, but for LIKE '%Freddy%', the index might not be very effective. However, without a full-text index, this is the best option. \n\nSo, the final indexes would be:\n\n- company_name(name) with prefix_length 255\n- info_type(info)\n- keyword(keyword)\n- name(gender)\n- title(production_year, title) with prefix_length 255 on title\n\nBut the user's schema for title has an index on kind_id, which is not used here. So, adding an index on production_year and title would help. \n\nTherefore, the JSON should list these indexes. Each index is on the target table, with the property (column), index type (BTREE), prefix_length where applicable, and the estimated benefit (eliminating full scans on those tables).\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"name\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_name (234,997 rows) for cn.name LIKE 'Lionsgate%'\"\n    },\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on info_type (113 rows) for it1.info = 'genres' and it2.info = 'votes'\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on keyword (134,170 rows) for k.keyword IN ('murder', ...)\"\n    },\n    {\n      \"target\": \"name\",\n      \"property\": \"gender\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on name (4,167,491 rows) for n.gender = 'm'\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title (2,528,312 rows) for t.production_year > 2000\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"title\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title (2,528,312 rows) for t.title LIKE '%Freddy%' OR t.title LIKE '%Jason%'\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target columns in WHERE clauses and JOIN conditions that currently lack indexes, eliminating full table scans on large tables. The prefix_length is specified for TEXT columns to optimize pattern matching.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "name",
+      "index_type": "btree",
+      "estimated_benefit_pct": 100.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 89.9,
+      "baseline_exec_ms": 59.475,
+      "optimized_exec_ms": 6.02,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 822221.28,
+          "cost_with_index": 822221.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 22016321.7,
+          "cost_with_index": 22016321.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7457.74,
+          "cost_with_index": 7457.74,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 388796.22,
+          "cost_with_index": 388796.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46248.81,
+          "cost_with_index": 46248.81,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6918.41,
+          "cost_with_index": 6918.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2236213.27,
+          "cost_with_index": 2236213.27,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3875540.24,
+          "cost_with_index": 3875540.24,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 26.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -4816.7,
+      "baseline_exec_ms": 67.251,
+      "optimized_exec_ms": 3306.502,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 5.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 822221.28,
+          "cost_with_index": 565676.88,
+          "benefit_pct": 31.2
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7457.74,
+          "cost_with_index": 7458.09,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 1037294.64,
+          "cost_with_index": 1081805.62,
+          "benefit_pct": -4.3
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 388796.22,
+          "cost_with_index": 256148.45,
+          "benefit_pct": 34.1
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46248.81,
+          "cost_with_index": 50969.65,
+          "benefit_pct": -10.2
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17034.85,
+          "cost_with_index": 19690.79,
+          "benefit_pct": -15.6
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 17881.94,
+          "cost_with_index": 17871.98,
+          "benefit_pct": 0.1
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 99.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1174.4,
+      "baseline_exec_ms": 61.922,
+      "optimized_exec_ms": 789.114,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 84.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 22088039.88,
+          "cost_with_index": 1993.28,
+          "benefit_pct": 100.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 386484.4,
+          "cost_with_index": 581.99,
+          "benefit_pct": 99.8
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 45472.11,
+          "cost_with_index": 45854.79,
+          "benefit_pct": -0.8
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16969.19,
+          "cost_with_index": 1163.1,
+          "benefit_pct": 93.1
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 666787.75,
+          "cost_with_index": 888.27,
+          "benefit_pct": 99.9
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2229414.72,
+          "cost_with_index": 196.1,
+          "benefit_pct": 100.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3844583.45,
+          "cost_with_index": 279.2,
+          "benefit_pct": 100.0
+        }
+      ],
+      "workload_queries_improved": 6,
+      "workload_queries_regressed": 1,
+      "status": null
+    },
+    {
+      "table": "name",
+      "column": "gender",
+      "index_type": "btree",
+      "estimated_benefit_pct": -7.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.6,
+      "baseline_exec_ms": 63.26,
+      "optimized_exec_ms": 64.244,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -2.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 22077463.27,
+          "cost_with_index": 22958195.08,
+          "benefit_pct": -4.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7423.8,
+          "cost_with_index": 7448.81,
+          "benefit_pct": -0.3
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16868.97,
+          "cost_with_index": 17163.84,
+          "benefit_pct": -1.7
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 17691.09,
+          "cost_with_index": 17944.39,
+          "benefit_pct": -1.4
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2190984.64,
+          "cost_with_index": 2288338.57,
+          "benefit_pct": -4.4
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 4,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": -9.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.1,
+      "baseline_exec_ms": 63.805,
+      "optimized_exec_ms": 65.14,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -18.8,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 818995.37,
+          "cost_with_index": 946157.05,
+          "benefit_pct": -15.5
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 22096632.97,
+          "cost_with_index": 22952537.91,
+          "benefit_pct": -3.9
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7448.44,
+          "cost_with_index": 7446.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 1036786.07,
+          "cost_with_index": 2092001.86,
+          "benefit_pct": -101.8
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 388019.75,
+          "cost_with_index": 746109.42,
+          "benefit_pct": -92.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46026.62,
+          "cost_with_index": 55055.36,
+          "benefit_pct": -19.6
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16992.51,
+          "cost_with_index": 18096.7,
+          "benefit_pct": -6.5
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 658809.39,
+          "cost_with_index": 712747.8,
+          "benefit_pct": -8.2
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 17828.72,
+          "cost_with_index": 12191.83,
+          "benefit_pct": 31.6
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6918.01,
+          "cost_with_index": 6988.1,
+          "benefit_pct": -1.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2228657.47,
+          "cost_with_index": 2295705.97,
+          "benefit_pct": -3.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3843833.29,
+          "cost_with_index": 4061115.92,
+          "benefit_pct": -5.7
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 10,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "title",
+      "index_type": "btree",
+      "estimated_benefit_pct": -3.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.7,
+      "baseline_exec_ms": 65.872,
+      "optimized_exec_ms": 62.793,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -18.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 818027.1,
+          "cost_with_index": 942534.42,
+          "benefit_pct": -15.2
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 22095345.23,
+          "cost_with_index": 22709908.86,
+          "benefit_pct": -2.8
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7446.04,
+          "cost_with_index": 7466.2,
+          "benefit_pct": -0.3
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 1036569.31,
+          "cost_with_index": 2080954.3,
+          "benefit_pct": -100.8
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 387910.92,
+          "cost_with_index": 734146.27,
+          "benefit_pct": -89.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 45975.62,
+          "cost_with_index": 46488.94,
+          "benefit_pct": -1.1
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17009.61,
+          "cost_with_index": 17211.66,
+          "benefit_pct": -1.2
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 668214.96,
+          "cost_with_index": 702561.88,
+          "benefit_pct": -5.1
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 17815.34,
+          "cost_with_index": 17921.64,
+          "benefit_pct": -0.6
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6917.72,
+          "cost_with_index": 6928.53,
+          "benefit_pct": -0.2
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2236614.79,
+          "cost_with_index": 2281728.88,
+          "benefit_pct": -2.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3865309.59,
+          "cost_with_index": 3966184.69,
+          "benefit_pct": -2.6
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 10,
+      "status": null
+    }
+  ]
+}

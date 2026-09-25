@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-08-28T16:54:38.227316",
+  "query_hash": "a614cd11c21c",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches",
+    "move filter on date_dim into subquery for join condition",
+    "use exists instead of join for web_page"
+  ],
+  "improvement_pct": -418.11,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 747705.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH demo_pairs(marital_status, education_status, price_low, price_high) AS (\n    VALUES\n        ('D'::char(1), 'Primary'::char(20), 100.00::numeric, 150.00::numeric),\n        ('S'::char(1), 'College'::char(20), 50.00::numeric, 100.00::numeric),\n        ('U'::char(1), 'Advanced Degree'::char(20), 150.00::numeric, 200.00::numeric)\n),\naddr_profit(ca_state, profit_low, profit_high) AS (\n    VALUES\n        ('NC'::char(2), 100::numeric, 200::numeric),\n        ('TX'::char(2), 100::numeric, 200::numeric),\n        ('IA'::char(2), 100::numeric, 200::numeric),\n        ('WI'::char(2), 150::numeric, 300::numeric),\n        ('WV'::char(2), 150::numeric, 300::numeric),\n        ('GA'::char(2), 150::numeric, 300::numeric),\n        ('OK'::char(2), 50::numeric, 250::numeric),\n        ('VA'::char(2), 50::numeric, 250::numeric),\n        ('KY'::char(2), 50::numeric, 250::numeric)\n),\nfiltered_returns AS (\n    SELECT\n        wr.wr_item_sk,\n        wr.wr_order_number,\n        wr.wr_refunded_cash,\n        wr.wr_fee,\n        wr.wr_reason_sk,\n        cd1.cd_marital_status,\n        cd1.cd_education_status,\n        ca.ca_state\n    FROM web_returns wr\n    JOIN customer_demographics cd1\n        ON cd1.cd_demo_sk = wr.wr_refunded_cdemo_sk\n    JOIN demo_pairs\n        ON demo_pairs.marital_status = cd1.cd_marital_status\n       AND demo_pairs.education_status = cd1.cd_education_status\n    JOIN customer_demographics cd2\n        ON cd2.cd_demo_sk = wr.wr_returning_cdemo_sk\n       AND cd2.cd_marital_status = cd1.cd_marital_status\n       AND cd2.cd_education_status = cd1.cd_education_status\n    JOIN customer_address ca\n        ON ca.ca_address_sk = wr.wr_refunded_addr_sk\n       AND ca.ca_country = 'United States'\n       AND ca.ca_state IN ('NC','TX','IA','WI','WV','GA','OK','VA','KY')\n)\nSELECT\n    substr(r.r_reason_desc, 1, 20),\n    avg(ws.ws_quantity),\n    avg(fr.wr_refunded_cash),\n    avg(fr.wr_fee)\nFROM filtered_returns fr\nJOIN web_sales ws\n    ON ws.ws_item_sk = fr.wr_item_sk\n   AND ws.ws_order_number = fr.wr_order_number\nJOIN demo_pairs\n    ON demo_pairs.marital_status = fr.cd_marital_status\n   AND demo_pairs.education_status = fr.cd_education_status\nJOIN addr_profit\n    ON addr_profit.ca_state = fr.ca_state\nJOIN reason r\n    ON r.r_reason_sk = fr.wr_reason_sk\nWHERE\n    ws.ws_sold_date_sk IN (SELECT d_date_sk FROM date_dim WHERE d_year = 1998)\n    AND ws.ws_sales_price BETWEEN demo_pairs.price_low AND demo_pairs.price_high\n    AND ws.ws_net_profit BETWEEN addr_profit.profit_low AND addr_profit.profit_high\n    AND EXISTS (\n        SELECT 1\n        FROM web_page wp\n        WHERE ws.ws_web_page_sk = wp.wp_web_page_sk\n    )\nGROUP BY r.r_reason_desc\nORDER BY\n    substr(r.r_reason_desc, 1, 20),\n    avg(ws.ws_quantity),\n    avg(fr.wr_refunded_cash),\n    avg(fr.wr_fee)\nLIMIT 100",
+  "reasoning_trace": "1. CARDINALITY-FIRST DEMOGRAPHIC FILTER \u2014 TARGET: `customer_demographics cd1`/`cd2` via `wr_refunded_cdemo_sk`/`wr_returning_cdemo_sk` \u2014 TRANSFORMATION: Pull the `cd2 = cd1` marital/education equalities out of the OR and require the `(cd1.cd_marital_status, cd1.cd_education_status)` pair to be one of the three allowed pairs before joining `web_sales`, shrinking the `web_returns` stream dramatically.\n\n2. EARLY ADDRESS STATE/COUNTRY FILTER \u2014 TARGET: `customer_address` join on `wr_refunded_addr_sk` \u2014 TRANSFORMATION: Apply `ca_country = 'United States'` and `ca_state IN ('NC','TX','IA','WI','WV','GA','OK','VA','KY')` to `customer_address` before the `web_sales` join, eliminating returns with non-qualifying refund addresses early.\n\n3. POINT-LOOKUP JOIN TO web_sales \u2014 TARGET: `web_sales` primary key `(ws_item_sk, ws_order_number)` \u2014 TRANSFORMATION: Drive from the now-small filtered `web_returns` stream and join each row to `web_sales` by primary-key lookup, applying `ws_sold_date_sk` / `d_year = 1998`, `ws_sales_price`, and `ws_net_profit` branch ranges on the looked-up sales row instead of scanning all 14.4M `web_sales`.\n\n4. DATE-DIM SUBQUERY/IN-LIST SUBSTITUTION \u2014 TARGET: `date_dim` join on `ws_sold_date_sk` \u2014 TRANSFORMATION: Replace the physical `date_dim` join with the 1998 `d_date_sk` set/subquery, so the year filter is applied directly to the `web_sales` access path and the 73k-row `date_dim` table is not hash-joined into the main plan.\n\n5. WEB_PAGE SEMI-JOIN COLLAPSE \u2014 TARGET: `web_page` join on `ws_web_page_sk` \u2014 TRANSFORMATION: Since no `web_page` column is selected or grouped, convert the inner join to an `EXISTS` check on `wp_web_page_sk`, keeping the small `web_page` table out of the fact-table join and aggregation path.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 419.51,
+      "optimized_ms": 2173.513,
+      "delta_ms": -1754.003,
+      "improvement_pct": -418.11,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 91808.57,
+      "optimized": 68641.63,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 705779.6,
+    "index_advisor_inference_ms": 34868.9,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 7057.0,
+    "total_inference_ms": 747705.5,
+    "writer_inference_ms": 2827301.3,
+    "writer_tokens_in": 14288,
+    "writer_tokens_out": 329148,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Execution time regression: 419.51ms \u2192 2173.513ms"
+  ],
+  "strategy": "1. CARDINALITY-FIRST DEMOGRAPHIC FILTER \u2014 TARGET: `customer_demographics cd1`/`cd2` via `wr_refunded_cdemo_sk`/`wr_returning_cdemo_sk` \u2014 TRANSFORMATION: Pull the `cd2 = cd1` marital/education equalities out of the OR and require the `(cd1.cd_marital_status, cd1.cd_education_status)` pair to be one of the three allowed pairs before joining `web_sales`, shrinking the `web_returns` stream dramatically.\n\n2. EARLY ADDRESS STATE/COUNTRY FILTER \u2014 TARGET: `customer_address` join on `wr_refunded_addr_sk` \u2014 TRANSFORMATION: Apply `ca_country = 'United States'` and `ca_state IN ('NC','TX','IA','WI','WV','GA','OK','VA','KY')` to `customer_address` before the `web_sales` join, eliminating returns with non-qualifying refund addresses early.\n\n3. POINT-LOOKUP JOIN TO web_sales \u2014 TARGET: `web_sales` primary key `(ws_item_sk, ws_order_number)` \u2014 TRANSFORMATION: Drive from the now-small filtered `web_returns` stream and join each row to `web_sales` by primary-key lookup, applying `ws_sold_date_sk` / `d_year = 1998`, `ws_sales_price`, and `ws_net_profit` branch ranges on the looked-up sales row instead of scanning all 14.4M `web_sales`.\n\n4. DATE-DIM SUBQUERY/IN-LIST SUBSTITUTION \u2014 TARGET: `date_dim` join on `ws_sold_date_sk` \u2014 TRANSFORMATION: Replace the physical `date_dim` join with the 1998 `d_date_sk` set/subquery, so the year filter is applied directly to the `web_sales` access path and the 73k-row `date_dim` table is not hash-joined into the main plan.\n\n5. WEB_PAGE SEMI-JOIN COLLAPSE \u2014 TARGET: `web_page` join on `ws_web_page_sk` \u2014 TRANSFORMATION: Since no `web_page` column is selected or grouped, convert the inner join to an `EXISTS` check on `wp_web_page_sk`, keeping the small `web_page` table out of the fact-table join and aggregation path.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe rewrite applies the strategy's main technique of using CTEs/materialization (demo_pairs, addr_profit, filtered_returns) to encode the demographic and address filters, and uses a semi-jo"
+  },
+  "raw_sql": "select substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) from web_sales, web_returns, web_page, customer_demographics cd1, customer_demographics cd2, customer_address, date_dim, reason where ws_web_page_sk = wp_web_page_sk and ws_item_sk = wr_item_sk and ws_order_number = wr_order_number and ws_sold_date_sk = d_date_sk and d_year = 1998 and cd1.cd_demo_sk = wr_refunded_cdemo_sk and cd2.cd_demo_sk = wr_returning_cdemo_sk and ca_address_sk = wr_refunded_addr_sk and r_reason_sk = wr_reason_sk and ( ( cd1.cd_marital_status = 'D' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Primary' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 100.00 and 150.00 ) or ( cd1.cd_marital_status = 'S' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'College' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 50.00 and 100.00 ) or ( cd1.cd_marital_status = 'U' and cd1.cd_marital_status = cd2.cd_marital_status and cd1.cd_education_status = 'Advanced Degree' and cd1.cd_education_status = cd2.cd_education_status and ws_sales_price between 150.00 and 200.00 ) ) and ( ( ca_country = 'United States' and ca_state in ('NC', 'TX', 'IA') and ws_net_profit between 100 and 200 ) or ( ca_country = 'United States' and ca_state in ('WI', 'WV', 'GA') and ws_net_profit between 150 and 300 ) or ( ca_country = 'United States' and ca_state in ('OK', 'VA', 'KY') and ws_net_profit between 50 and 250 ) ) group by r_reason_desc order by substr(r_reason_desc,1,20) ,avg(ws_quantity) ,avg(wr_refunded_cash) ,avg(wr_fee) limit 100"
+}

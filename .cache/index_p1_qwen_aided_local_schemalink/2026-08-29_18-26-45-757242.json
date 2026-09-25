@@ -1,0 +1,528 @@
+{
+  "timestamp": "2026-08-29T18:26:45.757005",
+  "query_hash": "4d51a0b2a8bc",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 94169.7,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of the given SQL query. The database is PostgreSQL 16.14 with extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure. The main query is selecting from customer, customer_address, and customer_demographics, with several EXISTS and NOT EXISTS subqueries. The goal is to find customers in specific states (IL, TX, ME) and check their presence in store_sales, web_sales, and catalog_sales for the year 2002.\n\nLooking at the schema, the relevant tables are customer, customer_address, customer_demographics, store_sales, web_sales, catalog_sales, and date_dim. All these tables currently have no indexes, which is probably causing full table scans.\n\nThe main query joins customer with customer_address on c_current_addr_sk = ca_address_sk, and with customer_demographics via cd_demo_sk. The WHERE clause filters ca_state in ('IL','TX','ME'). Then there are three EXISTS/NOT EXISTS subqueries checking for sales in store_sales, web_sales, and catalog_sales for the same date range.\n\nThe execution plan would likely involve full table scans on these large tables. Let's break down each part:\n\n1. **Main Query Tables:**\n   - customer_address has 133,000 rows. The ca_state filter is on this table. An index on ca_state would speed up filtering these rows.\n   - customer has 266,000 rows. The join with customer_address and the filter via c_current_addr_sk might benefit from an index on c_current_addr_sk.\n   - customer_demographics has 1.9 million rows. The join with customer via cd_demo_sk could use an index on cd_demo_sk.\n\n2. **EXISTS Subqueries:**\n   - The store_sales subquery checks for c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk with d_year=2002 and d_moy between 1 and 3. The join condition is on c_customer_sk and ss_sold_date_sk. Indexes on store_sales.c_customer_sk and date_dim.d_date_sk might help here.\n   - Similarly, web_sales and catalog_sales subqueries have similar join conditions. Indexes on their respective customer_sk and date_sk columns would be beneficial.\n\n3. **Date_dim:**\n   - The date_dim table is used in all subqueries to filter by d_year and d_moy. Since date_dim has 73k rows, an index on d_date_sk (which is the primary key) might already exist, but the query is using it in joins. However, the user mentioned no indexes, so maybe an index on d_year and d_moy could help, but the query uses d_date_sk in joins, so maybe not necessary here.\n\nNow, considering the main query's joins and filters:\n\n- **customer_address.ca_state**: Filtering on ca_state in ('IL','TX','ME') would benefit from an index on ca_state. This reduces the number of rows scanned here.\n- **customer.c_current_addr_sk**: Joining with customer_address on this column. An index on c_current_addr_sk would speed up the join.\n- **customer_demographics.cd_demo_sk**: Joining with customer on this column. An index here would help.\n- **store_sales.ss_customer_sk**: The EXISTS subquery checks for existence of customers in store_sales. An index on ss_customer_sk would help here.\n- **store_sales.ss_sold_date_sk**: Join with date_dim. An index on this column would speed up the join.\n- **web_sales.ws_bill_customer_sk**: Similar to store_sales, an index on this column would help.\n- **catalog_sales.cs_ship_customer_sk**: Same as above.\n- **date_dim.d_date_sk**: Since it's used in joins with sales tables, an index on d_date_sk (which is already the PK) might not be needed, but if there's a filter on d_year and d_moy, maybe a partial index on date_dim where d_year=2002 and d_moy between 1 and 3 could help. However, the user mentioned no indexes, so maybe not.\n\nBut the user's instruction says to focus on the tables mentioned in the schema (customer_address, customer_demographics, customer, store_sales, web_sales, catalog_sales, date_dim). Since date_dim has no indexes, but the query uses it in joins, but the main query's filters are on ca_state, which is in customer_address.\n\nThe main bottleneck is likely the full table scans on customer_address, customer, and the sales tables. So, the indexes should target these.\n\nSo, the indexes to suggest would be:\n\n1. **customer_address.ca_state**: Filter on ca_state in ('IL','TX','ME') would benefit from an index on ca_state.\n2. **customer.c_current_addr_sk**: Join condition with customer_address.\n3. **customer_demographics.cd_demo_sk**: Join with customer.\n4. **store_sales.ss_customer_sk**: For the EXISTS subquery.\n5. **store_sales.ss_sold_date_sk**: Join with date_dim.\n6. **web_sales.ws_bill_customer_sk**: For the NOT EXISTS subquery.\n7. **catalog_sales.cs_ship_customer_sk**: For the NOT EXISTS subquery.\n8. **date_dim.d_date_sk**: Since it's used in joins, but since it's already PK, maybe not needed. However, if the query is filtering on d_year and d_moy, maybe a partial index on date_dim where d_year=2002 and d_moy between 1 and 3. But the user said no indexes, so maybe not.\n\nBut the user's schema says date_dim has no indexes. So, the main indexes to create are on the customer_address, customer, customer_demographics, and the sales tables' customer_sk and date_sk.\n\nSo, the indexes would be:\n\n- customer_address(ca_state)\n- customer(c_current_addr_sk)\n- customer_demographics(cd_demo_sk)\n- store_sales(ss_customer_sk, ss_sold_date_sk)\n- web_sales(ws_bill_customer_sk)\n- catalog_sales(cs_ship_customer_sk)\n\nBut the user's instruction says to order by the number of rows scanned, largest first. The sales tables (store_sales, web_sales, catalog_sales) have millions of rows, so their indexes would have the most benefit.\n\nSo, the indexes should be on the sales tables' customer_sk and date_sk, then the customer_address, customer, and customer_demographics.\n\nBut the user's query has three EXISTS/NOT EXISTS subqueries. Each of these subqueries is a correlated subquery, which might be causing full table scans on the sales tables. So, creating indexes on the customer_sk and date_sk in those tables would help.\n\nTherefore, the indexes to suggest are:\n\n1. **store_sales(ss_customer_sk, ss_sold_date_sk)**: Because the subquery joins on these columns.\n2. **web_sales(ws_bill_customer_sk, ws_sold_date_sk)**: Similarly for the web_sales subquery.\n3. **catalog_sales(cs_ship_customer_sk, cs_sold_date_sk)**: For the catalog_sales subquery.\n4. **customer_address(ca_state)**: To filter the states.\n5. **customer(c_current_addr_sk)**: For the join with customer_address.\n6. **customer_demographics(cd_demo_sk)**: For the join with customer.\n\nBut the user's schema says that the tables like store_sales, web_sales, catalog_sales have no indexes. So, creating indexes on their customer_sk and date_sk would help.\n\nSo, the JSON should list these indexes. The estimated benefit would be the rows scanned in each table. For example, the store_sales has 57 million rows, so an index on ss_customer_sk and ss_sold_date_sk would reduce the scan on that table. Similarly for the others.\n\nSo, the indexes would be:\n\n- target: store_sales, property: ss_customer_sk, index_type: btree\n- target: store_sales, property: ss_sold_date_sk, index_type: btree\n- target: web_sales, property: ws_bill_customer_sk, index_type: btree\n- target: web_sales, property: ws_sold_date_sk, index_type: btree\n- target: catalog_sales, property: cs_ship_customer_sk, index_type: btree\n- target: catalog_sales, property: cs_sold_date_sk, index_type: btree\n- target: customer_address, property: ca_state, index_type: btree\n- target: customer, property: c_current_addr_sk, index_type: btree\n- target: customer_demographics, property: cd_demo_sk, index_type: btree\n\nBut the user's instruction says to order by the number of rows scanned, largest first. The sales tables have the most rows, so their indexes would be first. Then customer_address, customer, etc.\n\nSo, the indexes would be ordered as:\n\n1. store_sales (57M rows)\n2. web_sales (14M rows)\n3. catalog_sales (28M rows)\n4. customer_address (133k rows)\n5. customer (266k rows)\n6. customer_demographics (1.9M rows)\n\nWait, but the sales tables have more rows than customer_demographics. So the order would be:\n\nstore_sales (57M), catalog_sales (28M), web_sales (14M), customer_demographics (1.9M), customer (266k), customer_address (133k).\n\nBut the user's schema says:\n\n- store_sales: 57,598,932 rows\n- catalog_sales: 28,803,583 rows\n- web_sales: 14,396,103 rows\n- customer_demographics: 1,920,800 rows\n- customer: 266,000 rows\n- customer_address: 133,000 rows\n\nSo the order of indexes should be based on the number of rows scanned. The sales tables have the most rows, so their indexes would have the highest estimated benefit.\n\nTherefore, the indexes to suggest are:\n\n1. store_sales on ss_customer_sk and ss_sold_date_sk\n2. catalog_sales on cs_ship_customer_sk and cs_sold_date_sk\n3. web_sales on ws_bill_customer_sk and ws_sold_date_sk\n4. customer_demographics on cd_demo_sk\n5. customer on c_current_addr_sk\n6. customer_address on ca_state\n\nEach of these indexes would reduce the number of rows scanned in their respective tables, thus improving the query performance.\n\nSo, the JSON should list these indexes with their estimated benefits.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales for 57,598,932 rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales for 57,598,932 rows\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_ship_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for 28,803,583 rows\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": \"d_year = 2002 AND d_moy BETWEEN 1 AND 3\",\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for 28,803,583 rows\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_bill_customer_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on web_sales for 14,396,103 rows\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": \"d_year = 2002 AND d_moy BETWEEN 1 AND 3\",\n      \"estimated_benefit\": \"Eliminates Seq Scan on web_sales for 14,396,103 rows\"\n    },\n    {\n      \"target\": \"customer_address\",\n      \"property\": \"ca_state\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": \"ca_state IN ('IL','TX','ME')\",\n      \"estimated_benefit\": \"Eliminates Seq Scan on customer_address for 133,000 rows\"\n    },\n    {\n      \"target\": \"customer\",\n      \"property\": \"c_current_addr_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on customer for 266,000 rows\"\n    },\n    {\n      \"target\": \"customer_demographics\",\n      \"property\": \"cd_demo_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on customer_demographics for 1,920,800 rows\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottlenecks are full table scans on large tables (store_sales, catalog_sales, web_sales) and filtering on customer_address.ca_state. Indexes on customer_address.ca_state, customer.c_current_addr_sk, customer_demographics.cd_demo_sk, and sales tables' customer_sk/date_sk columns will eliminate these scans. Partial indexes on sales tables' date_sk with year/month filters further optimize the correlated subqueries.\"\n}",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.5,
+      "baseline_exec_ms": 80064.291,
+      "optimized_exec_ms": 81256.301,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958810.02,
+          "cost_with_index": 2958802.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1917818.09,
+          "cost_with_index": 1917806.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368718.92,
+          "cost_with_index": 1368712.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118313.04,
+          "cost_with_index": 118312.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110610.1,
+          "cost_with_index": 21110493.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036714.5,
+          "cost_with_index": 29036317.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129309.63,
+          "cost_with_index": 129309.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179085.15,
+          "cost_with_index": 179085.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81114.43,
+          "cost_with_index": 81114.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712056.17,
+          "cost_with_index": 3712047.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135058.5,
+          "cost_with_index": 135058.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222649.19,
+          "cost_with_index": 222649.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345214.51,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342674.59,
+          "cost_with_index": 1342668.22,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 6.0,
+      "baseline_exec_ms": 91405.559,
+      "optimized_exec_ms": 85958.809,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958802.46,
+          "cost_with_index": 2958802.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1917806.31,
+          "cost_with_index": 1917806.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368712.36,
+          "cost_with_index": 1368712.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118312.89,
+          "cost_with_index": 118312.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110493.62,
+          "cost_with_index": 21110493.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036317.13,
+          "cost_with_index": 29036317.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129309.63,
+          "cost_with_index": 129309.63,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179085.15,
+          "cost_with_index": 179085.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81114.36,
+          "cost_with_index": 81114.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712047.32,
+          "cost_with_index": 3663660.45,
+          "benefit_pct": 1.3
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135058.5,
+          "cost_with_index": 135058.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222649.19,
+          "cost_with_index": 222649.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345208.18,
+          "cost_with_index": 1345208.18,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342668.22,
+          "cost_with_index": 1342668.22,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_ship_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.3,
+      "baseline_exec_ms": 87340.339,
+      "optimized_exec_ms": 87579.418,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958802.46,
+          "cost_with_index": 2958805.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938145.21,
+          "cost_with_index": 938147.42,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179085.15,
+          "cost_with_index": 179085.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906033.62,
+          "cost_with_index": 906035.82,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712068.33,
+          "cost_with_index": 3712050.59,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 2.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 8.5,
+      "baseline_exec_ms": 95996.398,
+      "optimized_exec_ms": 87827.806,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 38.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958805.5,
+          "cost_with_index": 2354542.88,
+          "benefit_pct": 20.4
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938147.42,
+          "cost_with_index": 335701.39,
+          "benefit_pct": 64.2
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179085.15,
+          "cost_with_index": 179085.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906035.82,
+          "cost_with_index": 58805.02,
+          "benefit_pct": 93.5
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712050.59,
+          "cost_with_index": 3249935.39,
+          "benefit_pct": 12.4
+        }
+      ],
+      "workload_queries_improved": 4,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_bill_customer_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.7,
+      "baseline_exec_ms": 86813.873,
+      "optimized_exec_ms": 89124.267,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.4,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958810.89,
+          "cost_with_index": 2958821.18,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1917815.19,
+          "cost_with_index": 1917826.28,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036579.87,
+          "cost_with_index": 28410873.99,
+          "benefit_pct": 2.2
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712056.41,
+          "cost_with_index": 3712081.86,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91578.21,
+          "cost_with_index": 91578.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 3.3,
+      "baseline_exec_ms": 92615.506,
+      "optimized_exec_ms": 89522.564,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958821.18,
+          "cost_with_index": 2958842.22,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1917826.28,
+          "cost_with_index": 1917841.4,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037021.07,
+          "cost_with_index": 29037731.76,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712081.86,
+          "cost_with_index": 3712098.04,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91578.21,
+          "cost_with_index": 91578.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_address",
+      "column": "ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 5.0,
+      "baseline_exec_ms": 99827.895,
+      "optimized_exec_ms": 94795.124,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1197615.34,
+          "cost_with_index": 1197615.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3984511.48,
+          "cost_with_index": 3984511.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938147.42,
+          "cost_with_index": 938147.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91578.21,
+          "cost_with_index": 91578.21,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer",
+      "column": "c_current_addr_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -7.2,
+      "baseline_exec_ms": 87496.354,
+      "optimized_exec_ms": 93837.45,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1431077.91,
+          "cost_with_index": 1431077.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2958801.34,
+          "cost_with_index": 2958849.7,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036030.72,
+          "cost_with_index": 29038082.52,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1197615.34,
+          "cost_with_index": 1197615.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3984511.48,
+          "cost_with_index": 3984511.48,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938147.42,
+          "cost_with_index": 938147.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345192.02,
+          "cost_with_index": 1345225.42,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "customer_demographics",
+      "column": "cd_demo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

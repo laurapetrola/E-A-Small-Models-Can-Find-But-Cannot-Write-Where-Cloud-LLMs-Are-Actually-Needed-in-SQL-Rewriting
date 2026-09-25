@@ -1,0 +1,163 @@
+{
+  "timestamp": "2026-09-08T20:45:14.407836",
+  "query_hash": "0ce6157463a0",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 236380.3,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes.\n\nFirst, let's analyze the query structure and the execution plan (which we don't have, but we can infer from the query).\n\nThe query has two CTEs: `web_daily` and `store_daily`. Each of these CTEs does a join between `web_sales` and `date_dim` (or `store_sales` and `date_dim`) and then groups by item_sk and date.\n\nThen, the `all_dates` CTE unions the two daily sales, and the `combined` CTE does left joins to the two daily CTEs. Finally, the cumulative sums are computed and then a final filter is applied.\n\nThe main bottleneck is likely the two CTEs that are doing joins and aggregations on large tables: `web_sales` and `store_sales`.\n\nLooking at the two CTEs:\n\n1. `web_daily`:\n   - Table: `web_sales`\n   - Join condition: `ws.ws_sold_date_sk = dd.d_date_sk`\n   - Filter: `dd.d_month_seq` between 1212 and 1212+11 (which is 1223) and `ws.ws_item_sk` is not null.\n\n2. `store_daily`:\n   - Table: `store_sales`\n   - Join condition: `ss.ss_sold_date_sk = dd.d_date_sk`\n   - Filter: `dd.d_month_seq` between 1212 and 1223 and `ss.ss_item_sk` is not null.\n\nSince the `date_dim` table is small (73,049 rows) and the `d_month_seq` filter is a range, the main cost is likely the join and aggregation on the large tables `web_sales` and `store_sales`.\n\nIn the absence of indexes, the planner might be doing a sequential scan on `web_sales` and `store_sales` and then joining with `date_dim` via a nested loop or hash join, which is expensive.\n\nWe are to suggest indexes that would help. We note that the two CTEs are doing:\n\n- For `web_daily`: \n   - We are filtering by `dd.d_month_seq` (which is an attribute of `date_dim`) and then joining `web_sales` on `ws_sold_date_sk` (which is a foreign key to `date_dim.d_date_sk`).\n\nBut note: the `date_dim` table is small, so the planner might do a sequential scan on `date_dim` to get the range of `d_month_seq` and then use that to filter the `web_sales` table. However, without an index on `web_sales.ws_sold_date_sk`, the join might be expensive.\n\nAlternatively, the planner might do a sequential scan on `web_sales` and then join with `date_dim` using a nested loop, which is even worse.\n\nSimilarly for `store_sales`.\n\nTherefore, we should consider indexes on the `web_sales.ws_sold_date_sk` and `store_sales.ss_sold_date_sk` to speed up the joins.\n\nBut note: the query also uses `ws_item_sk` and `ss_item_sk` in the filter and grouping. However, the filter on `ws_item_sk` is `IS NOT NULL`, which is a very low selectivity condition (since most rows have a non-null item_sk). So an index on `ws_item_sk` might not be very helpful.\n\nHowever, the grouping by `ws_item_sk` and `dd.d_date` might be helped by an index on `ws_item_sk` and `ws_sold_date_sk`? But note that the join condition is on `ws_sold_date_sk` and then grouping by `ws_item_sk` and `dd.d_date`. We are already planning to index `ws_sold_date_sk` to help the join.\n\nBut note: the query is also doing a cumulative sum over the partition by `item_sk` and ordered by `d_date`. This requires the data to be sorted by `item_sk` and `d_date`. Without an index, the planner might have to sort the entire result set, which is expensive.\n\nHowever, the CTEs `web_daily` and `store_daily` are grouping by `item_sk` and `d_date`. We can consider creating an index on `web_sales` and `store_sales` that is composite and includes `ws_sold_date_sk` and `ws_item_sk` (or `ss_item_sk`). But note that the join condition is on `ws_sold_date_sk` and then grouping by `ws_item_sk` and `d_date` (which comes from `date_dim`). \n\nAlternatively, we can consider an index on `date_dim` for the `d_month_seq` to help the filter? But `date_dim` is small, so it might not be necessary.\n\nLet's break down the two CTEs:\n\nFor `web_daily`:\n\nWe have:\n  SELECT ws.ws_item_sk, dd.d_date, SUM(ws.ws_sales_price)\n  FROM web_sales ws\n  JOIN date_dim dd ON ws.ws_sold_date_sk = dd.d_date_sk\n  WHERE dd.d_month_seq BETWEEN 1212 AND 1223\n    AND ws.ws_item_sk IS NOT NULL\n  GROUP BY ws.ws_item_sk, dd.d_date\n\nWithout an index on `web_sales.ws_sold_date_sk`, the planner might do a sequential scan on `web_sales` and then join with `date_dim` via a nested loop, which is very expensive because `web_sales` has 14 million rows.\n\nWith an index on `web_sales.ws_sold_date_sk`, the planner can use a hash join or a merge join that is more efficient.\n\nSimilarly for `store_sales`.\n\nSo the primary index candidates are on `web_sales.ws_sold_date_sk` and `store_sales.ss_sold_date_sk`.\n\nBut note: the query also uses `ws_item_sk` and `ss_item_sk` in the grouping. We can also consider an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk` to help the grouping? However, the grouping is by `ws_item_sk` and `dd.d_date` (which is from the join). The join condition is on `ws_sold_date_sk` and `dd.d_date_sk`. So the index on `ws_sold_date_sk` should help the join, and then the grouping by `ws_item_sk` might be done by the planner by using an index on `ws_item_sk` if it exists, but we don't have one.\n\nBut note: the query is filtering by `dd.d_month_seq` (which is in `date_dim`). Since `date_dim` is small, we can also consider an index on `date_dim` for `d_month_seq`? But again, it's small.\n\nAlternatively, we can consider an index on `web_sales` for the columns used in the join and the grouping. But note that the join condition is on `ws_sold_date_sk` and the grouping is by `ws_item_sk` and `dd.d_date` (which is from the join). So the index on `ws_sold_date_sk` is the most important.\n\nNow, let's consider the cumulative part. The cumulative part is doing a window function over the `combined` CTE. The `combined` CTE is built from the two daily CTEs. The window function requires the data to be sorted by `item_sk` and `d_date`. Without an index, the planner might have to sort the entire result set, which is the union of two large tables (each with 14 million and 57 million rows). But note that the two CTEs are already grouped by `item_sk` and `d_date`, so the `combined` CTE might have fewer rows? Not necessarily, because the `all_dates` CTE is the union of two sets of rows (each set being the distinct `item_sk` and `d_date` from the daily sales). \n\nBut note: the `all_dates` CTE is built by:\n\n  SELECT item_sk, d_date FROM web_daily\n  UNION\n  SELECT item_sk, d_date FROM store_daily\n\nThis removes duplicates, so the `all_dates` CTE has at most one row per (item_sk, d_date). Then the `combined` CTE does two left joins for each row in `all_dates`. So the number of rows in `combined` is the same as `all_dates`, which is at most the number of distinct (item_sk, d_date) pairs in the two daily CTEs. This might be a manageable number, but the window function then requires a sort by `item_sk` and `d_date` for each item_sk separately.\n\nWe can help the window function by having an index on `item_sk` and `d_date` in the `combined` CTE? But the `combined` CTE is built from the two daily CTEs, which are already grouped. However, the `combined` CTE does not have an index, so the planner might have to do a sort for each partition (item_sk). \n\nBut note: the two CTEs `web_daily` and `store_daily` are already grouped, so the `all_dates` CTE is the set of distinct (item_sk, d_date) from both. Then the `combined` CTE is doing two left joins. The window function then requires the data to be sorted by `d_date` for each `item_sk`. \n\nWe can consider creating an index on `web_sales` and `store_sales` that is composite and includes `ws_sold_date_sk` and `ws_item_sk` (or `ss_item_sk`). But note that the `combined` CTE is built from the two daily CTEs, which are already grouped. The index on the base tables might help the CTEs to be built more efficiently, but the window function might still require a sort.\n\nAlternatively, we can consider an index on the `combined` CTE? But we cannot index CTEs.\n\nGiven the above, the primary bottlenecks are the two CTEs that are doing joins and aggregations on the large tables. Therefore, we should create indexes on `web_sales.ws_sold_date_sk` and `store_sales.ss_sold_date_sk`.\n\nBut note: the query also uses `ws_item_sk` and `ss_item_sk` in the grouping. We can also consider an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk` to help the grouping? However, the grouping is by `ws_item_sk` and `dd.d_date` (which is from the join). The join condition is on `ws_sold_date_sk` and `dd.d_date_sk`. So the index on `ws_sold_date_sk` is the most important.\n\nHowever, the planner might use an index on `ws_item_sk` to avoid a full scan for the grouping? But note that the grouping is done after the join, so the index on `ws_sold_date_sk` is more important.\n\nBut note: the query is filtering by `dd.d_month_seq` (which is in `date_dim`). We can also consider an index on `date_dim` for `d_month_seq`? But `date_dim` is small, so it might not be necessary.\n\nNow, let's consider the possibility of a partial index. The condition `dd.d_month_seq BETWEEN 1212 AND 1223` is a range condition. We can create a partial index on `web_sales` and `store_sales` for the rows that fall in the `d_month_seq` range? But note that the query is filtering by `d_month_seq` in the CTEs, so the planner might push the filter to the join. However, without an index, the planner might not be able to use the filter effectively.\n\nAlternatively, we can create an index on `web_sales.ws_sold_date_sk` and then use the `d_month_seq` from `date_dim` to filter. But note that the join condition is on `ws_sold_date_sk` and `dd.d_date_sk`, so the `d_month_seq` is from `date_dim`. We cannot index `date_dim` because it is small.\n\nGiven the above, we propose:\n\n1. Index on `web_sales.ws_sold_date_sk` to help the join with `date_dim`.\n2. Index on `store_sales.ss_sold_date_sk` to help the join with `date_dim`.\n\nBut note: the query also uses `ws_item_sk` and `ss_item_sk` in the grouping. We can also consider an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk` to help the grouping? However, the grouping is by `ws_item_sk` and `dd.d_date` (which is from the join). The join condition is on `ws_sold_date_sk` and `dd.d_date_sk`. So the index on `ws_sold_date_sk` is the most important.\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. We can consider an index on `web_sales` and `store_sales` that is composite and includes `ws_item_sk` and `ws_sold_date_sk` to help the window function? But the window function is applied after the CTEs, so the CTEs must be built first.\n\nAlternatively, we can consider an index on `web_sales` for the columns used in the join and the grouping. But note that the query is filtering by `dd.d_month_seq` (which is in `date_dim`) and then grouping by `ws_item_sk` and `dd.d_date`. We can create an index on `web_sales` that is composite and includes `ws_sold_date_sk` and `ws_item_sk`? This might help the join and then the grouping.\n\nBut note: the planner might use the index on `ws_sold_date_sk` to join with `date_dim` and then use an index on `ws_item_sk` to group. However, without an index on `ws_item_sk`, the grouping might be slow.\n\nBut note: the `web_sales` table has 14 million rows, and the `store_sales` table has 57 million rows. The grouping is by `item_sk` and `d_date`. We can create an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk`? But note that the join condition is on `ws_sold_date_sk` and then grouping by `ws_item_sk` and `d_date`. The index on `ws_sold_date_sk` is already being considered.\n\nAlternatively, we can create a composite index on `web_sales` for `(ws_sold_date_sk, ws_item_sk)` to help the join and then the grouping. Similarly for `store_sales`.\n\nBut note: the query is also filtering by `dd.d_month_seq` (which is in `date_dim`). We cannot index `date_dim` because it is small.\n\nGiven the above, we propose two indexes:\n\n1. On `web_sales` for `(ws_sold_date_sk, ws_item_sk)`\n2. On `store_sales` for `(ss_sold_date_sk, ss_item_sk)`\n\nBut wait: the query is filtering by `dd.d_month_seq` (which is in `date_dim`). We can also consider an index on `web_sales` for `ws_sold_date_sk` and then use the `d_month_seq` from `date_dim` to filter. But note that the join condition is on `ws_sold_date_sk` and `dd.d_date_sk`. The `d_month_seq` is a derived attribute from `dd.d_date_sk`. So we cannot index `d_month_seq` because it is not a column in `web_sales`.\n\nAlternatively, we can create an index on `web_sales` for `ws_sold_date_sk` and then use the `d_month_seq` from `date_dim` to filter. But the planner might not be able to use the index on `ws_sold_date_sk` to push the filter to the join? Actually, the planner can use the index on `ws_sold_date_sk` to find the rows that match the `date_dim` rows with `d_month_seq` in the range. But note that the join condition is an equality, so the planner might use a hash join or a merge join.\n\nBut note: the `date_dim` table is small, so the planner might do a sequential scan on `date_dim` to get the `d_date_sk` for the `d_month_seq` range, and then use that to filter `web_sales` via a nested loop. Without an index on `web_sales.ws_sold_date_sk`, the nested loop would be very expensive.\n\nTherefore, the index on `web_sales.ws_sold_date_sk` is crucial.\n\nNow, let's consider the possibility of a partial index. The condition `dd.d_month_seq BETWEEN 1212 AND 1223` is a range condition. We can create a partial index on `web_sales` for the rows that have `ws_sold_date_sk` corresponding to the `d_month_seq` range? But note that the `d_month_seq` is in `date_dim`, and we don't have a direct way to index the `d_month_seq` in `web_sales`. \n\nAlternatively, we can create a function-based index on `web_sales` for `d_month_seq`? But that would be expensive and not necessary because the `date_dim` table is small.\n\nGiven the above, we stick to the two composite indexes:\n\n1. On `web_sales`: index on `(ws_sold_date_sk, ws_item_sk)`\n2. On `store_sales`: index on `(ss_sold_date_sk, ss_item_sk)`\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. The `combined` CTE is built from the two daily CTEs, which are built by grouping. The index on `web_sales.ws_sold_date_sk` and `ws_item_sk` might help the grouping by allowing the planner to use an index scan for the grouping? But note that the grouping is by `ws_item_sk` and `dd.d_date` (which is from the join). The join condition is on `ws_sold_date_sk` and `dd.d_date_sk`. So the index on `ws_sold_date_sk` is the most important.\n\nBut note: the query is also doing a left join in the `combined` CTE. We can also consider an index on `web_sales` for `ws_item_sk` to help the left join? But the left join is on `ad.item_sk = w.item_sk` and `ad.d_date = w.d_date`. The `w.item_sk` and `w.d_date` come from the `web_daily` CTE, which is built by grouping. So the `web_daily` CTE has one row per (item_sk, d_date) for the web sales. The left join in the `combined` CTE is then matching the `all_dates` CTE (which has one row per (item_sk, d_date)) with the `web_daily` CTE. \n\nWithout an index on `web_sales`, the planner might have to do a sequential scan on `web_daily` for each row in `all_dates`. But `web_daily` is built from `web_sales`, so it might be a materialized subquery. \n\nAlternatively, we can consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the left join? But note that the left join condition is on `item_sk` and `d_date`. The `d_date` is from `date_dim`, which is small. So the main cost is the join on `item_sk` and `d_date`. \n\nBut note: the `web_daily` CTE is built by grouping, so it has one row per (item_sk, d_date). The `combined` CTE then does a left join on `item_sk` and `d_date`. We can create an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the planner find the rows in `web_daily`? But `web_daily` is a CTE, so it is not a table.\n\nGiven the complexity, we focus on the two CTEs that are the most expensive: `web_daily` and `store_daily`. We propose two indexes:\n\n1. On `web_sales`: index on `(ws_sold_date_sk, ws_item_sk)`\n2. On `store_sales`: index on `(ss_sold_date_sk, ss_item_sk)`\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. We can also consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the window function? But the window function is applied after the CTEs, so the CTEs must be built first.\n\nAlternatively, we can consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the grouping and the window function. But note that the window function requires the data to be sorted by `item_sk` and `d_date`. We can create an index on `web_sales` for `(ws_item_sk, ws_sold_date_sk)` to help the sort? But the `ws_sold_date_sk` is the join column, and the `d_date` is from `date_dim`. \n\nBut note: the `combined` CTE is built from the two daily CTEs, which are grouped by `item_sk` and `d_date`. The `d_date` is from `date_dim`, so we cannot index it directly in `web_sales`. \n\nGiven the above, we stick to the two composite indexes on `(ws_sold_date_sk, ws_item_sk)` for both tables.\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. We can also consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the window function? But the window function is applied after the CTEs, so the CTEs must be built first.\n\nAlternatively, we can consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the grouping and then the window function. But note that the window function requires the data to be sorted by `item_sk` and `d_date`. We can create an index on `web_sales` for `(ws_item_sk, ws_sold_date_sk)` to help the sort? But the `ws_sold_date_sk` is the join column, and the `d_date` is from `date_dim`. \n\nBut note: the `d_date` is the same as the `date_dim` row that matches `ws_sold_date_sk`. So if we have an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk`, then when we group by `ws_item_sk` and `ws_sold_date_sk`, we can get the `d_date` from `date_dim` via the join. But the grouping is done after the join, so the index on `ws_sold_date_sk` is the most important.\n\nGiven the above, we propose two indexes:\n\n1. On `web_sales`: index on `(ws_sold_date_sk, ws_item_sk)`\n2. On `store_sales`: index on `(ss_sold_date_sk, ss_item_sk)`\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. We can also consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the window function? But the window function is applied after the CTEs, so the CTEs must be built first.\n\nAlternatively, we can consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the grouping and then the window function. But note that the window function requires the data to be sorted by `item_sk` and `d_date`. We can create an index on `web_sales` for `(ws_item_sk, ws_sold_date_sk)` to help the sort? But the `ws_sold_date` is the join column, and the `d_date` is from `date_dim`. \n\nBut note: the `d_date` is the same as the `date_dim` row that matches `ws_sold_date_sk`. So if we have an index on `web_sales.ws_item_sk` and `web_sales.ws_sold_date_sk`, then when we group by `ws_item_sk` and `ws_sold_date_sk`, we can get the `d_date` from `date_dim` via the join. But the grouping is done after the join, so the index on `ws_sold_date_sk` is the most important.\n\nGiven the above, we stick to the two composite indexes.\n\nBut note: the query is also doing a cumulative sum by `item_sk` and `d_date`. We can also consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the window function? But the window function is applied after the CTEs, so the CTEs must be built first.\n\nAlternatively, we can consider an index on `web_sales` for `ws_item_sk` and `ws_sold_date_sk` to help the grouping and then the window function. But note that the window function requires the data to be sorted by `item_sk` and `d_date`. We c",
+  "recommendations": [
+    {
+      "table": "web_sales",
+      "column": "ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.6,
+      "baseline_exec_ms": 18036.862,
+      "optimized_exec_ms": 17215.153,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2957911.42,
+          "cost_with_index": 2957903.79,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 783173.75,
+          "cost_with_index": 783171.59,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036641.25,
+          "cost_with_index": 29036215.38,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712194.55,
+          "cost_with_index": 3712173.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91458.33,
+          "cost_with_index": 91458.33,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 5.7,
+      "baseline_exec_ms": 16833.041,
+      "optimized_exec_ms": 15875.795,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2957903.79,
+          "cost_with_index": 2957920.04,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1370270.1,
+          "cost_with_index": 1370283.92,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 783171.59,
+          "cost_with_index": 783196.37,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118131.84,
+          "cost_with_index": 118132.17,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110075.84,
+          "cost_with_index": 21110319.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29036215.38,
+          "cost_with_index": 29037021.07,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129740.26,
+          "cost_with_index": 129740.26,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179251.54,
+          "cost_with_index": 179251.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81540.95,
+          "cost_with_index": 81541.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712173.5,
+          "cost_with_index": 3657334.39,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.04,
+          "cost_with_index": 135055.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 223509.08,
+          "cost_with_index": 223509.09,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345094.72,
+          "cost_with_index": 1345116.49,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342642.5,
+          "cost_with_index": 1342655.82,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

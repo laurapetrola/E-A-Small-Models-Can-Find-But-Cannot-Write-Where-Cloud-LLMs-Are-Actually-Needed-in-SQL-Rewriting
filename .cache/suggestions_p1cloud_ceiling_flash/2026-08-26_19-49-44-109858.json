@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-08-26T19:49:44.109824",
+  "query_hash": "f6be26408cf5",
+  "suggestions": [
+    "materialize filter subqueries into CTEs",
+    "use lateral join for aggregated subquery"
+  ],
+  "improvement_pct": 62.67,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 117465.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH cd_demo AS MATERIALIZED (\n    SELECT cd_demo_sk\n    FROM customer_demographics\n    WHERE cd_gender = 'F'\n      AND cd_marital_status = 'W'\n      AND cd_education_status = 'College'\n),\nd_date AS MATERIALIZED (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2001\n),\npromo AS MATERIALIZED (\n    SELECT p_promo_sk\n    FROM promotion\n    WHERE p_channel_email = 'N' OR p_channel_event = 'N'\n)\nSELECT item.i_item_id,\n       SUM(f.qty_avg * f.qty_cnt) / NULLIF(SUM(f.qty_cnt), 0) AS agg1,\n       SUM(f.list_avg * f.list_cnt) / NULLIF(SUM(f.list_cnt), 0) AS agg2,\n       SUM(f.coupon_avg * f.coupon_cnt) / NULLIF(SUM(f.coupon_cnt), 0) AS agg3,\n       SUM(f.sales_avg * f.sales_cnt) / NULLIF(SUM(f.sales_cnt), 0) AS agg4\nFROM (SELECT i_item_sk, i_item_id\n      FROM item\n      ORDER BY i_item_id) AS item\nJOIN LATERAL (\n    SELECT AVG(ss_quantity) AS qty_avg,\n           COUNT(ss_quantity) AS qty_cnt,\n           AVG(ss_list_price) AS list_avg,\n           COUNT(ss_list_price) AS list_cnt,\n           AVG(ss_coupon_amt) AS coupon_avg,\n           COUNT(ss_coupon_amt) AS coupon_cnt,\n           AVG(ss_sales_price) AS sales_avg,\n           COUNT(ss_sales_price) AS sales_cnt\n    FROM store_sales\n    WHERE ss_item_sk = item.i_item_sk\n      AND ss_cdemo_sk IN (SELECT cd_demo_sk FROM cd_demo)\n      AND ss_sold_date_sk IN (SELECT d_date_sk FROM d_date)\n      AND ss_promo_sk IN (SELECT p_promo_sk FROM promo)\n    HAVING COUNT(*) > 0\n) AS f ON true\nGROUP BY item.i_item_id\nORDER BY item.i_item_id\nLIMIT 100",
+  "reached_sql": "WITH cd_demo AS MATERIALIZED (\n    SELECT cd_demo_sk\n    FROM customer_demographics\n    WHERE cd_gender = 'F'\n      AND cd_marital_status = 'W'\n      AND cd_education_status = 'College'\n),\nd_date AS MATERIALIZED (\n    SELECT d_date_sk\n    FROM date_dim\n    WHERE d_year = 2001\n),\npromo AS MATERIALIZED (\n    SELECT p_promo_sk\n    FROM promotion\n    WHERE p_channel_email = 'N' OR p_channel_event = 'N'\n)\nSELECT item.i_item_id,\n       SUM(f.qty_avg * f.qty_cnt) / NULLIF(SUM(f.qty_cnt), 0) AS agg1,\n       SUM(f.list_avg * f.list_cnt) / NULLIF(SUM(f.list_cnt), 0) AS agg2,\n       SUM(f.coupon_avg * f.coupon_cnt) / NULLIF(SUM(f.coupon_cnt), 0) AS agg3,\n       SUM(f.sales_avg * f.sales_cnt) / NULLIF(SUM(f.sales_cnt), 0) AS agg4\nFROM (SELECT i_item_sk, i_item_id\n      FROM item\n      ORDER BY i_item_id) AS item\nJOIN LATERAL (\n    SELECT AVG(ss_quantity) AS qty_avg,\n           COUNT(ss_quantity) AS qty_cnt,\n           AVG(ss_list_price) AS list_avg,\n           COUNT(ss_list_price) AS list_cnt,\n           AVG(ss_coupon_amt) AS coupon_avg,\n           COUNT(ss_coupon_amt) AS coupon_cnt,\n           AVG(ss_sales_price) AS sales_avg,\n           COUNT(ss_sales_price) AS sales_cnt\n    FROM store_sales\n    WHERE ss_item_sk = item.i_item_sk\n      AND ss_cdemo_sk IN (SELECT cd_demo_sk FROM cd_demo)\n      AND ss_sold_date_sk IN (SELECT d_date_sk FROM d_date)\n      AND ss_promo_sk IN (SELECT p_promo_sk FROM promo)\n    HAVING COUNT(*) > 0\n) AS f ON true\nGROUP BY item.i_item_id\nORDER BY item.i_item_id\nLIMIT 100",
+  "reasoning_trace": "1. TOP-N PUSHDOWN \u2014 TARGET: `ORDER BY i_item_id LIMIT 100` over all item groups \u2014 TRANSFORMATION: rewrite the grouped aggregation as an ordered nested-loop aggregation driven by `item` sorted on `i_item_id`, aggregate only `store_sales` rows for each item until 100 IDs are emitted, and stop before scanning/aggregating any later item groups.\n\n2. COVERING FACT INDEX \u2014 TARGET: `store_sales` on `ss_item_sk`, `ss_sold_date_sk`, `ss_cdemo_sk`, `ss_promo_sk`, plus the four measure columns \u2014 TRANSFORMATION: add a composite covering index on those FK/filter/measure columns so each per-item lookup is an index-only scan and does not heap-scan the 57M-row fact table.\n\n3. DIMENSION FILTER MATERIALIZATION \u2014 TARGET: `customer_demographics` (`cd_gender`, `cd_marital_status`, `cd_education_status`), `date_dim` (`d_year`), `promotion` (`p_channel_email`, `p_channel_event`) \u2014 TRANSFORMATION: precompute the matching `cd_demo_sk`, `d_date_sk`, and `p_promo_sk` sets once before the per-item loop, then use them as constant filter sets for every `store_sales` lookup.\n\n4. SEMI-JOIN REPLACEMENT \u2014 TARGET: the joins `ss_cdemo_sk=cd_demo_sk`, `ss_sold_date_sk=d_date_sk`, `ss_promo_sk=p_promo_sk` \u2014 TRANSFORMATION: convert these dimension joins into semi-joins/IN predicates on the precomputed key sets, because no output column comes from `customer_demographics`, `date_dim`, or `promotion`.\n\n5. INTEGER GROUP KEY \u2014 TARGET: `GROUP BY i_item_id` over `store_sales` rows \u2014 TRANSFORMATION: aggregate the filtered fact rows by integer `ss_item_sk` first, then resolve `i_item_id` only for the final 100 returned rows; this avoids grouping and sorting the heavy fact aggregation by the 16-byte `i_item_id`.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 5806.99,
+      "optimized_ms": 2167.56,
+      "delta_ms": 3639.43,
+      "improvement_pct": 62.67,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 118656.63,
+      "optimized": 1207405.08,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 113205.1,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4260.2,
+    "total_inference_ms": 117465.3,
+    "writer_inference_ms": 276998.7,
+    "writer_tokens_in": 986,
+    "writer_tokens_out": 29338,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. TOP-N PUSHDOWN \u2014 TARGET: `ORDER BY i_item_id LIMIT 100` over all item groups \u2014 TRANSFORMATION: rewrite the grouped aggregation as an ordered nested-loop aggregation driven by `item` sorted on `i_item_id`, aggregate only `store_sales` rows for each item until 100 IDs are emitted, and stop before scanning/aggregating any later item groups.\n\n2. COVERING FACT INDEX \u2014 TARGET: `store_sales` on `ss_item_sk`, `ss_sold_date_sk`, `ss_cdemo_sk`, `ss_promo_sk`, plus the four measure columns \u2014 TRANSFORMATION: add a composite covering index on those FK/filter/measure columns so each per-item lookup is an index-only scan and does not heap-scan the 57M-row fact table.\n\n3. DIMENSION FILTER MATERIALIZATION \u2014 TARGET: `customer_demographics` (`cd_gender`, `cd_marital_status`, `cd_education_status`), `date_dim` (`d_year`), `promotion` (`p_channel_email`, `p_channel_event`) \u2014 TRANSFORMATION: precompute the matching `cd_demo_sk`, `d_date_sk`, and `p_promo_sk` sets once before the per-item loop, then use them as constant filter sets for every `store_sales` lookup.\n\n4. SEMI-JOIN REPLACEMENT \u2014 TARGET: the joins `ss_cdemo_sk=cd_demo_sk`, `ss_sold_date_sk=d_date_sk`, `ss_promo_sk=p_promo_sk` \u2014 TRANSFORMATION: convert these dimension joins into semi-joins/IN predicates on the precomputed key sets, because no output column comes from `customer_demographics`, `date_dim`, or `promotion`.\n\n5. INTEGER GROUP KEY \u2014 TARGET: `GROUP BY i_item_id` over `store_sales` rows \u2014 TRANSFORMATION: aggregate the filtered fact rows by integer `ss_item_sk` first, then resolve `i_item_id` only for the final 100 returned rows; this avoids grouping and sorting the heavy fact aggregation by the 16-byte `i_item_id`.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was DIMENSION FILTER MATERIALIZATION (precompute filter sets for joins), and the rewrite materializes the filter sets for `cd_demo_sk`, `d_date_sk`, and `p_pro"
+  },
+  "raw_sql": "select i_item_id, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 from store_sales, customer_demographics, date_dim, item, promotion where ss_sold_date_sk = d_date_sk and ss_item_sk = i_item_sk and ss_cdemo_sk = cd_demo_sk and ss_promo_sk = p_promo_sk and cd_gender = 'F' and cd_marital_status = 'W' and cd_education_status = 'College' and (p_channel_email = 'N' or p_channel_event = 'N') and d_year = 2001 group by i_item_id order by i_item_id limit 100"
+}

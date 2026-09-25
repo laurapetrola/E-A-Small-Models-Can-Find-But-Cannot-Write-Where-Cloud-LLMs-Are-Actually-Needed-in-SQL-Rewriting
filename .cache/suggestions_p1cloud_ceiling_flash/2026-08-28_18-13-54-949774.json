@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-08-28T18:13:54.949735",
+  "query_hash": "5346a55b96e8",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "convert IN subquery to a semi-join",
+    "materialize CTEs to enable join optimizations",
+    "convert IN subquery to semi-join with CTE"
+  ],
+  "improvement_pct": -150.29,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 565306.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH store_keys AS MATERIALIZED (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_store_name = 'ese'\n),\ntime_keys AS MATERIALIZED (\n    SELECT t_time_sk\n    FROM time_dim\n    WHERE t_hour = 8 AND t_minute >= 30\n),\nhousehold_keys AS MATERIALIZED (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE hd_dep_count = 0\n)\nSELECT count(*)\nFROM store_sales ss\nWHERE EXISTS (SELECT 1 FROM store_keys sk WHERE ss.ss_store_sk = sk.s_store_sk)\n  AND EXISTS (SELECT 1 FROM time_keys tk WHERE ss.ss_sold_time_sk = tk.t_time_sk)\n  AND EXISTS (SELECT 1 FROM household_keys hk WHERE ss.ss_hdemo_sk = hk.hd_demo_sk)\nORDER BY count(*)\nLIMIT 100",
+  "reasoning_trace": "1. COVERING COMPOSITE INDEX \u2014 TARGET: `store_sales(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: create a covering index on those three fact FK columns, ordered store-equality first and time as a range, so the filtered dimension key sets become one bounded index-only scan and `count(*)` is served without touching the 57.6M-row heap.\n\n2. DIMENSION FILTER PRE-MATERIALIZATION \u2014 TARGET: `store.s_store_name='ese'`, `time_dim.t_hour=8/t_minute>=30`, `household_demographics.hd_dep_count=0` \u2014 TRANSFORMATION: evaluate these filters on the tiny dimension tables first and materialize only the matching `s_store_sk`, `t_time_sk` range, and `hd_demo_sk` set to feed the store_sales index scan.\n\n3. JOIN-TO-FILTER REWRITE \u2014 TARGET: the three FK joins `store_sales\u2192store`, `store_sales\u2192time_dim`, `store_sales\u2192household_demographics` \u2014 TRANSFORMATION: rewrite the count as a filtered count on `store_sales` with `IN`/`EXISTS` conditions on the precomputed dimension key sets, making the one-to-one FK-to-PK relationship explicit and removing the need to join the fact table to all three dimensions at once.\n\n4. EXTENDED STATISTICS \u2014 TARGET: `store_sales` columns `(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: create multi-column statistics on this FK triple so the planner reliably estimates the combined selectivity of the three filters and chooses the range/index-only access path instead of a sequential scan of `store_sales`.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2323.896,
+      "optimized_ms": 5816.364,
+      "delta_ms": -3492.468,
+      "improvement_pct": -150.29,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1342695.48,
+      "optimized": 1808361.47,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 540282.6,
+    "index_advisor_inference_ms": 21099.3,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 3924.9,
+    "total_inference_ms": 565306.8,
+    "writer_inference_ms": 794597.8,
+    "writer_tokens_in": 5485,
+    "writer_tokens_out": 81787,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=1342695.48 \u2192 optimized=1808361.47 (+34.7%)",
+    "Execution time regression: 2323.896ms \u2192 5816.364ms"
+  ],
+  "strategy": "1. COVERING COMPOSITE INDEX \u2014 TARGET: `store_sales(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: create a covering index on those three fact FK columns, ordered store-equality first and time as a range, so the filtered dimension key sets become one bounded index-only scan and `count(*)` is served without touching the 57.6M-row heap.\n\n2. DIMENSION FILTER PRE-MATERIALIZATION \u2014 TARGET: `store.s_store_name='ese'`, `time_dim.t_hour=8/t_minute>=30`, `household_demographics.hd_dep_count=0` \u2014 TRANSFORMATION: evaluate these filters on the tiny dimension tables first and materialize only the matching `s_store_sk`, `t_time_sk` range, and `hd_demo_sk` set to feed the store_sales index scan.\n\n3. JOIN-TO-FILTER REWRITE \u2014 TARGET: the three FK joins `store_sales\u2192store`, `store_sales\u2192time_dim`, `store_sales\u2192household_demographics` \u2014 TRANSFORMATION: rewrite the count as a filtered count on `store_sales` with `IN`/`EXISTS` conditions on the precomputed dimension key sets, making the one-to-one FK-to-PK relationship explicit and removing the need to join the fact table to all three dimensions at once.\n\n4. EXTENDED STATISTICS \u2014 TARGET: `store_sales` columns `(ss_store_sk, ss_sold_time_sk, ss_hdemo_sk)` \u2014 TRANSFORMATION: create multi-column statistics on this FK triple so the planner reliably estimates the combined selectivity of the three filters and chooses the range/index-only access path instead of a sequential scan of `store_sales`.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was JOIN-TO-FILTER REWRITE using precomputed dimension key sets with EXISTS/IN conditions. The rewrite applies this by materializing dimension filters and usin"
+  },
+  "raw_sql": "select count(*) from store_sales ,household_demographics ,time_dim, store where ss_sold_time_sk = time_dim.t_time_sk and ss_hdemo_sk = household_demographics.hd_demo_sk and ss_store_sk = s_store_sk and time_dim.t_hour = 8 and time_dim.t_minute >= 30 and household_demographics.hd_dep_count = 0 and store.s_store_name = 'ese' order by count(*) limit 100"
+}

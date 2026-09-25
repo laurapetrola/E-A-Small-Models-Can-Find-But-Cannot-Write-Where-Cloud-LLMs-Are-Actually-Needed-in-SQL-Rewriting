@@ -1,0 +1,150 @@
+{
+  "timestamp": "2026-09-03T12:14:35.804497",
+  "query_hash": "b1093534f0e1",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: the CTE on 'mi' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'mi' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'valid_mi' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'valid_mi' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'movie_info_matches' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'movie_info_matches' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'filtered_movie_info' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'filtered_movie_info' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table."
+  ],
+  "workload_aware": false,
+  "inference_ms": 35710.7,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nFirst, looking at the query, it's a complex JOIN between multiple tables, and the main goal is to find the minimum kind and title of movies that meet certain conditions. The key parts of the query involve filtering on movie_info with LIKE conditions, which are non-sargable. The optimizer hints mention that using CTEs with LIKE filters leads to full table scans, so the advice is to apply these conditions later in the JOIN chain.\n\nNow, looking at the relevant tables and their existing indexes. The tables involved in the main JOINs are complete_cast, movie_companies, movie_info, movie_keyword, title, etc. The tables that are likely causing Seq Scans are movie_info and movie_keyword because they have large row counts (14 million and 4.5 million rows respectively). The LIKE conditions on mi.info and mi.note are problematic because they can't use B-tree indexes effectively.\n\nThe user's schema shows that movie_info has indexes on info_type_id and movie_id, but the LIKE conditions are on mi.info, which isn't indexed. Similarly, movie_keyword has indexes on keyword_id and movie_id, but the query joins on mk.keyword_id, which is already covered by the existing index. However, the main issue is the filtering on mi.info with LIKE '%internet%' and the other LIKE conditions.\n\nSo, the main problem is the full table scans on movie_info due to the LIKE conditions. To address this, we need to create indexes that can help with these LIKE queries. Since the LIKE patterns start with a wildcard (e.g., '%internet%'), a standard B-tree index won't help. However, with the pg_trgm extension, a GIN index on the info column could be useful for partial matches. Alternatively, a B-tree index might not be effective, but the user has pg_trgm installed, which supports GIN indexes for text pattern matching.\n\nAnother possible bottleneck is the movie_keyword table. The query joins on mk.keyword_id, which is already indexed, but maybe there's a way to optimize further. However, the main issue seems to be the movie_info table's LIKE conditions.\n\nLooking at the existing indexes, movie_info has indexes on info_type_id and movie_id. The query filters on info_type_id (it1.id = mi.info_type_id) which is already covered by the existing index. The problem is the LIKE on mi.info. So, creating a GIN index on mi.info could help with the LIKE '%internet%' and similar patterns.\n\nAdditionally, the query has conditions on mi.info LIKE 'USA:% 199%' or 'USA:% 200%'. These patterns start with 'USA:', so maybe a B-tree index on mi.info could help if the query could use it, but since the LIKE has a leading wildcard, it's still non-sargable. However, with a GIN index, partial matches might be possible. Alternatively, a GIST index with the trgm operator could be useful here.\n\nSo, the primary index to create would be on movie_info(info) using GIN with pg_trgm. This would help with the LIKE conditions. Another possible candidate is the title table's production_year, but the query has t.production_year > 1990, which is a range condition. The title table has an index on kind_id, but not on production_year. However, the production_year is part of the title table's data, and since the query filters on it, an index on production_year could help. But the main issue is the movie_info's LIKE conditions.\n\nWait, the user's schema shows that the title table has an index on kind_id, which is used in the query. The other tables like movie_companies have indexes on movie_id and company_id, etc. The main problem is the movie_info's LIKE conditions. So, the best index would be on movie_info(info) with a GIN index using pg_trgm. That would allow the query to efficiently find rows where info contains 'internet' or 'USA:...'.\n\nAnother possible index is on movie_info(info_type_id, info), but since info_type_id is already part of the existing index, maybe a GIN on info would be sufficient. Also, the query has mi.info IS NOT NULL, which is a condition that could be covered by a partial index, but the user's instructions say to avoid partial predicates unless they reference only the target table's columns. Since the mi.info IS NOT NULL is a condition, a partial index on movie_info(info) where info is not null might help, but the main issue is the LIKE conditions.\n\nSo, the top priority is to create a GIN index on movie_info(info) to handle the LIKE conditions. That should reduce the full table scan on movie_info. Another possible index is on title.production_year, but the existing index on kind_id might not help with the production_year filter. However, the query has t.production_year > 1990, so an index on production_year would help. But the title table's existing indexes don't include production_year. However, the user's schema for the title table shows that it has an index on kind_id, but not on production_year. So, adding an index on production_year could help, but the main issue is the movie_info's LIKE conditions.\n\nTherefore, the most impactful index would be on movie_info(info) using GIN with pg_trgm. That should address the main Seq Scan on movie_info. The other tables might not have significant Seq Scans, so focusing on movie_info is the key.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"info\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"eliminates Seq Scan on movie_info (14,835,720 rows) for LIKE '%internet%' and LIKE 'USA:% 199%' patterns\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"reduces filter cost on title.production_year > 1990 (2,528,312 rows)\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottleneck is the non-sargable LIKE filters on movie_info.info. A GIN index with pg_trgm enables efficient pattern matching for these conditions. The title.production_year filter benefits from a B-tree index as it's a range condition. Other tables have existing indexes or smaller row counts that don't require additional indexing.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "gin",
+      "estimated_benefit_pct": 56.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": -96.4,
+      "baseline_exec_ms": 195.551,
+      "optimized_exec_ms": 384.111,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 19.1,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20752.24,
+          "cost_with_index": 20752.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55703.86,
+          "cost_with_index": 20463.71,
+          "benefit_pct": 63.3
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7500.19,
+          "cost_with_index": 7500.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9529.71,
+          "cost_with_index": 8260.46,
+          "benefit_pct": 13.3
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 10.7,
+      "baseline_exec_ms": 206.302,
+      "optimized_exec_ms": 184.134,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20752.15,
+          "cost_with_index": 20752.15,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4615.54,
+          "cost_with_index": 4615.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55703.86,
+          "cost_with_index": 42426.66,
+          "benefit_pct": 23.8
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19502.37,
+          "cost_with_index": 19502.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7500.19,
+          "cost_with_index": 7500.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 11024.08,
+          "cost_with_index": 11024.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9529.71,
+          "cost_with_index": 9529.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3828.97,
+          "cost_with_index": 3828.97,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9395.89,
+          "cost_with_index": 9395.92,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46305.29,
+          "cost_with_index": 46305.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.61,
+          "cost_with_index": 3814.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3862.74,
+          "cost_with_index": 3862.74,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

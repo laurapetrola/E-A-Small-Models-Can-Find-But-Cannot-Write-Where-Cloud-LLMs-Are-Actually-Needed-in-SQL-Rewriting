@@ -1,0 +1,123 @@
+{
+  "timestamp": "2026-09-04T20:52:59.970064",
+  "query_hash": "73a7fb968cb6",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [
+    "Hint: the CTE on 'pre_chn' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'pre_chn' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'complete_cast_matches' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'complete_cast_matches' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table."
+  ],
+  "workload_aware": false,
+  "inference_ms": 63364.6,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nFirst, looking at the query, it's a complex JOIN between multiple tables, and it's trying to find movies with certain characteristics related to superheroes and ratings. The main goal is to get the minimum character name, rating, and movie title that meet specific conditions.\n\nThe relevant tables mentioned in the schema are cast_info, char_name, complete_cast, info_type, keyword, movie_info_idx, movie_keyword, name, and title. The existing indexes are listed, so I need to check which tables don't have indexes on columns that are being filtered or joined.\n\nThe user's hints mention that two CTEs (pre_chn and complete_cast_matches) are causing full table scans due to LIKE conditions with leading or trailing %, which are non-sargable. The advice is to apply these conditions in the JOIN clause instead of a CTE to allow filtering earlier. However, the main issue here is identifying which tables are being fully scanned and which columns are causing that.\n\nLooking at the WHERE clause, there are several conditions. Let's break down the query step by step.\n\nThe query has a condition on chn.name LIKE '%man%' or '%Man%'. The char_name table has no indexes, so scanning this table is a full table scan. Since the LIKE is using wildcards at the start, an index on chn.name wouldn't help here. But maybe there's a way to optimize this. However, the user's hint says that applying the LIKE in the JOIN clause might help, but since there's no index, it's still a full scan. So, the first candidate for an index is the char_name table on the name column, but since the LIKE is non-sargable, maybe a prefix index? Wait, in MySQL, for a LIKE 'abc%', an index on name would help, but for '%abc', it can't. However, the query has both '%man%' and '%Man%', which are case-insensitive. But the user's hint says that the CTE is causing a full scan, so maybe the solution is to avoid the CTE and apply the filter later. But the main point here is that the char_name table is being scanned fully because there's no index on name.\n\nAnother part of the query is the complete_cast table. The query joins with complete_cast and has conditions on cct1.kind and cct2.kind. The complete_cast table has an index on movie_id, but the query is filtering on cct1 and cct2, which are comp_cast_type tables. Wait, the comp_cast_type tables (cct1 and cct2) have no indexes. The query has conditions on cct1.kind = 'cast' and cct2.kind LIKE '%complete%'. Since these are equality checks on the kind column, but the tables comp_cast_type have no indexes, that could be causing full table scans. However, since comp_cast_type has only 4 rows, maybe it's not a big issue. But the user's hint mentions that the CTE on complete_cast_matches is causing a full scan. Wait, the original query doesn't have CTEs, but the hints are from the SQL architect. So maybe the original query had CTEs that were causing full scans, and the advice is to restructure the joins to apply the filters later. But in the current query, the complete_cast table is being joined, and the conditions are on kt.id = t.kind_id, etc. \n\nLooking at the tables involved in the joins, the main tables with large rows are cast_info (36M), char_name (3.1M), movie_keyword (4.5M), movie_info_idx (1.38M), etc. The query has several JOIN conditions, and the WHERE clause includes conditions on various tables.\n\nThe key points where full table scans might be happening are:\n\n1. char_name: The condition chn.name LIKE '%man%' or '%Man%' is causing a full scan because there's no index on name. Even though the LIKE is non-sargable, maybe a prefix index could help if the query is looking for names starting with certain patterns. But since the query uses both leading and trailing wildcards, an index on name wouldn't help. However, the user's hint suggests that applying the LIKE in the JOIN clause might allow filtering earlier, but without an index, it's still a full scan. So, the solution here is to create an index on char_name.name, but since the LIKE is non-sargable, the benefit might be limited. However, the user's hint says that the CTE is causing a full scan, so maybe the index on char_name.name would help reduce the scan.\n\n2. The keyword table has a condition k.keyword IN ('superhero', ...). The keyword table has no indexes, so scanning it is a full table scan. However, since the condition is an IN list, an index on keyword.keyword would help. But the user's schema says that the keyword table has no indexes. So, creating an index on keyword.keyword would help here.\n\n3. The info_type table has a condition it2.info = 'rating'. The info_type table has no indexes, so a full scan. Creating an index on info_type.info would help.\n\n4. The movie_keyword table is joined with conditions on mk.keyword_id = k.id. The movie_keyword table has indexes on keyword_id and movie_id. Since the query is filtering on keyword_id (from k.id), the existing index on keyword_id would help. But the query also has a condition on k.keyword IN ... which is handled by the keyword table's index if we create one.\n\n5. The movie_info_idx table is joined with conditions on info_type_id. The movie_info_idx has an index on info_type_id, which is already present. So that's covered.\n\n6. The title table is joined with conditions on kind_id, which has an index. So that's okay.\n\n7. The name table is joined with ci.person_id, which is part of the cast_info table. The name table has no indexes, but the query is filtering on n.id = ci.person_id. Since ci.person_id is part of the cast_info table, which has an index on person_id, maybe the join is efficient. However, if the name table is being scanned without an index on id, but since id is the primary key, it's already indexed. Wait, the name table's id is the primary key, so it's indexed. So the join on n.id = ci.person_id would use the primary key index.\n\nSo, the main tables causing full scans are char_name, keyword, and info_type. Let's check each:\n\n- char_name: The condition is on name, which is not indexed. So a full scan. Creating an index on name would help, but since the LIKE is non-sargable, the benefit is limited. However, the user's hint suggests that applying the LIKE in the JOIN clause might allow filtering earlier, but without an index, it's still a full scan. So, creating an index on char_name.name would help, even though it's not sargable. But in MySQL, for a LIKE '%man%', the index on name won't help. However, if the query is using a prefix, maybe a prefix index could help. But the user's hint says that the CTE is causing a full scan, so maybe the solution is to avoid the CTE and apply the filter later. But the main point is that the char_name table is being scanned fully because there's no index on name. So, creating an index on char_name.name would help, but since the LIKE is non-sargable, the benefit is limited. However, the user's schema says that char_name has no indexes, so this is a candidate.\n\n- keyword: The condition is on keyword IN ... which is a list. Since there's no index on keyword.keyword, a full scan. Creating an index on keyword.keyword would help.\n\n- info_type: The condition is on info = 'rating', which is a single value. Since there's no index on info_type.info, a full scan. Creating an index on info_type.info would help.\n\nSo, the three indexes that should be created are:\n\n1. On char_name(name) to help with the LIKE condition, even though it's non-sargable. But since the query is using a full scan, an index might not help. However, the user's hint suggests that the CTE is causing the full scan, so maybe the index would help in reducing the rows scanned later.\n\n2. On keyword(keyword) to speed up the IN condition.\n\n3. On info_type(info) to speed up the info = 'rating' condition.\n\nBut wait, the user's schema says that the keyword table has no indexes. So, creating an index on keyword.keyword would help. Similarly for info_type.\n\nSo, the indexes to suggest are:\n\n- char_name(name) (even though it's non-sargable, but the query is scanning the entire table)\n- keyword(keyword)\n- info_type(info)\n\nBut the user's instructions say to not suggest indexes that already exist. The existing indexes are listed, and none of these three tables have indexes. So, these are valid candidates.\n\nAnother point: the query has a condition on t.production_year > 2000. The title table has an index on kind_id, but not on production_year. However, since the title table is joined with other tables, maybe the production_year filter could benefit from an index. But the user's schema doesn't mention an index on production_year, so that's another possible index. However, the user's query might not be scanning the title table, but the join conditions might involve it. However, the main full scans are on char_name, keyword, and info_type.\n\nSo, the final answer should include indexes on these three tables.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"char_name\",\n      \"property\": \"name\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on char_name (3.1M rows) for LIKE '%man%'/%Man%' pattern\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on keyword (134K rows) for IN list filter\"\n    },\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on info_type (113 rows) for equality filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs full table scans on char_name (due to non-sargable LIKE patterns), keyword (due to IN list filter), and info_type (due to equality filter). Indexes on these columns would eliminate the full scans and improve filtering efficiency for these large tables.\"\n}",
+  "recommendations": [
+    {
+      "table": "char_name",
+      "column": "name",
+      "index_type": "btree",
+      "estimated_benefit_pct": -1.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 23.8,
+      "baseline_exec_ms": 8308.5,
+      "optimized_exec_ms": 6330.139,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -1.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7483.64,
+          "cost_with_index": 7588.11,
+          "benefit_pct": -1.4
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 7023.59,
+          "cost_with_index": 7126.75,
+          "benefit_pct": -1.5
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 2,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 95.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 79.1,
+      "baseline_exec_ms": 9696.238,
+      "optimized_exec_ms": 2025.562,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 85.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 19694416.27,
+          "cost_with_index": 1493.45,
+          "benefit_pct": 100.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 390897.9,
+          "cost_with_index": 418.02,
+          "benefit_pct": 99.9
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 45454.16,
+          "cost_with_index": 45472.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 540894.09,
+          "cost_with_index": 626.32,
+          "benefit_pct": 99.9
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 592103.34,
+          "cost_with_index": 628.58,
+          "benefit_pct": 99.9
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 1979053.84,
+          "cost_with_index": 149.25,
+          "benefit_pct": 100.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3569575.68,
+          "cost_with_index": 269.46,
+          "benefit_pct": 100.0
+        }
+      ],
+      "workload_queries_improved": 6,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

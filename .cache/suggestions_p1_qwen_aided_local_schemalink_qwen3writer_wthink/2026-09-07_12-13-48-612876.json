@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-09-07T12:13:48.612849",
+  "query_hash": "7ade099a566c",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "replace subquery with window function for average",
+    "decorrelate scalar aggregate subquery into CTE plus join"
+  ],
+  "improvement_pct": 95.52,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 45535.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:local",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS (\n    SELECT \n        sr_customer_sk AS ctr_customer_sk,\n        sr_store_sk AS ctr_store_sk,\n        SUM(sr_fee) AS ctr_total_return,\n        AVG(SUM(sr_fee)) OVER (PARTITION BY sr_store_sk) AS avg_total\n    FROM store_returns\n    JOIN date_dim ON store_returns.sr_returned_date_sk = date_dim.d_date_sk\n    WHERE date_dim.d_year = 2000\n    GROUP BY sr_customer_sk, sr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer_total_return ctr1\nJOIN (SELECT s_store_sk FROM store WHERE s_state = 'TN') AS filtered_store\n    ON ctr1.ctr_store_sk = filtered_store.s_store_sk\nJOIN customer c\n    ON ctr1.ctr_customer_sk = c.c_customer_sk\nWHERE ctr1.ctr_total_return > (ctr1.avg_total * 1.2)\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS (\n    SELECT \n        sr_customer_sk AS ctr_customer_sk,\n        sr_store_sk AS ctr_store_sk,\n        SUM(sr_fee) AS ctr_total_return,\n        AVG(SUM(sr_fee)) OVER (PARTITION BY sr_store_sk) AS avg_total\n    FROM store_returns\n    JOIN date_dim ON store_returns.sr_returned_date_sk = date_dim.d_date_sk\n    WHERE date_dim.d_year = 2000\n    GROUP BY sr_customer_sk, sr_store_sk\n)\nSELECT c.c_customer_id\nFROM customer_total_return ctr1\nJOIN (SELECT s_store_sk FROM store WHERE s_state = 'TN') AS filtered_store\n    ON ctr1.ctr_store_sk = filtered_store.s_store_sk\nJOIN customer c\n    ON ctr1.ctr_customer_sk = c.c_customer_sk\nWHERE ctr1.ctr_total_return > (ctr1.avg_total * 1.2)\nORDER BY c.c_customer_id\nLIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. First, I need to understand the original query and identify where the performance bottlenecks might be. The query is using a Common Table Expression (CTE) called customer_total_return, which aggregates data from store_returns and date_dim. Then, it joins this CTE with the store and customer tables to find customers in Tennessee whose total returns exceed 1.2 times the average for their store.\n\nLooking at the CTE, it's joining store_returns with date_dim on sr_returned_date_sk = d_date_sk and filtering by d_year = 2000. Then, it's grouping by customer and store SKs to sum SR_FEE. The main query then uses this CTE to compare each customer's total return against the average for their store, filtering by s_state = 'TN' and ordering by customer ID.\n\nPotential issues here could be repeated subqueries, large joins, or inefficient aggregation. Let me break it down step by step.\n\nFirst, the CTE is computed once, but the subquery in the main query is referencing the same CTE. The subquery calculates the average ctr_total_return for the same store_sk as the outer query. If this subquery is executed for every row in the outer query, it could be expensive. Maybe we can rewrite this to avoid repeated computation.\n\nAnother thing is the join between store_returns and date_dim. Since date_dim is filtered by d_year = 2000, perhaps we can pre-filter that in the CTE to reduce the dataset early. Also, the aggregation in the CTE might benefit from indexing on sr_returned_date_sk and d_date_sk, but since the user mentioned PostgreSQL with hypopg and pg_trgm, maybe some index optimizations are possible.\n\nThe main query joins customer_total_return with store and customer. The store table is filtered by s_state = 'TN', which might be a small subset. However, if the CTE is large, joining with store could be costly. Maybe we can filter the CTE to only include stores in TN first, reducing the data early.\n\nAlso, the subquery in the main query is using the same CTE as the outer query. If we can compute the average per store once and then compare, that might be more efficient. Perhaps using a window function instead of a subquery could help. For example, calculating the average within the CTE using a window function would avoid the correlated subquery.\n\nAnother point is the use of the CTE. If the CTE is large, joining it with other tables might be expensive. Maybe materializing the CTE or using a CTE with a limit could help, but the original query doesn't have a limit in the CTE. However, the final query has a limit of 100, so maybe the CTE can be optimized to only include necessary data.\n\nAlso, checking for indexes on the columns used in joins and filters. For example, indexes on sr_customer_sk, sr_store_sk, d_date_sk, and the columns in the store and customer tables. But since the user can't invent columns, I need to focus on existing structures.\n\nSo, the main optimization opportunities are:\n\n1. Replacing the correlated subquery with a window function to compute the average per store in the CTE, which would avoid recalculating the average for each row.\n2. Pre-filtering the CTE to only include stores in TN early, reducing the data size before joins.\n3. Ensuring that the CTE's aggregation is efficient by using appropriate indexes on the join and filter columns.\n4. Possibly optimizing the join between the CTE and the store table by filtering the store table first for s_state = 'TN' to reduce the number of rows joined.\n\nLet me structure these as optimization strategies, prioritizing those that reduce the most rows or cost first.\n\n</think>\n\n1. WINDOW FUNCTION REFACTOR \u2014 TARGET: customer_total_return CTE's avg(ctr_total_return) calculation \u2014 TRANSFORMATION: Replace the correlated subquery with a window function (e.g., `AVG(ctr_total_return) OVER (PARTITION BY ctr_store_sk)` ) to compute store-specific averages in a single pass  \n2. EARLY STORE FILTERING \u2014 TARGET: store table join \u2014 TRANSFORMATION: Pre-filter the store table for s_state = 'TN' before joining with customer_total_return to reduce join cardinality  \n3. INDEX OPTIMIZATION \u2014 TARGET: store_returns.sr_returned_date_sk, date_dim.d_date_sk \u2014 TRANSFORMATION: Ensure indexes on these columns to accelerate the CTE's date_dim join and filter (d_year = 2000)  \n4. JOIN ORDER REFACTOR \u2014 TARGET: customer_total_return \u2194 store join \u2014 TRANSFORMATION: Join filtered store (s_state = 'TN') with customer_total_return first, then join with customer to minimize intermediate row counts  \n5. AGGREGATION OPTIMIZATION \u2014 TARGET: store_returns table \u2014 TRANSFORMATION: Consider materializing the CTE or adding a summary table for store_returns with pre-aggregated sr_fee by store and date to avoid repeated computation",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 2014.427,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 95.52,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1436001.7,
+      "optimized": 143539.04,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 41337.7,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4198.2,
+    "total_inference_ms": 45535.9,
+    "writer_inference_ms": 101963.8,
+    "writer_tokens_in": 1232,
+    "writer_tokens_out": 4008,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. WINDOW FUNCTION REFACTOR \u2014 TARGET: customer_total_return CTE's avg(ctr_total_return) calculation \u2014 TRANSFORMATION: Replace the correlated subquery with a window function (e.g., `AVG(ctr_total_return) OVER (PARTITION BY ctr_store_sk)` ) to compute store-specific averages in a single pass  \n2. EARLY STORE FILTERING \u2014 TARGET: store table join \u2014 TRANSFORMATION: Pre-filter the store table for s_state = 'TN' before joining with customer_total_return to reduce join cardinality  \n3. INDEX OPTIMIZATION \u2014 TARGET: store_returns.sr_returned_date_sk, date_dim.d_date_sk \u2014 TRANSFORMATION: Ensure indexes on these columns to accelerate the CTE's date_dim join and filter (d_year = 2000)  \n4. JOIN ORDER REFACTOR \u2014 TARGET: customer_total_return \u2194 store join \u2014 TRANSFORMATION: Join filtered store (s_state = 'TN') with customer_total_return first, then join with customer to minimize intermediate row counts  \n5. AGGREGATION OPTIMIZATION \u2014 TARGET: store_returns table \u2014 TRANSFORMATION: Consider materializing the CTE or adding a summary table for store_returns with pre-aggregated sr_fee by store and date to avoid repeated computation",
+  "writer": "local:qwen3:8b+think",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was replacing a correlated subquery with a window function for avg(ctr_total_return). The rewrite applies this technique using a window function `AVG(SUM(sr_fe"
+  },
+  "raw_sql": "with customer_total_return as (select sr_customer_sk as ctr_customer_sk ,sr_store_sk as ctr_store_sk ,sum(SR_FEE) as ctr_total_return from store_returns ,date_dim where sr_returned_date_sk = d_date_sk and d_year =2000 group by sr_customer_sk ,sr_store_sk) select c_customer_id from customer_total_return ctr1 ,store ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_store_sk = ctr2.ctr_store_sk) and s_store_sk = ctr1.ctr_store_sk and s_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id limit 100"
+}

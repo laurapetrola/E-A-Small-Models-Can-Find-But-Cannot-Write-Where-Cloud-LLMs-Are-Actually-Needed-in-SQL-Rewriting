@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-22T02:59:14.382498",
+  "query_hash": "a5945ebaf8f0",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 1.89,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 108282.0,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH eligible_sales AS MATERIALIZED (\n    SELECT\n        w.w_state,\n        i.i_item_id,\n        d.d_date,\n        cs.cs_order_number,\n        cs.cs_item_sk,\n        cs.cs_sales_price\n    FROM catalog_sales AS cs\n    JOIN item AS i\n        ON i.i_item_sk = cs.cs_item_sk\n       AND i.i_current_price BETWEEN 0.99 AND 1.49\n    JOIN warehouse AS w\n        ON cs.cs_warehouse_sk = w.w_warehouse_sk\n    JOIN date_dim AS d\n        ON cs.cs_sold_date_sk = d.d_date_sk\n       AND d.d_date BETWEEN cast('2001-04-02' AS date) AND cast('2001-06-01' AS date)\n)\nSELECT\n    eligible_sales.w_state,\n    eligible_sales.i_item_id,\n    sum(\n        CASE\n            WHEN cast(eligible_sales.d_date AS date) < cast('2001-05-02' AS date)\n            THEN eligible_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_before,\n    sum(\n        CASE\n            WHEN cast(eligible_sales.d_date AS date) >= cast('2001-05-02' AS date)\n            THEN eligible_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_after\nFROM eligible_sales\nLEFT JOIN catalog_returns\n    ON eligible_sales.cs_order_number = catalog_returns.cr_order_number\n   AND eligible_sales.cs_item_sk = catalog_returns.cr_item_sk\nGROUP BY eligible_sales.w_state, eligible_sales.i_item_id\nORDER BY eligible_sales.w_state, eligible_sales.i_item_id\nLIMIT 100",
+  "reached_sql": "WITH eligible_sales AS MATERIALIZED (\n    SELECT\n        w.w_state,\n        i.i_item_id,\n        d.d_date,\n        cs.cs_order_number,\n        cs.cs_item_sk,\n        cs.cs_sales_price\n    FROM catalog_sales AS cs\n    JOIN item AS i\n        ON i.i_item_sk = cs.cs_item_sk\n       AND i.i_current_price BETWEEN 0.99 AND 1.49\n    JOIN warehouse AS w\n        ON cs.cs_warehouse_sk = w.w_warehouse_sk\n    JOIN date_dim AS d\n        ON cs.cs_sold_date_sk = d.d_date_sk\n       AND d.d_date BETWEEN cast('2001-04-02' AS date) AND cast('2001-06-01' AS date)\n)\nSELECT\n    eligible_sales.w_state,\n    eligible_sales.i_item_id,\n    sum(\n        CASE\n            WHEN cast(eligible_sales.d_date AS date) < cast('2001-05-02' AS date)\n            THEN eligible_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_before,\n    sum(\n        CASE\n            WHEN cast(eligible_sales.d_date AS date) >= cast('2001-05-02' AS date)\n            THEN eligible_sales.cs_sales_price - coalesce(catalog_returns.cr_refunded_cash, 0)\n            ELSE 0\n        END\n    ) AS sales_after\nFROM eligible_sales\nLEFT JOIN catalog_returns\n    ON eligible_sales.cs_order_number = catalog_returns.cr_order_number\n   AND eligible_sales.cs_item_sk = catalog_returns.cr_item_sk\nGROUP BY eligible_sales.w_state, eligible_sales.i_item_id\nORDER BY eligible_sales.w_state, eligible_sales.i_item_id\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized View - TARGET: Subquery of joined tables (catalog_sales and catalog_returns) with the filter conditions applied - TRANSFORMATION: Create a materialized view that pre-computes the join and filter conditions for the subquery, reducing the number of disk reads and improving query performance.\n\n2. N. Index Scan Optimization - TARGET: `date_dim` table - TRANSFORMATION: If the range scan on `(d_date)` for the condition `d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)` is still a performance bottleneck, consider creating an index on a composite key of `(year, month, day)`.\n\n3. N. Index Scan Optimization - TARGET: `item` table - TRANSFORMATION: If the filter condition `i_current_price between 0.99 and 1.49` is causing a large number of rows to be scanned, consider creating an index on a composite key of `(i_current_price, i_item_id)`.\n\n4. N. Index Scan Optimization - TARGET: `warehouse` table - TRANSFORMATION: If the join with the `warehouse` table is causing a performance issue, consider creating an index on `(cs_warehouse_sk)` or a composite key of `(cs_warehouse_sk, w_state)`, depending on the query's requirements.\n\n5. N. Filter Condition Pushdown - TARGET: Join condition between `catalog_sales` and `item` table - TRANSFORMATION: If possible, push down the filter condition `i_item_sk = cs_item_sk` to the `item` table to reduce the number of rows that need to be joined.\n\n6. N. Filter Condition Pushdown - TARGET: Join condition between `catalog_sales` and `warehouse` table - TRANSFORMATION: If possible, push down the filter condition `cs_warehouse_sk = w_warehouse_sk` to the `warehouse` table to reduce the number of rows that need to be joined.\n\n7. N. Sort-Merge Join Optimization - TARGET: Join between `catalog_sales` and `catalog_returns` subquery - TRANSFORMATION: If the join order is not optimal, consider reordering the join operations to use a sort-merge join strategy, which can be more efficient for large datasets.\n\n8. N. Hash Join Optimization - TARGET: Join between `catalog_sales` and `catalog_returns` subquery - TRANSFORMATION: If the data is well-distributed and the join condition is selective enough, consider using a hash join instead of a nested loop join to improve query performance.\n\n9. N. Partitioning - TARGET: `date_dim`, `item`, `warehouse` tables - TRANSFORMATION: If the tables are large and the query's filter conditions cover only a small portion of the data, consider partitioning these tables based on the relevant columns to reduce the number of rows that need to be scanned.\n\n10. N. Query Rewrite - TARGET: The entire query - TRANSFORMATION: If none of the above techniques provide significant performance improvements, consider rewriting the query using conditional aggregation and window functions to avoid the need for a subquery, potentially improving query performance.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 1713.532,
+      "optimized_ms": 1681.065,
+      "delta_ms": 32.467,
+      "improvement_pct": 1.89,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 906063.41,
+      "optimized": 917138.01,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 72590.9,
+    "index_advisor_inference_ms": 17227.2,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 18463.9,
+    "total_inference_ms": 108282.0,
+    "writer_inference_ms": 75381.4,
+    "writer_tokens_in": 5376,
+    "writer_tokens_out": 6662,
+    "writer_calls": 4
+  },
+  "errors": [],
+  "strategy": "1. N. Materialized View - TARGET: Subquery of joined tables (catalog_sales and catalog_returns) with the filter conditions applied - TRANSFORMATION: Create a materialized view that pre-computes the join and filter conditions for the subquery, reducing the number of disk reads and improving query performance.\n\n2. N. Index Scan Optimization - TARGET: `date_dim` table - TRANSFORMATION: If the range scan on `(d_date)` for the condition `d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date)` is still a performance bottleneck, consider creating an index on a composite key of `(year, month, day)`.\n\n3. N. Index Scan Optimization - TARGET: `item` table - TRANSFORMATION: If the filter condition `i_current_price between 0.99 and 1.49` is causing a large number of rows to be scanned, consider creating an index on a composite key of `(i_current_price, i_item_id)`.\n\n4. N. Index Scan Optimization - TARGET: `warehouse` table - TRANSFORMATION: If the join with the `warehouse` table is causing a performance issue, consider creating an index on `(cs_warehouse_sk)` or a composite key of `(cs_warehouse_sk, w_state)`, depending on the query's requirements.\n\n5. N. Filter Condition Pushdown - TARGET: Join condition between `catalog_sales` and `item` table - TRANSFORMATION: If possible, push down the filter condition `i_item_sk = cs_item_sk` to the `item` table to reduce the number of rows that need to be joined.\n\n6. N. Filter Condition Pushdown - TARGET: Join condition between `catalog_sales` and `warehouse` table - TRANSFORMATION: If possible, push down the filter condition `cs_warehouse_sk = w_warehouse_sk` to the `warehouse` table to reduce the number of rows that need to be joined.\n\n7. N. Sort-Merge Join Optimization - TARGET: Join between `catalog_sales` and `catalog_returns` subquery - TRANSFORMATION: If the join order is not optimal, consider reordering the join operations to use a sort-merge join strategy, which can be more efficient for large datasets.\n\n8. N. Hash Join Optimization - TARGET: Join between `catalog_sales` and `catalog_returns` subquery - TRANSFORMATION: If the data is well-distributed and the join condition is selective enough, consider using a hash join instead of a nested loop join to improve query performance.\n\n9. N. Partitioning - TARGET: `date_dim`, `item`, `warehouse` tables - TRANSFORMATION: If the tables are large and the query's filter conditions cover only a small portion of the data, consider partitioning these tables based on the relevant columns to reduce the number of rows that need to be scanned.\n\n10. N. Query Rewrite - TARGET: The entire query - TRANSFORMATION: If none of the above techniques provide significant performance improvements, consider rewriting the query using conditional aggregation and window functions to avoid the need for a subquery, potentially improving query performance.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\nReason: The rewrite creates a materialized view (MATERIALIZED VIEW - TARGET: Subquery of joined tables with the filter conditions applied) to pre-compute the join and filter conditions for t"
+  },
+  "raw_sql": "select w_state ,i_item_id ,sum(case when (cast(d_date as date) < cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_before ,sum(case when (cast(d_date as date) >= cast ('2001-05-02' as date)) then cs_sales_price - coalesce(cr_refunded_cash,0) else 0 end) as sales_after from catalog_sales left outer join catalog_returns on (cs_order_number = cr_order_number and cs_item_sk = cr_item_sk) ,warehouse ,item ,date_dim where i_current_price between 0.99 and 1.49 and i_item_sk = cs_item_sk and cs_warehouse_sk = w_warehouse_sk and cs_sold_date_sk = d_date_sk and d_date between cast('2001-04-02' as date) and cast('2001-06-01' as date) group by w_state,i_item_id order by w_state,i_item_id limit 100"
+}

@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-08-26T22:36:42.785922",
+  "query_hash": "092369ddef36",
+  "suggestions": [
+    "materialize intermediate result sets",
+    "restructure aggregation into separate CTEs",
+    "use conditional aggregation to combine years",
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "materialize intermediate results",
+    "replace case when with arithmetic comparison"
+  ],
+  "improvement_pct": null,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "mechanics_failed",
+  "used_fallback": true,
+  "inference_ms": 346163.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH store_sales_agg AS MATERIALIZED (\n    SELECT s.ss_customer_sk,\n           d.d_year AS dyear,\n           SUM(s.ss_ext_list_price - s.ss_ext_discount_amt) AS year_total\n    FROM store_sales s\n    JOIN date_dim d ON s.ss_sold_date_sk = d.d_date_sk\n    WHERE d.d_year IN (1998, 1998 + 1)\n    GROUP BY s.ss_customer_sk, d.d_year\n),\nweb_sales_agg AS MATERIALIZED (\n    SELECT w.ws_bill_customer_sk,\n           d.d_year AS dyear,\n           SUM(w.ws_ext_list_price - w.ws_ext_discount_amt) AS year_total\n    FROM web_sales w\n    JOIN date_dim d ON w.ws_sold_date_sk = d.d_date_sk\n    WHERE d.d_year IN (1998, 1998 + 1)\n    GROUP BY w.ws_bill_customer_sk, d.d_year\n),\nyear_total AS MATERIALIZED (\n    SELECT c.c_customer_id AS customer_id,\n           c.c_first_name AS customer_first_name,\n           c.c_last_name AS customer_last_name,\n           c.c_preferred_cust_flag AS customer_preferred_cust_flag,\n           c.c_birth_country AS customer_birth_country,\n           c.c_login AS customer_login,\n           c.c_email_address AS customer_email_address,\n           sa.dyear,\n           sa.year_total,\n           's' AS sale_type\n    FROM store_sales_agg sa\n    JOIN customer c ON c.c_customer_sk = sa.ss_customer_sk\n    UNION ALL\n    SELECT c.c_customer_id,\n           c.c_first_name,\n           c.c_last_name,\n           c.c_preferred_cust_flag,\n           c.c_birth_country,\n           c.c_login,\n           c.c_email_address,\n           wa.dyear,\n           wa.year_total,\n           'w'\n    FROM web_sales_agg wa\n    JOIN customer c ON c.c_customer_sk = wa.ws_bill_customer_sk\n),\ncustomer_totals AS (\n    SELECT customer_id,\n           customer_first_name,\n           customer_last_name,\n           customer_preferred_cust_flag,\n           customer_birth_country,\n           customer_login,\n           customer_email_address,\n           SUM(CASE WHEN sale_type = 's' AND dyear = 1998 THEN year_total END) AS store_1998,\n           SUM(CASE WHEN sale_type = 's' AND dyear = 1998 + 1 THEN year_total END) AS store_1999,\n           SUM(CASE WHEN sale_type = 'w' AND dyear = 1998 THEN year_total END) AS web_1998,\n           SUM(CASE WHEN sale_type = 'w' AND dyear = 1998 + 1 THEN year_total END) AS web_1999\n    FROM year_total\n    GROUP BY customer_id, customer_first_name, customer_last_name,\n             customer_preferred_cust_flag, customer_birth_country,\n             customer_login, customer_email_address\n)\nSELECT customer_id, customer_first_name, customer_last_name, customer_email_address\nFROM customer_totals\nWHERE customer_id IS NOT NULL\n  AND store_1998 > 0\n  AND web_1998 > 0\n  AND CASE WHEN web_1998 > 0 THEN web_1999 / web_1998 ELSE 0.0 END >\n      CASE WHEN store_1998 > 0 THEN store_1999 / store_1998 ELSE 0.0 END\nORDER BY customer_id, customer_first_name, customer_last_name, customer_email_address\nLIMIT 100",
+  "reasoning_trace": "1. D_YEAR SOURCE FILTER \u2014 TARGET: both `year_total` fact scans (`store_sales`/`date_dim` on `ss_sold_date_sk = d_date_sk`; `web_sales`/`date_dim` on `ws_sold_date_sk = d_date_sk`) \u2014 TRANSFORMATION: restrict each branch to only `d_year = 1998 OR d_year = 1999` before aggregation, so no other years are scanned, aggregated, or materialized.\n\n2. FACT-ONLY PIVOTED AGGREGATION \u2014 TARGET: the `customer` joins inside the `year_total` branches (`c_customer_sk = ss_customer_sk`, `c_customer_sk = ws_bill_customer_sk`) and the broad `GROUP BY` on all customer text attributes \u2014 TRANSFORMATION: aggregate store and web directly on `ss_customer_sk` / `ws_bill_customer_sk` with conditional totals for 1998 and 1999, then join to `customer` only at the end to get the four output fields; this removes the nine customer grouping columns from the large aggregate state.\n\n3. PIVOT REPLACES FOUR-WAY SELF-JOIN \u2014 TARGET: the `year_total` UNION ALL and final aliases `t_s_firstyear`, `t_s_secyear`, `t_w_firstyear`, `t_w_secyear` \u2014 TRANSFORMATION: produce one row per customer per channel containing `s_1998`, `s_1999`, `w_1998`, `w_1999`, then compare those four columns directly instead of joining the CTE output to itself three times.\n\n4. INTEGER KEY JOIN \u2014 TARGET: the final equality predicates on `customer_id` between the `year_total` aliases \u2014 TRANSFORMATION: perform all internal grouping/joining on the integer primary key `c_customer_sk`, and project the 16-character `c_customer_id` only in the final `SELECT`, making the join keys narrower and cheaper.\n\n5. HAVING ON REQUIRED PIVOT CELLS \u2014 TARGET: the final-row predicates `t_s_firstyear.year_total > 0`, `t_w_firstyear.year_total > 0`, and the implicit existence of both 1999 rows \u2014 TRANSFORMATION: apply `HAVING` conditions to the pivot aggregates (`s_1998 > 0`, `w_1998 > 0`, and non-null `s_1999`, `w_1999`) so customers missing any required year/channel cell are discarded before the final comparison.\n\n6. CROSS-MULTIPLICATION RATIO \u2014 TARGET: the final `case when ... year_total / ... else 0.0 end` comparison in the WHERE clause \u2014 TRANSFORMATION: once both first-year denominators are guaranteed positive by the HAVING filter, replace the guarded divisions with the equivalent cross-product comparison `w_1999 * s_1998 > s_1999 * w_1998` to remove per-row division and CASE overhead.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": null,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 29037835.09,
+      "optimized": null,
+      "reduced": null
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 312684.4,
+    "index_advisor_inference_ms": 27698.9,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 5780.0,
+    "total_inference_ms": 346163.3,
+    "writer_inference_ms": 2852982.3,
+    "writer_tokens_in": 15000,
+    "writer_tokens_out": 313048,
+    "writer_calls": 6
+  },
+  "errors": [
+    "optimizer produced no output (empty or unparseable response)"
+  ],
+  "strategy": "1. D_YEAR SOURCE FILTER \u2014 TARGET: both `year_total` fact scans (`store_sales`/`date_dim` on `ss_sold_date_sk = d_date_sk`; `web_sales`/`date_dim` on `ws_sold_date_sk = d_date_sk`) \u2014 TRANSFORMATION: restrict each branch to only `d_year = 1998 OR d_year = 1999` before aggregation, so no other years are scanned, aggregated, or materialized.\n\n2. FACT-ONLY PIVOTED AGGREGATION \u2014 TARGET: the `customer` joins inside the `year_total` branches (`c_customer_sk = ss_customer_sk`, `c_customer_sk = ws_bill_customer_sk`) and the broad `GROUP BY` on all customer text attributes \u2014 TRANSFORMATION: aggregate store and web directly on `ss_customer_sk` / `ws_bill_customer_sk` with conditional totals for 1998 and 1999, then join to `customer` only at the end to get the four output fields; this removes the nine customer grouping columns from the large aggregate state.\n\n3. PIVOT REPLACES FOUR-WAY SELF-JOIN \u2014 TARGET: the `year_total` UNION ALL and final aliases `t_s_firstyear`, `t_s_secyear`, `t_w_firstyear`, `t_w_secyear` \u2014 TRANSFORMATION: produce one row per customer per channel containing `s_1998`, `s_1999`, `w_1998`, `w_1999`, then compare those four columns directly instead of joining the CTE output to itself three times.\n\n4. INTEGER KEY JOIN \u2014 TARGET: the final equality predicates on `customer_id` between the `year_total` aliases \u2014 TRANSFORMATION: perform all internal grouping/joining on the integer primary key `c_customer_sk`, and project the 16-character `c_customer_id` only in the final `SELECT`, making the join keys narrower and cheaper.\n\n5. HAVING ON REQUIRED PIVOT CELLS \u2014 TARGET: the final-row predicates `t_s_firstyear.year_total > 0`, `t_w_firstyear.year_total > 0`, and the implicit existence of both 1999 rows \u2014 TRANSFORMATION: apply `HAVING` conditions to the pivot aggregates (`s_1998 > 0`, `w_1998 > 0`, and non-null `s_1999`, `w_1999`) so customers missing any required year/channel cell are discarded before the final comparison.\n\n6. CROSS-MULTIPLICATION RATIO \u2014 TARGET: the final `case when ... year_total / ... else 0.0 end` comparison in the WHERE clause \u2014 TRANSFORMATION: once both first-year denominators are guaranteed positive by the HAVING filter, replace the guarded divisions with the equivalent cross-product comparison `w_1999 * s_1998 > s_1999 * w_1998` to remove per-row division and CASE overhead.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was the cross-multiplication ratio rewrite to avoid division, and the rewrite applies this by replacing the division comparison with the cross-product comparis"
+  },
+  "raw_sql": "with year_total as ( select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ss_ext_list_price-ss_ext_discount_amt) year_total ,'s' sale_type from customer ,store_sales ,date_dim where c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year union all select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ws_ext_list_price-ws_ext_discount_amt) year_total ,'w' sale_type from customer ,web_sales ,date_dim where c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year ) select t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address from year_total t_s_firstyear ,year_total t_s_secyear ,year_total t_w_firstyear ,year_total t_w_secyear where t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id and t_s_firstyear.sale_type = 's' and t_w_firstyear.sale_type = 'w' and t_s_secyear.sale_type = 's' and t_w_secyear.sale_type = 'w' and t_s_firstyear.dyear = 1998 and t_s_secyear.dyear = 1998+1 and t_w_firstyear.dyear = 1998 and t_w_secyear.dyear = 1998+1 and t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0 and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end order by t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address limit 100"
+}

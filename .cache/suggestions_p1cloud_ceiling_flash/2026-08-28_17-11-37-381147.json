@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-08-28T17:11:37.381120",
+  "query_hash": "5346a55b96e8",
+  "suggestions": [
+    "materialize intermediate results as CTEs",
+    "replace IN/EXISTS with ANY(ARRAY) and subquery",
+    "convert filter conditions to derived table filters",
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "materialize filtered subqueries into CTEs"
+  ],
+  "improvement_pct": 38.9,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 301039.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH store_keys AS MATERIALIZED (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_store_name = 'ese'\n),\ntime_range AS MATERIALIZED (\n    SELECT MIN(t_time_sk) AS min_t_time_sk,\n           MAX(t_time_sk) AS max_t_time_sk\n    FROM time_dim\n    WHERE t_hour = 8 AND t_minute >= 30\n),\nhousehold_keys AS MATERIALIZED (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE hd_dep_count = 0\n)\nSELECT COUNT(*)\nFROM store_sales\nWHERE ss_store_sk = ANY (ARRAY(SELECT s_store_sk FROM store_keys))\n  AND ss_sold_time_sk >= (SELECT min_t_time_sk FROM time_range)\n  AND ss_sold_time_sk <= (SELECT max_t_time_sk FROM time_range)\n  AND ss_hdemo_sk = ANY (ARRAY(SELECT hd_demo_sk FROM household_keys))\nORDER BY COUNT(*) LIMIT 100",
+  "reached_sql": "WITH store_keys AS MATERIALIZED (\n    SELECT s_store_sk\n    FROM store\n    WHERE s_store_name = 'ese'\n),\ntime_range AS MATERIALIZED (\n    SELECT MIN(t_time_sk) AS min_t_time_sk,\n           MAX(t_time_sk) AS max_t_time_sk\n    FROM time_dim\n    WHERE t_hour = 8 AND t_minute >= 30\n),\nhousehold_keys AS MATERIALIZED (\n    SELECT hd_demo_sk\n    FROM household_demographics\n    WHERE hd_dep_count = 0\n)\nSELECT COUNT(*)\nFROM store_sales\nWHERE ss_store_sk = ANY (ARRAY(SELECT s_store_sk FROM store_keys))\n  AND ss_sold_time_sk >= (SELECT min_t_time_sk FROM time_range)\n  AND ss_sold_time_sk <= (SELECT max_t_time_sk FROM time_range)\n  AND ss_hdemo_sk = ANY (ARRAY(SELECT hd_demo_sk FROM household_keys))\nORDER BY COUNT(*) LIMIT 100",
+  "reasoning_trace": "1. Bitmap index intersection \u2014 TARGET: `store_sales` heap scan and FK columns `ss_store_sk`, `ss_sold_time_sk` \u2014 TRANSFORMATION: add single-column B-tree indexes on `ss_store_sk` and `ss_sold_time_sk`; use the filtered `store` key set and the 8:30\u20138:59 time interval as bitmap conditions so the planner combines the row-pointer sets before touching the heap, avoiding a full 57.6M-row scan.\n\n2. Time-range conversion \u2014 TARGET: the `time_dim` join (`t_hour=8 AND t_minute>=30`) to `store_sales.ss_sold_time_sk` \u2014 TRANSFORMATION: precompute the minimum and maximum `t_time_sk` for that continuous time block and replace the equality join with a compact range condition on `ss_sold_time_sk`, so the `ss_sold_time_sk` index is used as one range scan rather than a large list of time-key equalities.\n\n3. One-time dimension-key materialization \u2014 TARGET: filtered scans of `store`, `time_dim`, and `household_demographics` \u2014 TRANSFORMATION: compute the matching `s_store_sk` values, the `t_time_sk` range, and the `hd_demo_sk` set once in small CTEs/constants, then feed those constants into the `store_sales` conditions so the tiny dimension tables are scanned only once and never re-probed during the fact scan.\n\n4. Delayed `hd_dep_count` filter \u2014 TARGET: `store_sales.ss_hdemo_sk` with `household_demographics.hd_dep_count = 0` \u2014 TRANSFORMATION: apply the materialized `hd_demo_sk` set as a post-intersection filter on the small candidate rows produced by the store/time bitmap scan, rather than adding a third index, because the candidate set after steps 1\u20132 is already tiny.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 2316.195,
+      "optimized_ms": 1415.128,
+      "delta_ms": 901.067,
+      "improvement_pct": 38.9,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1342695.48,
+      "optimized": 1996044.1,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 295470.7,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 5568.4,
+    "total_inference_ms": 301039.1,
+    "writer_inference_ms": 615152.5,
+    "writer_tokens_in": 3063,
+    "writer_tokens_out": 67451,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. Bitmap index intersection \u2014 TARGET: `store_sales` heap scan and FK columns `ss_store_sk`, `ss_sold_time_sk` \u2014 TRANSFORMATION: add single-column B-tree indexes on `ss_store_sk` and `ss_sold_time_sk`; use the filtered `store` key set and the 8:30\u20138:59 time interval as bitmap conditions so the planner combines the row-pointer sets before touching the heap, avoiding a full 57.6M-row scan.\n\n2. Time-range conversion \u2014 TARGET: the `time_dim` join (`t_hour=8 AND t_minute>=30`) to `store_sales.ss_sold_time_sk` \u2014 TRANSFORMATION: precompute the minimum and maximum `t_time_sk` for that continuous time block and replace the equality join with a compact range condition on `ss_sold_time_sk`, so the `ss_sold_time_sk` index is used as one range scan rather than a large list of time-key equalities.\n\n3. One-time dimension-key materialization \u2014 TARGET: filtered scans of `store`, `time_dim`, and `household_demographics` \u2014 TRANSFORMATION: compute the matching `s_store_sk` values, the `t_time_sk` range, and the `hd_demo_sk` set once in small CTEs/constants, then feed those constants into the `store_sales` conditions so the tiny dimension tables are scanned only once and never re-probed during the fact scan.\n\n4. Delayed `hd_dep_count` filter \u2014 TARGET: `store_sales.ss_hdemo_sk` with `household_demographics.hd_dep_count = 0` \u2014 TRANSFORMATION: apply the materialized `hd_demo_sk` set as a post-intersection filter on the small candidate rows produced by the store/time bitmap scan, rather than adding a third index, because the candidate set after steps 1\u20132 is already tiny.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy called for materializing dimension keys (store, time, household) into CTEs to avoid re-scanning small tables. The rewrite uses `WITH ... MATERIALIZED` to precompute these keys "
+  },
+  "raw_sql": "select count(*) from store_sales ,household_demographics ,time_dim, store where ss_sold_time_sk = time_dim.t_time_sk and ss_hdemo_sk = household_demographics.hd_demo_sk and ss_store_sk = s_store_sk and time_dim.t_hour = 8 and time_dim.t_minute >= 30 and household_demographics.hd_dep_count = 0 and store.s_store_name = 'ese' order by count(*) limit 100"
+}

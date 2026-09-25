@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-09-21T18:33:01.533917",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "Pre-filter a large table as a CTE before the join",
+    "Materialize a CTE",
+    "Reorder joins to reduce intermediate rows",
+    "Convert an IN subquery to a semi-join"
+  ],
+  "improvement_pct": -92.87,
+  "model": "mistral+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 137073.2,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH mv_top_sellers AS MATERIALIZED (\n    SELECT\n        i_category,\n        i_class,\n        i_brand,\n        i_product_name,\n        d_year,\n        d_qoy,\n        d_moy,\n        s_store_id,\n        sum(coalesce(ss_sales_price * ss_quantity, 0)) AS sumsales\n    FROM date_dim\n    JOIN store_sales\n        ON ss_sold_date_sk = d_date_sk\n    JOIN item\n        ON ss_item_sk = i_item_sk\n    JOIN store\n        ON ss_store_sk = s_store_sk\n    WHERE d_month_seq BETWEEN 1217 AND 1217 + 11\n    GROUP BY ROLLUP (\n        i_category,\n        i_class,\n        i_brand,\n        i_product_name,\n        d_year,\n        d_qoy,\n        d_moy,\n        s_store_id\n    )\n),\nmv_top_sellers_ranked AS MATERIALIZED (\n    SELECT\n        i_category,\n        i_class,\n        i_brand,\n        i_product_name,\n        d_year,\n        d_qoy,\n        d_moy,\n        s_store_id,\n        sumsales,\n        rank() OVER (\n            PARTITION BY i_category\n            ORDER BY sumsales DESC\n        ) AS rk\n    FROM mv_top_sellers\n),\nmv_top_sellers_final AS MATERIALIZED (\n    SELECT\n        i_category,\n        i_class,\n        i_brand,\n        i_product_name,\n        d_year,\n        d_qoy,\n        d_moy,\n        s_store_id,\n        sumsales,\n        rk\n    FROM mv_top_sellers_ranked\n    WHERE rk <= 100\n)\nSELECT *\nFROM mv_top_sellers_final\nORDER BY\n    i_category,\n    i_class,\n    i_brand,\n    i_product_name,\n    d_year,\n    d_qoy,\n    d_moy,\n    s_store_id,\n    sumsales,\n    rk\nLIMIT 100",
+  "reasoning_trace": " 1. N. Materialized Views \u2014 TARGET: The subquery `dw1` (the inner most query) and the outermost SELECT statement \u2014 TRANSFORMATION: Create a materialized view for both the subquery `dw1` and the final SELECT statement, but with an additional filter condition to limit the number of rows returned. This will help reduce the size of the materialized views and improve performance for subsequent queries that rely on this data.\n\n    Materialized View: mv_top_sellers\n    CREATE MATERIALIZED VIEW mv_top_sellers AS\n    SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales\n    FROM store_sales, date_dim, store, item\n    WHERE ss_sold_date_sk=d_date_sk AND ss_item_sk=i_item_sk AND ss_store_sk = s_store_sk AND d_month_seq between 1217 and 1217+11\n    GROUP BY rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id)\n    WITH (access method=heap);\n\n2. N. Partitioning \u2014 TARGET: The tables involved in the query (`store_sales`, `date_dim`, `store`, `item`) \u2014 TRANSFORMATION: Consider partitioning these tables based on relevant columns such as `ss_sold_date_sk`, `d_year`, and `s_store_sk`. Partitioning can help improve query performance by reducing the amount of data that needs to be scanned for each query.\n\n3. N. Indexes \u2014 TARGET: The columns used in the WHERE and JOIN conditions of the query \u2014 TRANSFORMATION: Create indexes on the relevant columns to speed up the search operations. Specifically, consider creating indexes on `ss_sold_date_sk`, `ss_item_sk`, `ss_store_sk`, `d_month_seq` in the `store_sales` table; `i_category`, `i_class`, `i_brand`, `i_product_name`, `d_year`, `d_qoy`, `d_moy`, `s_store_sk` in the `item` table; and `ss_sold_date_sk` and `d_date_sk` in the `date_dim` table.\n\n4. N. Sort-Merge Join \u2014 TARGET: The join between `store_sales`, `date_dim`, `store`, and `item` \u2014 TRANSFORMATION: Rearrange the tables in the FROM clause so that the tables are joined in a way that allows for a sort-merge join, which can be more efficient when dealing with large datasets.\n\n5. N. Filter Early \u2014 TARGET: The WHERE clause with the rank function \u2014 TRANSFORMATION: Move the filtering condition (`rk <= 100`) as early as possible, ideally before the sort operation. This will reduce the number of rows that need to be sorted and ranked.\n\n6. N. Aggregate and Group By First \u2014 TARGET: The subquery `dw1` (the inner most query) \u2014 TRANSFORMATION: Move the aggregate function `sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales` inside the group by clause of the subquery `dw1`. This will reduce the number of rows that need to be processed in the subsequent steps.\n\n7. N. Caching \u2014 TARGET: The frequently accessed subsets of data (e.g., top-selling items, popular categories) \u2014 TRANSFORMATION: Implement a caching mechanism to store and quickly retrieve these frequently accessed subsets of data, reducing the need to compute them repeatedly.\n\n8. N. Limit First \u2014 TARGET: The outermost SELECT statement \u2014 TRANSFORMATION: Move the `LIMIT 100` clause as early as possible, ideally after the sort operation. This will reduce the number of rows that need to be processed in the subsequent steps.\n\n9. N. Materialized View Refresh Strategy \u2014 TARGET: The materialized view `mv_top_sellers` \u2014 TRANSFORMATION: Configure a refresh strategy for the materialized view based on the frequency of data changes and the query's performance requirements. For example, you can set it to refresh daily or manually when needed.\n\n10. N. Query Rewrite \u2014 TARGET: The entire query \u2014 TRANSFORMATION: Consider rewriting the query to use a more efficient approach if possible. For example, you could use window functions instead of subqueries for ranking, or join the tables in a different order to take advantage of indexes. However, this may require additional testing and optimization to ensure it provides better performance than the current strategy.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 31153.679,
+      "optimized_ms": 60085.948,
+      "delta_ms": -28932.269,
+      "improvement_pct": -92.87,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1369033.28,
+      "optimized": 3037350.7,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 90111.4,
+    "index_advisor_inference_ms": 15956.4,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 31005.4,
+    "total_inference_ms": 137073.2,
+    "writer_inference_ms": 76318.1,
+    "writer_tokens_in": 10609,
+    "writer_tokens_out": 8565,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1369033.28 \u2192 optimized=3037350.70 (+121.9%)",
+    "Execution time regression: 31153.679ms \u2192 60085.948ms"
+  ],
+  "strategy": "1. N. Materialized Views \u2014 TARGET: The subquery `dw1` (the inner most query) and the outermost SELECT statement \u2014 TRANSFORMATION: Create a materialized view for both the subquery `dw1` and the final SELECT statement, but with an additional filter condition to limit the number of rows returned. This will help reduce the size of the materialized views and improve performance for subsequent queries that rely on this data.\n\n    Materialized View: mv_top_sellers\n    CREATE MATERIALIZED VIEW mv_top_sellers AS\n    SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales\n    FROM store_sales, date_dim, store, item\n    WHERE ss_sold_date_sk=d_date_sk AND ss_item_sk=i_item_sk AND ss_store_sk = s_store_sk AND d_month_seq between 1217 and 1217+11\n    GROUP BY rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id)\n    WITH (access method=heap);\n\n2. N. Partitioning \u2014 TARGET: The tables involved in the query (`store_sales`, `date_dim`, `store`, `item`) \u2014 TRANSFORMATION: Consider partitioning these tables based on relevant columns such as `ss_sold_date_sk`, `d_year`, and `s_store_sk`. Partitioning can help improve query performance by reducing the amount of data that needs to be scanned for each query.\n\n3. N. Indexes \u2014 TARGET: The columns used in the WHERE and JOIN conditions of the query \u2014 TRANSFORMATION: Create indexes on the relevant columns to speed up the search operations. Specifically, consider creating indexes on `ss_sold_date_sk`, `ss_item_sk`, `ss_store_sk`, `d_month_seq` in the `store_sales` table; `i_category`, `i_class`, `i_brand`, `i_product_name`, `d_year`, `d_qoy`, `d_moy`, `s_store_sk` in the `item` table; and `ss_sold_date_sk` and `d_date_sk` in the `date_dim` table.\n\n4. N. Sort-Merge Join \u2014 TARGET: The join between `store_sales`, `date_dim`, `store`, and `item` \u2014 TRANSFORMATION: Rearrange the tables in the FROM clause so that the tables are joined in a way that allows for a sort-merge join, which can be more efficient when dealing with large datasets.\n\n5. N. Filter Early \u2014 TARGET: The WHERE clause with the rank function \u2014 TRANSFORMATION: Move the filtering condition (`rk <= 100`) as early as possible, ideally before the sort operation. This will reduce the number of rows that need to be sorted and ranked.\n\n6. N. Aggregate and Group By First \u2014 TARGET: The subquery `dw1` (the inner most query) \u2014 TRANSFORMATION: Move the aggregate function `sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales` inside the group by clause of the subquery `dw1`. This will reduce the number of rows that need to be processed in the subsequent steps.\n\n7. N. Caching \u2014 TARGET: The frequently accessed subsets of data (e.g., top-selling items, popular categories) \u2014 TRANSFORMATION: Implement a caching mechanism to store and quickly retrieve these frequently accessed subsets of data, reducing the need to compute them repeatedly.\n\n8. N. Limit First \u2014 TARGET: The outermost SELECT statement \u2014 TRANSFORMATION: Move the `LIMIT 100` clause as early as possible, ideally after the sort operation. This will reduce the number of rows that need to be processed in the subsequent steps.\n\n9. N. Materialized View Refresh Strategy \u2014 TARGET: The materialized view `mv_top_sellers` \u2014 TRANSFORMATION: Configure a refresh strategy for the materialized view based on the frequency of data changes and the query's performance requirements. For example, you can set it to refresh daily or manually when needed.\n\n10. N. Query Rewrite \u2014 TARGET: The entire query \u2014 TRANSFORMATION: Consider rewriting the query to use a more efficient approach if possible. For example, you could use window functions instead of subqueries for ranking, or join the tables in a different order to take advantage of indexes. However, this may require additional testing and optimization to ensure it provides better performance than the current strategy.",
+  "writer": "cloud:gpt-5.6-luna",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": " ADHERENT\n\nThe rewrite applies the Materialized Views technique described in the strategy. It creates materialized views for both the subquery `dw1` and the final SELECT statement, with an additional "
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

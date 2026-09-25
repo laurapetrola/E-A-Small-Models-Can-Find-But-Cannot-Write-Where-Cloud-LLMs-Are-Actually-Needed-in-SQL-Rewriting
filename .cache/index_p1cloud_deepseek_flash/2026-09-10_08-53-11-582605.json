@@ -1,0 +1,493 @@
+{
+  "timestamp": "2026-09-10T08:53:11.582574",
+  "query_hash": "3505b74fb5bb",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 191151.1,
+  "reasoning_trace": "<think>\nWe are given a query and the schema for relevant tables (with no existing indexes). We are to recommend indexes that would most reduce the execution cost.\n\nFirst, let's break down the query:\n\nThe main query selects from a derived table (dj) and the customer table. The derived table is a subquery that joins store_sales, date_dim, store, and household_demographics, and then groups by ss_ticket_number and ss_customer_sk, counting the number of rows.\n\nThe derived table is then joined with the customer table on ss_customer_sk = c_customer_sk, and then filters the count between 1 and 5, ordering by count descending and then by c_last_name.\n\nLooking at the execution plan (which we don't have, but we can infer from the query structure):\n\n1. The derived table (subquery) involves multiple joins and a filter on date_dim.d_dom (between 1 and 2) and on household_demographics.hd_buy_potential (two values) and hd_vehicle_count (>0) and a condition on hd_dep_count and hd_vehicle_count (if hd_vehicle_count>0 then hd_dep_count/hd_vehicle_count > 1). Also, store.s_county in a list of four repeated strings (which is redundant) and date_dim.d_year in (2000,2001,2002).\n\n2. The tables involved in the derived table are:\n   - store_sales (57M rows)\n   - date_dim (73k rows)\n   - store (44 rows)\n   - household_demographics (7.2k rows)\n\nThe query does a join between store_sales and date_dim, store, and household_demographics.\n\nWithout indexes, the planner will likely do a sequential scan on the largest table (store_sales) and then do nested loops or hash joins with the other tables. This is a heavy operation.\n\nNow, let's identify the bottlenecks:\n\n1. The store_sales table has 57M rows. The query filters store_sales by ss_sold_date_sk (join with date_dim) and ss_store_sk (join with store) and ss_hdemo_sk (join with household_demographics). Also, the date_dim filter is on d_dom (between 1 and 2) which is a small range (2 days). The store table has only 44 rows, so that join is cheap. The household_demographics table has 7.2k rows, so that is also not too bad.\n\n2. The main issue is the join between store_sales and date_dim and household_demographics. Since store_sales is large, we need to avoid a sequential scan on it.\n\n3. The condition on store_sales.ss_sold_date_sk = date_dim.d_date_sk: we can index store_sales.ss_sold_date_sk and/or date_dim.d_date_sk.\n\n4. The condition on store_sales.ss_store_sk = store.s_store_sk: store has only 44 rows, so an index on store.s_store_sk might help, but the table is small. Alternatively, an index on store_sales.ss_store_sk might help.\n\n5. The condition on store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk: household_demographics is small (7.2k rows) so an index on household_demographics.hd_demo_sk might help, but the table is small. Alternatively, an index on store_sales.ss_hdemo_sk might help.\n\n6. The date_dim table has a condition on d_dom (between 1 and 2). We can index date_dim.d_date_sk (which is the primary key) but note that d_dom is a derived column. Without an index on d_dom, the planner might use the primary key and then filter by d_dom, which is a functional index or a separate index.\n\n7. The household_demographics table has conditions on hd_buy_potential (two values) and hd_vehicle_count (>0) and a condition on hd_dep_count and hd_vehicle_count (if hd_vehicle_count>0 then hd_dep_count/hd_vehicle_count > 1). We can index household_demographics on hd_buy_potential and hd_vehicle_count and hd_dep_count? But note that the condition is complex.\n\n8. The store table has a condition on s_county (in a list of four repeated strings). Since store has only 44 rows, we can ignore indexing for now.\n\nNow, let's think about the derived table:\n\nThe derived table groups by ss_ticket_number and ss_customer_sk. The grouping might be done by a hash or sort, but the main issue is the data retrieval.\n\nWe are to recommend indexes that would most reduce the execution cost.\n\nGiven the tables and the conditions, the most expensive part is likely the store_sales table. We need to index the columns that are frequently used in joins and filters.\n\nRecommendations:\n\n1. Index store_sales on ss_sold_date_sk, ss_store_sk, and ss_hdemo_sk. But note that the query does three joins and one filter on store_sales. We can create a composite index or separate indexes.\n\n   However, note that the query does:\n     - ss_sold_date_sk = date_dim.d_date_sk (with a filter on date_dim.d_dom)\n     - ss_store_sk = store.s_store_sk (with a filter on store.s_county, which is small)\n     - ss_hdemo_sk = household_demographics.hd_demo_sk (with multiple conditions)\n\n   We can create an index on store_sales for (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover the joins.\n\n2. For date_dim, we can index d_dom? But note that the condition is on d_dom, which is a derived column. We can create a B-tree index on d_dom.\n\n3. For household_demographics, we can index hd_buy_potential, hd_vehicle_count, and the condition on hd_dep_count and hd_vehicle_count. But note that the condition is complex and involves a division. We might create a composite index on (hd_vehicle_count, hd_dep_count) and then use a partial index for hd_buy_potential? However, the condition on hd_buy_potential is an OR condition. We can create a GIN index for the OR condition? But the database has pg_trgm, so we might use a B-tree index on hd_buy_potential.\n\nBut note: the instructions say to use the installed extensions (hypopg, pg_trgm). However, the query does not use text similarity, so we might not need pg_trgm.\n\nLet's focus on the store_sales table because it is the largest and the main driver of the cost.\n\nWe can create an index on store_sales for the columns used in the joins and filters:\n\n   - ss_sold_date_sk\n   - ss_store_sk\n   - ss_hdemo_sk\n\nBut note that the condition on store_sales also includes the date_dim filter (d_dom between 1 and 2). We can also index store_sales on ss_sold_date_sk to help the join with date_dim.\n\nAlternatively, we can create a composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover the three joins.\n\nBut note: the query also has a condition on store_sales.ss_sold_date_sk (via date_dim) and the date_dim table is being filtered by d_dom. We can also index date_dim on d_dom to avoid a sequential scan on date_dim and then filtering by d_dom.\n\nHowever, the date_dim table is small (73k rows) so a sequential scan might be acceptable. But if we index date_dim on d_dom, it might help the planner choose a more efficient plan.\n\nBut the instructions say to look for Seq Scans on large tables. The store_sales table is large, so we should focus on indexing that table.\n\nLet's break down the query step by step:\n\nThe derived table query:\n\n   SELECT ss_ticket_number, ss_customer_sk, COUNT(*) cnt\n   FROM store_sales, date_dim, store, household_demographics\n   WHERE store_sales.ss_sold_date_sk = date_dim.d_date_sk\n     AND store_sales.ss_store_sk = store.s_store_sk\n     AND store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk\n     AND date_dim.d_dom BETWEEN 1 AND 2\n     AND (household_demographics.hd_buy_potential = '1001-5000' OR household_demographics.hd_buy_potential = '5001-10000')\n     AND household_demographics.hd_vehicle_count > 0\n     AND CASE WHEN household_demographics.hd_vehicle_count > 0 THEN household_demographics.hd_dep_count / household_demographics.hd_vehicle_count ELSE NULL END > 1\n     AND date_dim.d_year IN (2000, 2001, 2002)\n     AND store.s_county IN ('Williamson County', 'Williamson County', 'Williamson County', 'Williamson County')\n\nThe conditions on store_sales are the three joins and the filter on date_dim and household_demographics.\n\nWe can create an index on store_sales for the columns that are used in the joins and the filter:\n\n   - ss_sold_date_sk (for the join with date_dim and the filter on date_dim.d_dom)\n   - ss_store_sk (for the join with store)\n   - ss_hdemo_sk (for the join with household_demographics)\n\nBut note that the condition on store_sales also includes the date_dim filter (d_dom) and the household_demographics conditions. We can also create an index on store_sales for the columns that are used in the filter, but the filter is on date_dim and household_demographics, not directly on store_sales.\n\nAlternatively, we can create a composite index on store_sales for (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover the joins.\n\nBut note: the query also has a condition on store_sales.ss_sold_date_sk via date_dim.d_dom. We can also index store_sales on ss_sold_date_sk to help the join with date_dim.\n\nLet's consider the following indexes:\n\n1. On store_sales:\n   - Index on ss_sold_date_sk (to help the join with date_dim and the filter on d_dom)\n   - Index on ss_store_sk (to help the join with store)\n   - Index on ss_hdemo_sk (to help the join with household_demographics)\n\nBut note that the query does a join on store_sales with three other tables. We can create a composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover all three joins.\n\n2. On date_dim:\n   - Index on d_dom (to quickly find the rows with d_dom between 1 and 2)\n\n3. On household_demographics:\n   - Index on hd_buy_potential (for the OR condition)\n   - Index on hd_vehicle_count (for the condition hd_vehicle_count > 0)\n   - Index on (hd_vehicle_count, hd_dep_count) for the condition on hd_dep_count and hd_vehicle_count\n\nBut note: the condition on household_demographics is complex and involves an OR and a division. We might not need an index for the division part because it is a simple arithmetic operation. However, the OR condition might be expensive.\n\nBut the instructions say to look for Seq Scans on large tables. The household_demographics table is small (7.2k rows) so a sequential scan might be acceptable. However, the OR condition might cause a full scan. We can create a GIN index on hd_buy_potential for the OR condition? But the database has pg_trgm, not GIN. We can use a B-tree index on hd_buy_potential.\n\nBut note: the OR condition is on two specific values. We can also use a partial index for these two values? But that might not be necessary.\n\nNow, let's consider the order of the indexes. We should prioritize the largest table (store_sales) because it has 57M rows.\n\nWe will recommend:\n\n1. An index on store_sales for the columns used in the joins and the filter. We can create a composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover the three joins.\n\n2. An index on date_dim for d_dom.\n\n3. An index on household_demographics for hd_buy_potential and hd_vehicle_count.\n\nBut note: the query also has a condition on store_sales.ss_sold_date_sk via date_dim.d_year (which is in the condition). We can index store_sales on ss_sold_date_sk as well, but the composite index already includes it.\n\nAlternatively, we can break down the index recommendations:\n\n- For store_sales: \n   - A composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk) to cover the joins.\n\n- For date_dim:\n   - An index on d_dom.\n\n- For household_demographics:\n   - An index on hd_buy_potential (B-tree) for the OR condition.\n   - An index on hd_vehicle_count (B-tree) for the condition hd_vehicle_count > 0.\n   - An index on (hd_vehicle_count, hd_dep_count) for the condition on hd_dep_count and hd_vehicle_count.\n\nBut note: the condition on household_demographics is:\n\n   AND (household_demographics.hd_buy_potential = '1001-5000' OR household_demographics.hd_buy_potential = '5001-10000')\n   AND household_demographics.hd_vehicle_count > 0\n   AND CASE WHEN household_demographics.hd_vehicle_count > 0 THEN household_demographics.hd_dep_count / household_demographics.hd_vehicle_count ELSE NULL END > 1\n\nWe can create a composite index on (hd_vehicle_count, hd_dep_count) to help the condition on hd_dep_count and hd_vehicle_count. But note that the condition is only applied when hd_vehicle_count > 0, so we can also use a partial index for rows where hd_vehicle_count > 0.\n\nBut the instructions say: partial_predicate must reference ONLY columns of the indexed `target` table. We can set partial_predicate to (hd_vehicle_count > 0) for the index on (hd_vehicle_count, hd_dep_count). However, the condition on hd_vehicle_count is already covered by a separate index.\n\nAlternatively, we can create a composite index on (hd_buy_potential, hd_vehicle_count, hd_dep_count) but that might not be efficient.\n\nGiven the complexity, let's stick to the following:\n\n1. store_sales: composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk)\n2. date_dim: index on d_dom\n3. household_demographics: index on hd_buy_potential and index on hd_vehicle_count and index on (hd_vehicle_count, hd_dep_count) with partial_predicate (hd_vehicle_count > 0)\n\nBut note: the query also has a condition on store_sales.ss_sold_date_sk via date_dim.d_year. We can index store_sales on ss_sold_date_sk as well, but the composite index already includes it.\n\nNow, let's write the JSON.\n\nWe are to return a list of indexes with the following structure:\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"<table_name>\",\n      \"property\": \"<column_name>\",\n      \"index_type\": \"<index type>\",\n      \"partial_predicate\": null or string,\n      \"estimated_benefit\": \"<what Seq Scan this eliminates and on how many rows>\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"<why these indexes were chosen>\"\n}\n\nWe must not suggest indexes that already exist (but the tables have no indexes, so we can suggest).\n\nWe will recommend:\n\n1. For store_sales: a composite index on (ss_sold_date_sk, ss_store_sk, ss_hdemo_sk). We can call this index_type \"BTREE\" (since it's a B-tree index) and the property is the composite column.\n\n   But note: the JSON structure requires a single column for \"property\". We cannot put a composite column. So we must break it down? Or we can create separate indexes for each column? \n\n   However, the instructions say to identify the column causing the scan. The composite index is on multiple columns. We can create three separate indexes? But that might not be as efficient as a composite index.\n\n   Alternatively, we can create three separate indexes:\n\n   - On store_sales for ss_sold_date_sk\n   - On store_sales for ss_store_sk\n   - On store_sales for ss_hdemo_sk\n\n   But the composite index is more efficient for the joins.\n\n   The instructions do not specify composite indexes, but we can suggest a composite index by having one index entry for store_sales with property being one of the columns? That doesn't work.\n\n   Let me re-read the instructions: the JSON structure has a single \"property\" field. So we can only index one column per entry.\n\n   Therefore, we must break the composite index into three separate indexes.\n\n   But note: the composite index is more efficient for the joins. However, the planner might use the composite index for the joins. But the JSON structure does not allow composite indexes.\n\n   We must follow the JSON structure. So we will create three separate indexes on store_sales:\n\n   - ss_sold_date_sk\n   - ss_store_sk\n   - ss_hdemo_sk\n\n   But note: the condition on store_sales also includes the date_dim filter (d_dom) which is a join condition. We can index store_sales on ss_sold_date_sk to help the join with date_dim.\n\n   Similarly, we can index store_sales on ss_store_sk and ss_hdemo_sk.\n\n   However, the composite index would be more efficient. But since we cannot suggest a composite index, we must suggest three separate indexes.\n\n   Alternatively, we can suggest one index for store_sales on ss_sold_date_sk, one on ss_store_sk, and one on ss_hdemo_sk.\n\n2. For date_dim: index on d_dom.\n\n3. For household_demographics: index on hd_buy_potential, index on hd_vehicle_count, and index on (hd_vehicle_count, hd_dep_count) with partial_predicate (hd_vehicle_count > 0).\n\nBut note: the condition on household_demographics is an OR condition on hd_buy_potential. We can create a B-tree index on hd_buy_potential to help the OR condition.\n\nNow, let's write the JSON.\n\nWe will have:\n\nindexes = [\n  { \"target\": \"store_sales\", \"property\": \"ss_sold_date_sk\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with date_dim and the filter on d_dom. The index will help reduce the cost of joining store_sales and date_dim.\" },\n  { \"target\": \"store_sales\", \"property\": \"ss_store_sk\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with store. The index will help reduce the cost of joining store_sales and store.\" },\n  { \"target\": \"store_sales\", \"property\": \"ss_hdemo_sk\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on store_sales for the join with household_demographics. The index will help reduce the cost of joining store_sales and household_demographics.\" },\n  { \"target\": \"date_dim\", \"property\": \"d_dom\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on date_dim for the filter on d_dom. The index will help quickly find the rows with d_dom between 1 and 2.\" },\n  { \"target\": \"household_demographics\", \"property\": \"hd_buy_potential\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on household_demographics for the OR condition on hd_buy_potential. The index will help quickly filter rows with hd_buy_potential in ('1001-5000', '5001-10000').\" },\n  { \"target\": \"household_demographics\", \"property\": \"hd_vehicle_count\", \"index_type\": \"BTREE\", \"partial_predicate\": null, \"estimated_benefit\": \"Eliminates sequential scan on household_demographics for the condition hd_vehicle_count > 0. The index will help quickly filter rows with hd_vehicle_count > 0.\" },\n  { \"target\": \"household_demographics\", \"property\": \"hd_vehicle_count\", \"index_type\": \"BTREE\", \"partial_predicate\": \"hd_vehicle_count > 0\", \"estimated_benefit\": \"Eliminates sequential scan on household_demographics for the condition on hd_dep_count and hd_vehicle_count. The index will help quickly find rows with hd_vehicle_count > 0 and then the condition on hd_dep_count can be checked.\" }\n]\n\nBut wait, the last index for household_demographics is a composite index? We cannot create a composite index because the JSON structure requires a single column. So we must break it down.\n\nActually, the condition on household_demographics is:\n\n   AND household_demographics.hd_vehicle_count > 0\n   AND CASE WHEN household_demographics.hd_vehicle_count > 0 THEN household_demographics.hd_dep_count / household_demographics.hd_vehicle_count ELSE NULL END > 1\n\nWe can create an index on hd_vehicle_count and hd_dep_count, but again, the JSON structure does not allow composite indexes.\n\nAlternatively, we can create two separate indexes:\n\n   - One on hd_vehicle_count (already done above)\n   - One on hd_dep_count? But the condition on hd_dep_count is only applied when hd_vehicle_count > 0.\n\nBut note: the condition is a division and then a comparison. We cannot index the division. We can index hd_dep_count and hd_vehicle_count separately, but that doesn't help the division.\n\nAlternatively, we can create a functional index on (hd_dep_count / hd_vehicle_count) but that is not allowed in the JSON structure.\n\nGiven the constraints, we can only index one column per index.\n\nSo we will not index the condition on hd_dep_count because it is dependent on hd_vehicle_count and the division is a function.\n\nTherefore, we will only index hd_vehicle_count for the condition on hd_vehicle_count and the condition on hd_dep_count is a separate condition that might be expensive.\n\nBut note: the condition on hd_dep_count and hd_vehicle_count is only applied when hd_vehicle_count > 0. We can create a partial index on hd_dep_count for rows where hd_vehicle_count > 0? But the JSON structure does not allow composite indexes.\n\nWe must stick to single-column indexes.\n\nSo we will not index hd_dep_count.\n\nTherefore, the indexes for househ",
+  "recommendations": [
+    {
+      "table": "store_sales",
+      "column": "ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.3,
+      "baseline_exec_ms": 2268.941,
+      "optimized_exec_ms": 2320.26,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961732.9,
+          "cost_with_index": 2961711.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931115.39,
+          "cost_with_index": 1931099.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368799.51,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 803022.69,
+          "cost_with_index": 802997.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118818.06,
+          "cost_with_index": 118817.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110160.83,
+          "cost_with_index": 21109947.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020998.05,
+          "cost_with_index": 29020287.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81960.29,
+          "cost_with_index": 81964.49,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712289.56,
+          "cost_with_index": 3657217.18,
+          "benefit_pct": 1.5
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222650.9,
+          "cost_with_index": 222650.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342774.01,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_store_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.4,
+      "baseline_exec_ms": 2302.964,
+      "optimized_exec_ms": 2292.832,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961711.31,
+          "cost_with_index": 2961711.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931099.91,
+          "cost_with_index": 1931099.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368787.36,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802997.86,
+          "cost_with_index": 802997.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.77,
+          "cost_with_index": 118817.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109947.62,
+          "cost_with_index": 21109947.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020287.35,
+          "cost_with_index": 29020287.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81964.49,
+          "cost_with_index": 81964.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712273.37,
+          "cost_with_index": 3712273.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222650.9,
+          "cost_with_index": 222650.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342762.36,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_hdemo_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.5,
+      "baseline_exec_ms": 2292.614,
+      "optimized_exec_ms": 2304.329,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961711.31,
+          "cost_with_index": 2961711.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931099.91,
+          "cost_with_index": 1931099.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368787.36,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802997.86,
+          "cost_with_index": 802997.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.77,
+          "cost_with_index": 118817.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109947.62,
+          "cost_with_index": 21109947.62,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020287.35,
+          "cost_with_index": 29020287.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81964.49,
+          "cost_with_index": 81964.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712273.37,
+          "cost_with_index": 3712273.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222650.9,
+          "cost_with_index": 222650.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342762.36,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_dom",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.8,
+      "baseline_exec_ms": 2323.605,
+      "optimized_exec_ms": 2343.16,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1435939.03,
+          "cost_with_index": 1435939.03,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2961711.31,
+          "cost_with_index": 2961711.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931099.91,
+          "cost_with_index": 1931099.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368787.36,
+          "cost_with_index": 1368787.36,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 802997.86,
+          "cost_with_index": 802997.86,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118817.77,
+          "cost_with_index": 118817.77,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29020287.35,
+          "cost_with_index": 29020287.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129258.49,
+          "cost_with_index": 129258.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1210560.61,
+          "cost_with_index": 1210560.61,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3973412.13,
+          "cost_with_index": 3973412.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937619.68,
+          "cost_with_index": 937619.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179271.22,
+          "cost_with_index": 179271.22,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81964.49,
+          "cost_with_index": 81964.49,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906080.7,
+          "cost_with_index": 906080.7,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712273.37,
+          "cost_with_index": 3712273.37,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135055.32,
+          "cost_with_index": 135055.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 222650.9,
+          "cost_with_index": 222650.9,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91640.22,
+          "cost_with_index": 91640.22,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_buy_potential",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 1.9,
+      "baseline_exec_ms": 2334.535,
+      "optimized_exec_ms": 2290.163,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342762.36,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "household_demographics",
+      "column": "hd_vehicle_count",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.7,
+      "baseline_exec_ms": 2297.221,
+      "optimized_exec_ms": 2335.975,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342762.36,
+          "cost_with_index": 1342762.36,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

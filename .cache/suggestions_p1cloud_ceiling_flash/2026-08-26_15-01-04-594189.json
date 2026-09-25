@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-08-26T15:01:04.594164",
+  "query_hash": "0ce6157463a0",
+  "suggestions": [
+    "materialize date range subquery",
+    "split OR predicate into UNION ALL branches",
+    "pre-filter large tables with date range",
+    "reorder joins to reduce intermediate rows",
+    "materialize intermediate results",
+    "push predicate down into subquery",
+    "join with date_dim after full join",
+    "materialize intermediate result sets",
+    "pre-filter large tables using derived table",
+    "join after materializing",
+    "split final join with date_dim into separate join"
+  ],
+  "improvement_pct": 64.0,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 453635.7,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH date_range AS MATERIALIZED (\n    SELECT MIN(d_date_sk) AS min_sk,\n           MAX(d_date_sk) AS max_sk\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1212 AND 1212+11\n),\ndaily AS (\n    SELECT item_sk,\n           d_date,\n           SUM(web_tot) AS web_tot,\n           MAX(web_present) AS web_present,\n           SUM(store_tot) AS store_tot,\n           MAX(store_present) AS store_present\n    FROM (\n        SELECT ws.ws_item_sk AS item_sk,\n               dd.d_date AS d_date,\n               SUM(ws.ws_sales_price) AS web_tot,\n               1 AS web_present,\n               CAST(NULL AS numeric) AS store_tot,\n               CAST(NULL AS integer) AS store_present\n        FROM web_sales ws\n        JOIN date_dim dd ON ws.ws_sold_date_sk = dd.d_date_sk\n        WHERE ws.ws_item_sk IS NOT NULL\n          AND ws.ws_sold_date_sk BETWEEN (SELECT min_sk FROM date_range) AND (SELECT max_sk FROM date_range)\n          AND dd.d_month_seq BETWEEN 1212 AND 1212+11\n        GROUP BY ws.ws_item_sk, dd.d_date\n        UNION ALL\n        SELECT ss.ss_item_sk AS item_sk,\n               dd.d_date AS d_date,\n               CAST(NULL AS numeric) AS web_tot,\n               CAST(NULL AS integer) AS web_present,\n               SUM(ss.ss_sales_price) AS store_tot,\n               1 AS store_present\n        FROM store_sales ss\n        JOIN date_dim dd ON ss.ss_sold_date_sk = dd.d_date_sk\n        WHERE ss.ss_item_sk IS NOT NULL\n          AND ss.ss_sold_date_sk BETWEEN (SELECT min_sk FROM date_range) AND (SELECT max_sk FROM date_range)\n          AND dd.d_month_seq BETWEEN 1212 AND 1212+11\n        GROUP BY ss.ss_item_sk, dd.d_date\n    ) u\n    GROUP BY item_sk, d_date\n),\ncumulative AS (\n    SELECT item_sk,\n           d_date,\n           web_tot,\n           web_present,\n           store_tot,\n           store_present,\n           SUM(web_tot) OVER w AS cume_web,\n           SUM(store_tot) OVER w AS cume_store\n    FROM daily\n    WINDOW w AS (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n),\nranked AS (\n    SELECT item_sk,\n           d_date,\n           CASE WHEN web_present IS NOT NULL THEN cume_web ELSE NULL END AS web_sales,\n           CASE WHEN store_present IS NOT NULL THEN cume_store ELSE NULL END AS store_sales,\n           MAX(CASE WHEN web_present IS NOT NULL THEN cume_web END) OVER w AS web_cumulative,\n           MAX(CASE WHEN store_present IS NOT NULL THEN cume_store END) OVER w AS store_cumulative\n    FROM cumulative\n    WINDOW w AS (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n)\nSELECT item_sk,\n       d_date,\n       web_sales,\n       store_sales,\n       web_cumulative,\n       store_cumulative\nFROM ranked\nWHERE web_cumulative > store_cumulative\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reached_sql": "WITH date_range AS MATERIALIZED (\n    SELECT MIN(d_date_sk) AS min_sk,\n           MAX(d_date_sk) AS max_sk\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1212 AND 1212+11\n),\ndaily AS (\n    SELECT item_sk,\n           d_date,\n           SUM(web_tot) AS web_tot,\n           MAX(web_present) AS web_present,\n           SUM(store_tot) AS store_tot,\n           MAX(store_present) AS store_present\n    FROM (\n        SELECT ws.ws_item_sk AS item_sk,\n               dd.d_date AS d_date,\n               SUM(ws.ws_sales_price) AS web_tot,\n               1 AS web_present,\n               CAST(NULL AS numeric) AS store_tot,\n               CAST(NULL AS integer) AS store_present\n        FROM web_sales ws\n        JOIN date_dim dd ON ws.ws_sold_date_sk = dd.d_date_sk\n        WHERE ws.ws_item_sk IS NOT NULL\n          AND ws.ws_sold_date_sk BETWEEN (SELECT min_sk FROM date_range) AND (SELECT max_sk FROM date_range)\n          AND dd.d_month_seq BETWEEN 1212 AND 1212+11\n        GROUP BY ws.ws_item_sk, dd.d_date\n        UNION ALL\n        SELECT ss.ss_item_sk AS item_sk,\n               dd.d_date AS d_date,\n               CAST(NULL AS numeric) AS web_tot,\n               CAST(NULL AS integer) AS web_present,\n               SUM(ss.ss_sales_price) AS store_tot,\n               1 AS store_present\n        FROM store_sales ss\n        JOIN date_dim dd ON ss.ss_sold_date_sk = dd.d_date_sk\n        WHERE ss.ss_item_sk IS NOT NULL\n          AND ss.ss_sold_date_sk BETWEEN (SELECT min_sk FROM date_range) AND (SELECT max_sk FROM date_range)\n          AND dd.d_month_seq BETWEEN 1212 AND 1212+11\n        GROUP BY ss.ss_item_sk, dd.d_date\n    ) u\n    GROUP BY item_sk, d_date\n),\ncumulative AS (\n    SELECT item_sk,\n           d_date,\n           web_tot,\n           web_present,\n           store_tot,\n           store_present,\n           SUM(web_tot) OVER w AS cume_web,\n           SUM(store_tot) OVER w AS cume_store\n    FROM daily\n    WINDOW w AS (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n),\nranked AS (\n    SELECT item_sk,\n           d_date,\n           CASE WHEN web_present IS NOT NULL THEN cume_web ELSE NULL END AS web_sales,\n           CASE WHEN store_present IS NOT NULL THEN cume_store ELSE NULL END AS store_sales,\n           MAX(CASE WHEN web_present IS NOT NULL THEN cume_web END) OVER w AS web_cumulative,\n           MAX(CASE WHEN store_present IS NOT NULL THEN cume_store END) OVER w AS store_cumulative\n    FROM cumulative\n    WINDOW w AS (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n)\nSELECT item_sk,\n       d_date,\n       web_sales,\n       store_sales,\n       web_cumulative,\n       store_cumulative\nFROM ranked\nWHERE web_cumulative > store_cumulative\nORDER BY item_sk, d_date\nLIMIT 100",
+  "reasoning_trace": "1. DATE-RANGE PUSHDOWN + DATE-LEADING COVERING INDEX \u2014 TARGET: the `web_sales`+`date_dim` and `store_sales`+`date_dim` joins in `web_v1`/`store_v1` \u2014 TRANSFORMATION: Resolve `d_month_seq BETWEEN 1212 AND 1223` into a bounded `d_date_sk` range/list and scan both fact tables via new indexes `(ws_sold_date_sk, ws_item_sk) INCLUDE (ws_sales_price)` and `(ss_sold_date_sk, ss_item_sk) INCLUDE (ss_sales_price)`, so only the 12-month rows enter aggregation.\n\n2. UNION-ALL DAILY CHANNEL COALESCING \u2014 TARGET: `web_v1`, `store_v1`, and the `FULL OUTER JOIN` on `(item_sk,d_date)` \u2014 TRANSFORMATION: Replace the two CTE/cumulative-window pipelines and their full join with per-channel `GROUP BY item_sk,d_date` daily totals, `UNION ALL`, then one final `GROUP BY item_sk,d_date` to produce a single row per item/date containing both web and store totals.\n\n3. SINGLE ORDERED STREAMING EVALUATION + EARLY EXIT \u2014 TARGET: the two inner `SUM(...) OVER`, the two outer `MAX(...) OVER`, and the final `ORDER BY item_sk,d_date LIMIT 100` \u2014 TRANSFORMATION: Scan the grouped stream in `item_sk,d_date` order, maintaining cumulative web/store totals and their running maxima in one forward pass; emit rows only when `web_cumulative > store_cumulative` and stop after 100 qualifying rows are emitted, eliminating the separate window sorts and final sort/limit.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 17610.651,
+      "optimized_ms": 6339.938,
+      "delta_ms": 11270.713,
+      "improvement_pct": 64.0,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1931657.19,
+      "optimized": 1866848.35,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 444807.8,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 8827.9,
+    "total_inference_ms": 453635.7,
+    "writer_inference_ms": 1194134.8,
+    "writer_tokens_in": 5206,
+    "writer_tokens_out": 136501,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. DATE-RANGE PUSHDOWN + DATE-LEADING COVERING INDEX \u2014 TARGET: the `web_sales`+`date_dim` and `store_sales`+`date_dim` joins in `web_v1`/`store_v1` \u2014 TRANSFORMATION: Resolve `d_month_seq BETWEEN 1212 AND 1223` into a bounded `d_date_sk` range/list and scan both fact tables via new indexes `(ws_sold_date_sk, ws_item_sk) INCLUDE (ws_sales_price)` and `(ss_sold_date_sk, ss_item_sk) INCLUDE (ss_sales_price)`, so only the 12-month rows enter aggregation.\n\n2. UNION-ALL DAILY CHANNEL COALESCING \u2014 TARGET: `web_v1`, `store_v1`, and the `FULL OUTER JOIN` on `(item_sk,d_date)` \u2014 TRANSFORMATION: Replace the two CTE/cumulative-window pipelines and their full join with per-channel `GROUP BY item_sk,d_date` daily totals, `UNION ALL`, then one final `GROUP BY item_sk,d_date` to produce a single row per item/date containing both web and store totals.\n\n3. SINGLE ORDERED STREAMING EVALUATION + EARLY EXIT \u2014 TARGET: the two inner `SUM(...) OVER`, the two outer `MAX(...) OVER`, and the final `ORDER BY item_sk,d_date LIMIT 100` \u2014 TRANSFORMATION: Scan the grouped stream in `item_sk,d_date` order, maintaining cumulative web/store totals and their running maxima in one forward pass; emit rows only when `web_cumulative > store_cumulative` and stop after 100 qualifying rows are emitted, eliminating the separate window sorts and final sort/limit.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was UNION-ALL DAILY CHANNEL COALESCING, and the rewrite implements this by combining web and store data per item/date with `UNION ALL` and a final `GROUP BY` t"
+  },
+  "raw_sql": "WITH web_v1 as ( select ws_item_sk item_sk, d_date, sum(sum(ws_sales_price)) over (partition by ws_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from web_sales ,date_dim where ws_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ws_item_sk is not NULL group by ws_item_sk, d_date), store_v1 as ( select ss_item_sk item_sk, d_date, sum(sum(ss_sales_price)) over (partition by ss_item_sk order by d_date rows between unbounded preceding and current row) cume_sales from store_sales ,date_dim where ss_sold_date_sk=d_date_sk and d_month_seq between 1212 and 1212+11 and ss_item_sk is not NULL group by ss_item_sk, d_date) select * from (select item_sk ,d_date ,web_sales ,store_sales ,max(web_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) web_cumulative ,max(store_sales) over (partition by item_sk order by d_date rows between unbounded preceding and current row) store_cumulative from (select case when web.item_sk is not null then web.item_sk else store.item_sk end item_sk ,case when web.d_date is not null then web.d_date else store.d_date end d_date ,web.cume_sales web_sales ,store.cume_sales store_sales from web_v1 web full outer join store_v1 store on (web.item_sk = store.item_sk and web.d_date = store.d_date) )x )y where web_cumulative > store_cumulative order by item_sk ,d_date limit 100"
+}

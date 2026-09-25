@@ -1,0 +1,175 @@
+{
+  "timestamp": "2026-09-04T11:08:35.094320",
+  "query_hash": "48fbb3e8a39d",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 51710.3,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nFirst, the query has three CTEs: release_movies, rating_movies, and production_movies. Then it joins these with the title table and kind_type. The main goal is to find movies with their release dates, ratings, and producing companies, filtered by kind 'movie'.\n\nLooking at the relevant tables and their indexes:\n\n- company_name has no indexes. But it's used in production_movies CTE, which joins with movie_companies on company_id and then with company_type. Since company_name is joined on company_id, maybe an index on company_id would help, but the existing indexes on movie_companies might already cover that. Wait, the movie_companies table has indexes on movie_id, company_id, and company_type_id. So maybe the join from movie_companies to company_name is causing a full table scan on company_name because there's no index on company_name's id? Wait, no, the company_name table's id is the primary key, so if there's an index on id, which there should be. Wait, the user said company_name has no indexes. Oh, that's a problem. So if company_name has no indexes, then when joining with movie_companies on company_id, which is a foreign key to company_name.id, the join would require a full table scan on company_name. So adding an index on company_name.id (which is the primary key) might not be necessary, but maybe the join condition is on company_id, which is the primary key of company_name. Wait, maybe the company_name table's id is the primary key, so it's already indexed. But the user says company_name has no indexes. That's conflicting. Wait, the user's schema says company_name has no indexes. So that's a problem. So any query that accesses company_name without an index on the join columns would have a full table scan.\n\nSimilarly, looking at the other tables. The title table has an index on kind_id, which is used in the join with kind_type. The movie_companies table has indexes on movie_id, company_id, and company_type_id. The movie_info and movie_info_idx have indexes on info_type_id and movie_id. The info_type table has no indexes, which might be an issue for the joins in release_movies and rating_movies.\n\nLet me break down each part of the query.\n\nStarting with the production_movies CTE:\n\nSELECT mc.movie_id, MIN(cn.name) AS name\nFROM movie_companies AS mc\nJOIN company_name AS cn ON cn.id = mc.company_id\nJOIN company_type AS ct ON ct.id = mc.company_type_id\nWHERE cn.country_code = '[us]'\nAND ct.kind = 'production companies'\nGROUP BY mc.movie_id\n\nHere, the join with company_name is on mc.company_id = cn.id. Since company_name has no indexes, this join would require a full table scan on company_name. Also, the WHERE clause filters on cn.country_code and ct.kind. But since company_type has no indexes, the join with company_type might also be causing a full table scan. So adding indexes on company_name.id (which is primary key, so already exists?), but maybe the country_code and company_type's kind are not indexed. Wait, the user says company_type has no indexes. So the join on ct.id = mc.company_type_id would require a full table scan on company_type, which has 4 rows. But that's a small table, maybe not a big issue. However, the main issue is the company_name table's lack of indexes.\n\nNext, the release_movies CTE:\n\nSELECT DISTINCT mi.movie_id\nFROM movie_info AS mi\nJOIN info_type AS it2 ON it2.id = mi.info_type_id\nWHERE it2.info = 'release dates'\n\nHere, the join is on info_type.id = movie_info.info_type_id. Since info_type has no indexes, this join would require a full table scan on info_type. Also, the WHERE clause filters on it2.info = 'release dates', which is a specific value. So an index on info_type.info would help here.\n\nSimilarly, the rating_movies CTE:\n\nSELECT miidx.movie_id, MIN(miidx.info) AS info\nFROM movie_info_idx AS miidx\nJOIN info_type AS it ON it.id = miidx.info_type_id\nWHERE it.info = 'rating'\nGROUP BY miidx.movie_id\n\nAgain, the join with info_type on info_type_id would require a full table scan on info_type. Adding an index on info_type.info would help.\n\nNow, looking at the main query:\n\nJOIN release_movies ON release_movies.movie_id = t.id\nJOIN rating_movies ON rating_movies.movie_id = t.id\nJOIN production_movies ON production_movies.movie_id = t.id\n\nThe title table is joined with kind_type on kind_id. The title table has an index on kind_id, which is good. But the main query's WHERE clause is kt.kind = 'movie', which is a filter on kind_type.kind. Since kind_type has no indexes, this would require a full table scan on kind_type.\n\nSo, the main full table scans are on info_type (in release_movies and rating_movies), company_name (in production_movies), and kind_type (in the main query). Also, the production_movies CTE's join with company_name might be causing a full table scan on company_name if there's no index on cn.name or country_code.\n\nWait, in the production_movies CTE, the WHERE clause has cn.country_code = '[us]'. If company_name has no indexes, then this filter would require a full table scan. So adding an index on company_name.country_code would help here. Also, the MIN(cn.name) might benefit from an index on cn.name, but since it's a MIN, maybe an index on (country_code, name) would help.\n\nBut the user's schema says company_name has no indexes. So, the joins involving company_name, info_type, and kind_type are causing full table scans. Let me list the tables that are being scanned:\n\n1. info_type (used in release_movies and rating_movies)\n2. company_name (used in production_movies)\n3. kind_type (used in the main query)\n\nEach of these tables is being scanned because they lack appropriate indexes. So, the indexes needed would be:\n\nFor info_type: index on info column to speed up the WHERE clause filtering.\nFor company_name: index on country_code to filter the rows where country_code = '[us]'.\nFor kind_type: index on kind to filter where kind = 'movie'.\n\nAdditionally, in the production_movies CTE, the join with company_name is on mc.company_id = cn.id. Since company_name's id is the primary key, that's already indexed. But the WHERE clause is on cn.country_code, which is not indexed. So adding an index on company_name.country_code would help.\n\nSo, the indexes to suggest are:\n\n- info_type (info)\n- company_name (country_code)\n- kind_type (kind)\n\nEach of these would eliminate a full table scan on their respective tables. The estimated benefit would be the number of rows in each table that are being scanned. For example, info_type has 113 rows, so a full scan is trivial, but if the query is using it in a join, maybe the index would help with the join performance. However, the main issue is the full table scan on these tables due to lack of indexes.\n\nWait, but the user's schema says that company_name has no indexes. So, the join between movie_companies and company_name would require a full table scan on company_name. Similarly, the joins with info_type and kind_type would require full table scans.\n\nSo, the indexes needed are:\n\n1. info_type (info): to filter on 'release dates' and 'rating'.\n2. company_name (country_code): to filter on '[us]'.\n3. kind_type (kind): to filter on 'movie'.\n\nEach of these indexes would target the columns used in the WHERE clauses or JOIN conditions, thus eliminating the full table scans.\n\nTherefore, the JSON should list these three indexes.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on info_type (113 rows) for filtering 'release dates' and 'rating' values\"\n    },\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_name (234,997 rows) for filtering US production companies\"\n    },\n    {\n      \"target\": \"kind_type\",\n      \"property\": \"kind\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on kind_type (7 rows) for filtering 'movie' kind\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target columns involved in WHERE filters and JOIN conditions that currently cause full table scans. The info_type.info index enables fast lookup of release dates and ratings, the company_name.country_code index filters US companies efficiently, and the kind_type.kind index quickly identifies movie kinds.\"\n}",
+  "recommendations": [
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 38.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.4,
+      "baseline_exec_ms": 20646.798,
+      "optimized_exec_ms": 20567.107,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 4.4,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7295.56,
+          "cost_with_index": 7295.86,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 1094046.87,
+          "cost_with_index": 1222342.41,
+          "benefit_pct": -11.7
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 383210.14,
+          "cost_with_index": 266472.09,
+          "benefit_pct": 30.5
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 46694.22,
+          "cost_with_index": 47337.11,
+          "benefit_pct": -1.4
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16572.43,
+          "cost_with_index": 19184.54,
+          "benefit_pct": -15.8
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 401804.78,
+          "cost_with_index": 283554.91,
+          "benefit_pct": 29.4
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 17462.35,
+          "cost_with_index": 17452.9,
+          "benefit_pct": 0.1
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 15.7,
+      "baseline_exec_ms": 21009.016,
+      "optimized_exec_ms": 17708.039,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -13.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 13425773.2,
+          "cost_with_index": 13380937.79,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7275.5,
+          "cost_with_index": 7319.33,
+          "benefit_pct": -0.6
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 738894.34,
+          "cost_with_index": 734962.26,
+          "benefit_pct": 0.5
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49897.82,
+          "cost_with_index": 51325.81,
+          "benefit_pct": -2.9
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 408792.88,
+          "cost_with_index": 409392.72,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 6883.29,
+          "cost_with_index": 6798.24,
+          "benefit_pct": 1.2
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 1385518.8,
+          "cost_with_index": 3197655.05,
+          "benefit_pct": -130.8
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 2610078.62,
+          "cost_with_index": 2016831.67,
+          "benefit_pct": 22.7
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "kind_type",
+      "column": "kind",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.5,
+      "baseline_exec_ms": 18313.954,
+      "optimized_exec_ms": 18585.63,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.9,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 738894.34,
+          "cost_with_index": 728975.3,
+          "benefit_pct": 1.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49897.82,
+          "cost_with_index": 49177.75,
+          "benefit_pct": 1.4
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 16694.57,
+          "cost_with_index": 16694.7,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

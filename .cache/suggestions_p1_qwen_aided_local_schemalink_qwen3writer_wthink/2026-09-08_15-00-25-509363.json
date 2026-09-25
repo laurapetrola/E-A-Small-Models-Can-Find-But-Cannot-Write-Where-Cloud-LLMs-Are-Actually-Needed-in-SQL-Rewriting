@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-08T15:00:25.508101",
+  "query_hash": "f6be26408cf5",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": -20.89,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 4456221.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT i_item_id, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 FROM store_sales JOIN (SELECT * FROM customer_demographics WHERE cd_gender = 'F' AND cd_marital_status = 'W' AND cd_education_status = 'College') AS cd_filtered ON store_sales.ss_cdemo_sk = cd_filtered.cd_demo_sk JOIN (SELECT * FROM promotion WHERE NOT (p_channel_email = 'Y' AND p_channel_event = 'Y')) AS p_filtered ON store_sales.ss_promo_sk = p_filtered.p_promo_sk JOIN (SELECT * FROM date_dim WHERE d_year = 2001) AS d_filtered ON store_sales.ss_sold_date_sk = d_filtered.d_date_sk JOIN item ON store_sales.ss_item_sk = item.i_item_sk GROUP BY i_item_id ORDER BY i_item_id LIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this SQL optimization problem. The user wants me to identify the main cost drivers in the query and suggest optimization strategies without writing SQL. Let me start by understanding the original query.\n\nThe query is selecting several aggregates (avg of different columns) from the store_sales table, joined with customer_demographics, date_dim, item, and promotion. The filters are on gender, marital status, education, and some promotion channels, with a year filter. The result is grouped by i_item_id and ordered, limited to 100 rows.\n\nFirst, I need to figure out what's causing performance issues. Common issues in such queries are large joins, repeated subqueries, or inefficient filtering. Let me look at the tables involved and their sizes. The store_sales table has 57 million rows, which is huge. Joining it with other tables could be expensive.\n\nLooking at the joins: store_sales is joined with customer_demographics, date_dim, item, and promotion. Each of these tables has varying sizes. The customer_demographics has 1.9 million rows, date_dim has 73k, item 28k, promotion 355. So the main join is with store_sales, which is the largest table.\n\nThe WHERE clause has several conditions. The filters on cd_gender, cd_marital_status, cd_education_status are on customer_demographics. Since these are equality conditions, they might be able to filter rows early. However, if the customer_demographics table is large, even with these filters, it might still return a lot of rows. But since the query is grouping by i_item_id, maybe the aggregation can be optimized.\n\nAnother thing is the promotion filters: (p_channel_email = 'N' or p_channel_event = 'N'). This is an OR condition, which can be tricky for the optimizer. It might lead to a full scan of the promotion table, which has 355 rows, so maybe not too bad, but if the index isn't optimal, it could be a problem.\n\nThe date filter is on d_year = 2001, which is a single year. The date_dim table has 73k rows, so filtering by year would narrow it down, but again, if the join with store_sales is expensive, that's a problem.\n\nNow, considering the joins. The store_sales is joined with customer_demographics via ss_cdemo_sk. If there's an index on ss_cdemo_sk in store_sales, that could help. Similarly, the joins with date_dim (ss_sold_date_sk = d_date_sk) and item (ss_item_sk = i_item_sk) might benefit from indexes.\n\nBut the main issue here is the large store_sales table. If the query is doing a full scan of store_sales, that's going to be slow. However, since there's a GROUP BY on i_item_id, maybe we can find a way to aggregate early or use a more efficient join order.\n\nAnother thing is the OR condition in the promotion filter. ORs can be hard to optimize, so maybe rewriting it as a NOT (p_channel_email = 'Y' AND p_channel_event = 'Y') could help, but the user said not to invent columns, so I can't add new columns. Alternatively, using a CTE or subquery to filter the promotion table first might help.\n\nWait, the user wants the optimization strategy as a structured list, each line being a technique targeting a specific part of the query. Let me think about possible optimizations.\n\n1. **Filter Early on Customer Demographics**: The customer_demographics table is joined with store_sales. The filters on cd_gender, cd_marital_status, and cd_education_status are equality conditions. If these can be applied to the customer_demographics table first, reducing the number of rows before joining, that would help. So, maybe creating a CTE or subquery that filters customer_demographics first, then joining with store_sales. But the user said not to write SQL, just the strategy. So the technique would be to pre-filter the customer_demographics table to reduce the join size.\n\n2. **Index on Promotion Table**: The promotion table has an OR condition. If there's an index on p_channel_email and p_channel_event, the query might be able to use an index scan for the OR condition. But the user's database has pg_trgm and hypopg extensions. Maybe using a GIN index on the promotion table's p_channel_email and p_channel_event columns? Wait, but the OR is between two columns. Alternatively, using a functional index or a covering index. However, the user's task is to suggest the technique, not the exact index. So the technique would be to create an index on the promotion table for the filtered columns to speed up the OR condition.\n\n3. **Join Order Optimization**: The query joins store_sales with multiple tables. The order of joins can affect performance. If we can join with the smaller tables first (like promotion, date_dim, item) before joining with store_sales, that might reduce the intermediate result size. For example, joining customer_demographics first, then promotion, then date_dim, and finally store_sales. But again, the user wants the technique, not the exact join order. So the technique would be to reorder the joins to process smaller tables first, reducing the number of rows early in the join process.\n\n4. **Materialize Subqueries**: If the customer_demographics and promotion filters can be materialized into subqueries, that might reduce the number of rows joined with store_sales. For example, filtering customer_demographics and promotion first, then joining with store_sales. This would be a technique of materializing the filtered subsets of customer_demographics and promotion tables.\n\n5. **Use of Indexes on Store_Sales**: The store_sales table is the largest. If there are indexes on the join columns (ss_cdemo_sk, ss_promo_sk, ss_sold_date_sk, ss_item_sk), that could speed up the joins. However, the user's task is to suggest the technique, not the exact index. So the technique would be to ensure that indexes exist on the join columns of store_sales to speed up the joins with other tables.\n\n6. **Filter on Date Dim Early**: The date_dim is filtered by d_year = 2001. If this can be applied early, reducing the number of rows in date_dim before joining with store_sales, that would help. So the technique would be to filter the date_dim table first, then join with store_sales.\n\nNow, considering the order of the optimizations. The most impactful would be filtering the customer_demographics and promotion tables early, as they are joined with store_sales. If those can be reduced in size, the join with store_sales would be less expensive. Then, using indexes on the join columns of store_sales would help. Also, the OR condition on promotion might benefit from an index.\n\nSo, the structured list would start with filtering customer_demographics and promotion tables, then using indexes on store_sales joins, then optimizing the join order, and finally handling the OR condition with an index.\n\n</think>\n\n1. **Filter Early on Customer Demographics** \u2014 TARGET: `customer_demographics` \u2014 TRANSFORMATION: Pre-filter `cd_gender = 'F'`, `cd_marital_status = 'W'`, and `cd_education_status = 'College'` to reduce the join size with `store_sales`  \n2. **Index on Promotion Filter Columns** \u2014 TARGET: `promotion` \u2014 TRANSFORMATION: Create an index on `(p_channel_email, p_channel_event)` to optimize the `OR` condition in the WHERE clause  \n3. **Join Order Optimization** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Reorder joins to process smaller tables (`customer_demographics`, `promotion`, `date_dim`) first, then join with `store_sales` to minimize intermediate row counts  \n4. **Materialize Subquery for Date Dim** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Filter `d_year = 2001` early to reduce the number of rows joined with `store_sales`  \n5. **Index on Store_Sales Join Columns** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Ensure indexes on `ss_cdemo_sk`, `ss_promo_sk`, `ss_sold_date_sk`, and `ss_item_sk` to accelerate joins with filtered tables  \n6. **Rewrite OR Condition as NOT** \u2014 TARGET: `promotion` \u2014 TRANSFORMATION: Replace `(p_channel_email = 'N' OR p_channel_event = 'N')` with `NOT (p_channel_email = 'Y' AND p_channel_event = 'Y')` to leverage index scans more effectively",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 6360.9,
+      "optimized_ms": 7689.86,
+      "delta_ms": -1328.96,
+      "improvement_pct": -20.89,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 117354.0,
+      "optimized": 116995.53,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 3031175.7,
+    "index_advisor_inference_ms": 101710.1,
+    "reflection_iterations": 4,
+    "labeler_inference_ms": 1323335.5,
+    "total_inference_ms": 4456221.3,
+    "writer_inference_ms": 15294950.7,
+    "writer_tokens_in": 20150,
+    "writer_tokens_out": 74508,
+    "writer_calls": 11
+  },
+  "errors": [
+    "Execution time regression: 6360.9ms \u2192 7689.86ms"
+  ],
+  "strategy": "1. **Filter Early on Customer Demographics** \u2014 TARGET: `customer_demographics` \u2014 TRANSFORMATION: Pre-filter `cd_gender = 'F'`, `cd_marital_status = 'W'`, and `cd_education_status = 'College'` to reduce the join size with `store_sales`  \n2. **Index on Promotion Filter Columns** \u2014 TARGET: `promotion` \u2014 TRANSFORMATION: Create an index on `(p_channel_email, p_channel_event)` to optimize the `OR` condition in the WHERE clause  \n3. **Join Order Optimization** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Reorder joins to process smaller tables (`customer_demographics`, `promotion`, `date_dim`) first, then join with `store_sales` to minimize intermediate row counts  \n4. **Materialize Subquery for Date Dim** \u2014 TARGET: `date_dim` \u2014 TRANSFORMATION: Filter `d_year = 2001` early to reduce the number of rows joined with `store_sales`  \n5. **Index on Store_Sales Join Columns** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Ensure indexes on `ss_cdemo_sk`, `ss_promo_sk`, `ss_sold_date_sk`, and `ss_item_sk` to accelerate joins with filtered tables  \n6. **Rewrite OR Condition as NOT** \u2014 TARGET: `promotion` \u2014 TRANSFORMATION: Replace `(p_channel_email = 'N' OR p_channel_event = 'N')` with `NOT (p_channel_email = 'Y' AND p_channel_event = 'Y')` to leverage index scans more effectively",
+  "writer": "local:qwen3:8b+think",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to pre-filter tables (customer_demographics, promotion, date_dim) early using WHERE clauses. The rewrite applies the same technique by materializing filter"
+  },
+  "raw_sql": "select i_item_id, avg(ss_quantity) agg1, avg(ss_list_price) agg2, avg(ss_coupon_amt) agg3, avg(ss_sales_price) agg4 from store_sales, customer_demographics, date_dim, item, promotion where ss_sold_date_sk = d_date_sk and ss_item_sk = i_item_sk and ss_cdemo_sk = cd_demo_sk and ss_promo_sk = p_promo_sk and cd_gender = 'F' and cd_marital_status = 'W' and cd_education_status = 'College' and (p_channel_email = 'N' or p_channel_event = 'N') and d_year = 2001 group by i_item_id order by i_item_id limit 100"
+}

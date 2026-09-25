@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-09-03T07:38:19.447897",
+  "query_hash": "48fbb3e8a39d",
+  "suggestions": [
+    "reorder joins to reduce intermediate rows",
+    "pre-filter a large table as a CTE before the join",
+    "materialize filtered subquery into CTE",
+    "convert an IN subquery to a semi-join",
+    "split multiple table joins into CTEs for filtering",
+    "materialize a subquery into a CTE",
+    "join filtered info_type into movie_info and movie_info_idx"
+  ],
+  "improvement_pct": -103.71,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 463906.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "SELECT MIN(cn.name) AS producing_company,\n       MIN(miidx.info) AS rating,\n       MIN(t.title) AS movie\nFROM company_name AS cn\nJOIN movie_companies AS mc ON cn.id = mc.company_id\nJOIN title AS t ON t.id = mc.movie_id\nJOIN movie_info AS mi ON mi.movie_id = t.id\nJOIN info_type AS it2 ON it2.id = mi.info_type_id\nJOIN movie_info_idx AS miidx ON miidx.movie_id = t.id\nJOIN info_type AS it ON it.id = miidx.info_type_id\nWHERE cn.country_code = '[us]'\n  AND it.info = 'rating'\n  AND it2.info = 'release dates'\n  AND t.kind_id IN (SELECT id FROM kind_type WHERE kind = 'movie')\n  AND mc.company_type_id IN (SELECT id FROM company_type WHERE kind = 'production companies')",
+  "reasoning_trace": "<think>\nOkay, let's take a look at this query. The user wants to optimize it by identifying the main cost drivers and suggesting strategies. The original query is a complex join of multiple tables, and they've already tried several strategies. Now, I need to come up with a different approach.\n\nFirst, I'll analyze the query structure. The main goal is to get the minimum values of company name, rating info, and movie title. The tables involved are company_name, company_type, info_type, kind_type, movie_companies, movie_info, movie_info_idx, and title. \n\nLooking at the WHERE clause, there are several conditions. The country_code is set to '[us]', which might be a placeholder for a specific country code. The company_type is 'production companies', and info_type conditions are for 'rating' and 'release dates'. The kind_type is 'movie'. \n\nThe joins are between these tables, and there are multiple conditions linking them. The main tables involved in joins are movie_companies, movie_info, movie_info_idx, and title. \n\nNow, considering the previous strategies, they tried things like join reordering, index-enabled joins, redundant column elimination, etc. The user wants a different strategy. Let me think about what's left.\n\nOne thing I notice is that the query has multiple joins that might not be necessary. For example, the kind_type (kt) is joined with title via kt.id = t.kind_id, and the condition is kt.kind = 'movie'. Since kt.kind is a static value, maybe we can filter the title table directly instead of joining with kind_type. That would eliminate the need for the kind_type table altogether, reducing the number of joins and the data processed.\n\nAnother point is the use of MIN functions on multiple columns. Aggregation can be expensive if done on large datasets. However, the previous strategy mentioned pushing aggregation down, so maybe that's already considered. \n\nLooking at the movie_info and movie_info_idx tables, they are both joined with movie_companies and title. The conditions on info_type_id (it.id and it2.id) might be filtering specific info types. If those info_type tables are scanned multiple times, maybe using subqueries or CTEs to pre-filter them could help. But the user already tried subquery factorization for info_type.\n\nWait, the original query has two info_type joins: it and it2. The first is for 'rating' and the second for 'release dates'. Since these are static values, maybe pre-filtering the info_type tables to get their IDs first would reduce the number of rows joined. However, the user already tried that in strategy 5 and 7. \n\nAnother angle: the movie_companies table is joined with company_type (ct) where ct.kind is 'production companies'. If the company_type table has a small number of rows (since there are only 4 rows as per the schema), maybe filtering the company_type early could help. But the previous strategy 9 suggested removing the kind_type join if possible, which is similar.\n\nWait, the user's strategy 9 was about removing the kind_type join if kt.kind is a static filter. Since kt.kind is 'movie', which is a static value, maybe we can filter the title table directly by kind_id. For example, if we know that kt.id corresponds to 'movie', we can precompute that id and filter the title table's kind_id to that value. That would eliminate the need to join with kind_type, reducing the number of tables involved in the join.\n\nSo, the main cost drivers might be the joins with kind_type and the multiple joins involving movie_info and movie_info_idx. By eliminating the kind_type join and pre-filtering the title's kind_id, we can reduce the number of tables and rows processed. Additionally, ensuring that the info_type joins are optimized by pre-filtering their IDs could help, but since the user already tried that, maybe focusing on the kind_type is the next step.\n\nAnother possibility is that the movie_companies table is being joined with multiple tables, leading to a large intermediate result. If we can filter the movie_companies table early by the company_type and country_code, that might reduce the rows early in the join process. However, the WHERE clause already has cn.country_code = '[us]' and ct.kind = 'production companies', which are part of the join conditions. \n\nWait, the cn.country_code is part of the WHERE clause, but the join with company_type (ct) is via ct.id = mc.company_type_id. So, the company_type table is being joined to filter the company_type_id. Since company_type has only 4 rows, maybe that's not the main issue. \n\nPutting it all together, the main optimization could be to eliminate the join with kind_type by pre-filtering the title table's kind_id. Since kt.kind is 'movie', and kt.id is the kind_id for the title table, we can replace the join with kind_type by directly filtering the title table's kind_id to the value corresponding to 'movie'. This would remove the need to join with kind_type, reducing the number of tables and the complexity of the query. \n\nSo, the strategy would be to replace the join with kind_type and the condition kt.kind = 'movie' with a direct filter on the title table's kind_id. That would eliminate the need for the kind_type table, reducing the number of joins and the data processed.\n\n</think>\n\n1. JOIN ELIMINATION \u2014 TARGET: `kind_type` (kt) \u2014 TRANSFORMATION: Replace the join with `kind_type` and the condition `kt.kind = 'movie'` with a direct filter on `t.kind_id` using the precomputed `kind_id` for 'movie' from `kind_type` to avoid joining with a small table  \n2. INDEX-ENABLED FILTERING \u2014 TARGET: `movie_info_idx.info_type_id` \u2014 TRANSFORMATION: Add an index on `movie_info_idx.info_type_id` to accelerate filtering for `it2.id = miidx.info_type_id` and `it.id = miidx.info_type_id`  \n3. REDUNDANT JOIN ELIMINATION \u2014 TARGET: `company_type` (ct) \u2014 TRANSFORMATION: Remove the join with `company_type` if `mc.company_type_id` can be directly filtered via `ct.id = mc.company_type_id` and `ct.kind = 'production companies'` using a precomputed `company_type_id` value  \n4. AGGREGATION PUSHDOWN \u2014 TARGET: `MIN(cn.name), MIN(miidx.info), MIN(t.title)` \u2014 TRANSFORMATION: Ensure all joins are completed before aggregation to avoid partial aggregation on unfiltered datasets  \n5. INDEX-ENABLED JOIN \u2014 TARGET: `movie_companies.movie_id` \u2014 TRANSFORMATION: Ensure `movie_companies` is joined with `title` via `movie_id` using an index on `movie_companies.movie_id` and `title.id`",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 897.288,
+      "optimized_ms": 1827.857,
+      "delta_ms": -930.569,
+      "improvement_pct": -103.71,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 20798.68,
+      "optimized": 20511.74,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 385366.3,
+    "index_advisor_inference_ms": 73180.6,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 5359.2,
+    "total_inference_ms": 463906.1,
+    "writer_inference_ms": 1645686.3,
+    "writer_tokens_in": 9082,
+    "writer_tokens_out": 220924,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Execution time regression: 897.288ms \u2192 1827.857ms"
+  ],
+  "strategy": "1. JOIN ELIMINATION \u2014 TARGET: `kind_type` (kt) \u2014 TRANSFORMATION: Replace the join with `kind_type` and the condition `kt.kind = 'movie'` with a direct filter on `t.kind_id` using the precomputed `kind_id` for 'movie' from `kind_type` to avoid joining with a small table  \n2. INDEX-ENABLED FILTERING \u2014 TARGET: `movie_info_idx.info_type_id` \u2014 TRANSFORMATION: Add an index on `movie_info_idx.info_type_id` to accelerate filtering for `it2.id = miidx.info_type_id` and `it.id = miidx.info_type_id`  \n3. REDUNDANT JOIN ELIMINATION \u2014 TARGET: `company_type` (ct) \u2014 TRANSFORMATION: Remove the join with `company_type` if `mc.company_type_id` can be directly filtered via `ct.id = mc.company_type_id` and `ct.kind = 'production companies'` using a precomputed `company_type_id` value  \n4. AGGREGATION PUSHDOWN \u2014 TARGET: `MIN(cn.name), MIN(miidx.info), MIN(t.title)` \u2014 TRANSFORMATION: Ensure all joins are completed before aggregation to avoid partial aggregation on unfiltered datasets  \n5. INDEX-ENABLED JOIN \u2014 TARGET: `movie_companies.movie_id` \u2014 TRANSFORMATION: Ensure `movie_companies` is joined with `title` via `movie_id` using an index on `movie_companies.movie_id` and `title.id`",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy aimed for JOIN ELIMINATION by replacing joins with `kind_type` and `company_type` using precomputed IDs, and the rewrite achieved this by using subqueries with `IN` to filter `"
+  },
+  "raw_sql": "SELECT MIN(cn.name) AS producing_company, MIN(miidx.info) AS rating, MIN(t.title) AS movie FROM company_name AS cn, company_type AS ct, info_type AS it, info_type AS it2, kind_type AS kt, movie_companies AS mc, movie_info AS mi, movie_info_idx AS miidx, title AS t WHERE cn.country_code ='[us]' AND ct.kind ='production companies' AND it.info ='rating' AND it2.info ='release dates' AND kt.kind ='movie' AND mi.movie_id = t.id AND it2.id = mi.info_type_id AND kt.id = t.kind_id AND mc.movie_id = t.id AND cn.id = mc.company_id AND ct.id = mc.company_type_id AND miidx.movie_id = t.id AND it.id = miidx.info_type_id AND mi.movie_id = miidx.movie_id AND mi.movie_id = mc.movie_id AND miidx.movie_id = mc.movie_id"
+}

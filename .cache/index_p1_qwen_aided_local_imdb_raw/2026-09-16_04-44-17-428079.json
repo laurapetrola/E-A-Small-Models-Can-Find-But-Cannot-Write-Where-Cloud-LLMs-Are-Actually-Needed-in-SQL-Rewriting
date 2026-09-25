@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-09-16T04:44:17.428061",
+  "query_hash": "48fbb3e8a39d",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 46472.0,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nFirst, looking at the query: it's selecting MIN values from several tables, joining them with various conditions. The main tables involved are company_name, company_type, info_type, kind_type, movie_companies, movie_info, movie_info_idx, and title. \n\nThe user mentioned that the existing indexes are on movie_companies (company_id, company_type_id, movie_id), movie_info (info_type_id, movie_id), movie_info_idx (info_type_id, movie_id), and title (kind_id). The other tables like company_name, company_type, info_type, kind_type don't have indexes. \n\nThe physical execution plan isn't available, but the user says there are Seq Scans on large tables. Since the query involves joining multiple tables, the lack of indexes on the tables with many rows (like company_name, movie_info, movie_info_idx, title) could be causing full table scans. \n\nLet me break down the query's conditions. The WHERE clause has several conditions:\n\n- cn.country_code = '[us]' (company_name)\n- ct.kind = 'production companies' (company_type)\n- it.info = 'rating' (info_type)\n- it2.info = 'release dates' (info_type)\n- kt.kind = 'movie' (kind_type)\n- Various joins between tables like mc.company_id = cn.id, mc.company_type_id = ct.id, etc.\n\nThe main tables that are likely being scanned sequentially are company_name (234k rows), movie_info (14.8M rows), movie_info_idx (1.38M rows), title (2.5M rows). Since these tables are large and not indexed, adding indexes on the filtered columns could help.\n\nLooking at the conditions:\n\n1. For company_name, the filter is on country_code = '[us]'. So an index on company_name.country_code would help. Since there's no existing index, creating a B-tree index on country_code would speed up this scan.\n\n2. The info_type tables (it and it2) have conditions on info = 'rating' and 'release dates'. Since these are equality checks, indexes on info would be beneficial. However, info_type has 113 rows, so maybe a full scan is acceptable, but if the query is part of a larger plan, indexing could still help.\n\n3. The title table is joined with kind_id = 'movie' (from kind_type). The title table has an index on kind_id, so that's already covered. But maybe other columns in the join conditions could benefit.\n\n4. The movie_companies table is joined with mc.company_id = cn.id and mc.company_type_id = ct.id. Since movie_companies has indexes on company_id, company_type_id, and movie_id, those are already covered. However, the join with company_name might still be a bottleneck if the country_code filter isn't indexed.\n\n5. The movie_info and movie_info_idx tables are joined with info_type_id and movie_id. They already have indexes on info_type_id and movie_id, so those are covered. But the query is using MIN on info, which might require scanning all rows, but with indexes, it could be optimized.\n\nWait, the query is using MIN on cn.name, miidx.info, and t.title. So the query is looking for the minimum values across these columns. The joins are essential here. \n\nThe main issue is that the company_name table is being scanned without an index on country_code. Adding an index on company_name.country_code would allow the query to quickly find the rows where country_code is 'us', reducing the number of rows scanned. Similarly, the title table's kind_id is already indexed, but maybe other columns in the join conditions could be indexed. However, the main problem seems to be the lack of indexes on company_name, info_type, and possibly other tables.\n\nWait, the info_type table has 113 rows, so a full scan is manageable. But the query is joining it with it2.id = mi.info_type_id and it.id = miidx.info_type_id. Since info_type is small, maybe the indexes aren't needed here. \n\nThe main tables causing Seq Scans are likely company_name (234k rows), movie_info (14.8M), movie_info_idx (1.38M), and title (2.5M). \n\nFor company_name, adding an index on country_code would help. For movie_info and movie_info_idx, the existing indexes on info_type_id and movie_id are already there. However, the query is using MIN on info, which might require scanning all rows, but with the existing indexes, maybe it's optimized. \n\nAnother possible bottleneck is the title table. The query joins title with kind_id = 'movie' (from kind_type). The title table has an index on kind_id, so that's covered. \n\nWait, the query also has conditions on mc.movie_id = t.id, which is already covered by the movie_id index in movie_companies. \n\nSo the main candidates for indexes are:\n\n1. company_name (country_code)\n2. info_type (info) \u2014 but info_type is small, maybe not needed.\n3. title (maybe other columns, but kind_id is already indexed)\n4. movie_info and movie_info_idx \u2014 their indexes are already there.\n\nBut the user mentioned that the existing indexes are on movie_companies, movie_info, movie_info_idx, and title. The other tables (company_name, company_type, info_type, kind_type) don't have indexes. \n\nThe query's WHERE clause has cn.country_code = '[us]'. Since company_name has no index on country_code, a B-tree index on that column would help. \n\nAlso, the company_type table has a condition ct.kind = 'production companies'. Since company_type has 4 rows, a full scan is acceptable, but if there's an index on kind, it would be faster. However, the user says to not suggest indexes that already exist. Since company_type has no indexes, adding an index on kind might help, but the query's condition is on ct.kind, which is a small table. \n\nSimilarly, info_type has it.info = 'rating' and it2.info = 'release dates'. Since info_type has 113 rows, a full scan is manageable, but indexing info could help. However, the user might not need that. \n\nThe main Seq Scan is likely on company_name (234k rows) due to the country_code filter. Adding an index on company_name.country_code would eliminate that scan. \n\nAnother possible Seq Scan is on movie_info (14.8M rows) and movie_info_idx (1.38M rows). However, they already have indexes on info_type_id and movie_id. The query joins these tables with movie_id and info_type_id, so the existing indexes should help. \n\nThe title table has an index on kind_id, which is used in the join. \n\nSo the primary index to add is on company_name.country_code. \n\nWait, the query also has a join between mc.company_id = cn.id. Since company_name has no index on id, but the existing indexes on movie_companies are on company_id, company_type_id, and movie_id. The join between mc.company_id = cn.id would require looking up cn.id, which is the primary key of company_name. Since cn.id is the primary key, it's already indexed. \n\nSo the main issue is the country_code filter on company_name. Adding an index on country_code would help. \n\nTherefore, the recommended index is on company_name(country_code) as a B-tree. \n\nAnother possible candidate is the info_type table's info column, but since it's small, maybe not. \n\nSo the answer should suggest an index on company_name(country_code) to eliminate the Seq Scan on that table.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on company_name (234,997 rows) by enabling fast filter on country_code = '[us]'\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query performs a Seq Scan on company_name (234k rows) due to the filter on country_code. Adding a B-tree index on country_code would eliminate this scan. Other tables have existing indexes or small row counts making additional indexes unnecessary.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 2.2,
+      "baseline_exec_ms": 1052.776,
+      "optimized_exec_ms": 1029.537,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.6,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4803.99,
+          "cost_with_index": 4803.99,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55705.34,
+          "cost_with_index": 55705.34,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7443.68,
+          "cost_with_index": 7443.68,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66918.17,
+          "cost_with_index": 66918.17,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9493.57,
+          "cost_with_index": 9493.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 45665.43,
+          "cost_with_index": 43317.06,
+          "benefit_pct": 5.1
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3805.96,
+          "cost_with_index": 3805.96,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3845.5,
+          "cost_with_index": 3845.5,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

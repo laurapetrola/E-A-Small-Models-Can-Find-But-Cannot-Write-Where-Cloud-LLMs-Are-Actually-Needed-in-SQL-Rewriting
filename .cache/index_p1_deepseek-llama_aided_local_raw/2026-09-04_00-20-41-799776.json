@@ -1,0 +1,367 @@
+{
+  "timestamp": "2026-09-04T00:20:41.799734",
+  "query_hash": "7aed0fb6af9b",
+  "model": "deepseek-llama+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 50104.9,
+  "reasoning_trace": "<think>\nOkay, so I'm trying to help someone who's a database index advisor. They have a SQL query that's not performing well and can't be fixed with just SQL rewriting. My task is to figure out which indexes would most reduce the execution cost for this specific query.\n\nFirst, I need to understand the query they're dealing with. Let me read through it carefully.\n\nThe query starts with a SELECT * from a subquery. The subquery selects i_manager_id, sum_sales, and avg_monthly_sales. These are calculated by joining several tables: item, store_sales, date_dim, and store. The conditions for the join include ss_item_sk = i_item_sk, ss_sold_date_sk = d_date_sk, and ss_store_sk = s_store_sk. There's also a condition on d_month_seq being in a range of 12 months.\n\nThen, there are some more complex conditions using CASE WHEN and ELSE NULL. It groups by i_manager_id and d_moy (which I assume is month of year). The subquery then filters where the result of the CASE is greater than 0.1, orders by i_manager_id, avg_monthly_sales, sum_sales, and limits to 100 rows.\n\nSo, the main tables involved are item, store_sales, date_dim, and store. The indexes available are on these tables, but none exist on item or store yet.\n\nLooking at the hardware snapshot, they have enough RAM and disk space, so it's not a resource issue. The DB latency is low, so it's probably not a slow IO problem either.\n\nNow, I need to analyze the query execution plan. Since the plan is withheld, I'll focus on the structure of the query and the tables involved.\n\nThe subquery seems to be doing a lot of joins and aggregations. Let me break down the joins:\n\n- item and store_sales are joined via ss_item_sk = i_item_sk.\n- date_dim is joined via d_date_sk = ss_sold_date_sk.\n- store is joined via ss_store_sk = s_store_sk.\n\nSo, the subquery is doing multiple joins on these tables. The problem here might be that without proper indexes, each of these joins could be causing full table scans or high cost operations.\n\nLooking at the existing schema, none of the relevant tables (item, store_sales, date_dim, store) have any indexes. That's a red flag because without indexes, joining large tables can be very slow.\n\nThe query also has a WHERE clause that filters based on d_month_seq in a range of 12 months. This is likely to reduce the number of rows considered, but if date_dim doesn't have an index on d_date_sk or d_month_seq, this could still be costly.\n\nAnother part of the query is the CASE WHEN avg_monthly_sales > 0 THEN ... ELSE NULL END > 0.1. This means that for each group (i_manager_id, d_moy), we're checking if the average sales are positive and then calculating some measure of variation. If this condition isn't met, it's considered as null, which might affect the result set.\n\nNow, considering the execution plan, the user mentioned that there are no existing indexes on these tables. So, I need to suggest adding indexes that would most benefit the query.\n\nFirst, let's look at the main joins:\n\n1. item and store_sales: The join is on ss_item_sk = i_item_sk. Since both tables don't have indexes on their respective columns, this could be a Seq Scan. To avoid this, I should index i_item_sk in item and ss_item_sk in store_sales.\n\n2. date_dim is being joined via d_date_sk, which is the primary key. However, since it's not indexed, any join on d_date_sk would require a Seq Scan. So, adding an index on d_date_sk in date_dim could help.\n\n3. The store table is also being joined via ss_store_sk = s_store_sk. Since store doesn't have an index on s_store_sk, this might cause another Seq Scan. Indexing s_store_sk in store would be beneficial.\n\nNext, the WHERE clause uses d_month_seq in a range. This suggests that date_dim's d_month_seq could benefit from an index. However, since d_date_sk is already the primary key, adding an index on d_month_seq with a column like d_month_seq might help in quickly filtering the dates.\n\nAdditionally, the CASE condition involves avg_monthly_sales and sum_sales. The avg is calculated using a partition by i_manager_id, which suggests that grouping by i_manager_id could be optimized with an index on i_manager_id in item.\n\nLooking at the group by clause: group by i_manager_id, d_moy. So, if there's an index on (i_manager_id, d_moy), it might speed up the grouping and filtering.\n\nPutting this all together, I need to suggest indexes that target the most frequently accessed columns with the best potential for reducing Seq Scans.\n\nSo, the main candidates are:\n\n- Indexing i_item_sk in item to avoid a Seq Scan on the item table during the join with store_sales.\n- Indexing ss_item_sk in store_sales since it's part of the join condition.\n- Adding an index on d_date_sk in date_dim to speed up the join and the WHERE clause filtering by month.\n- Indexing s_store_sk in store for the join with store_sales.\n\nAdditionally, considering the CASE condition, having an index on i_manager_id could help in partitioning the data efficiently when calculating avg_monthly_sales.\n\nI should also check if any of these indexes already exist. From the schema provided, it seems none do, so all are candidates.\n\nNow, I need to structure this into a JSON response as per the instructions, listing each index with its target table, column, index type, partial predicate (if applicable), and estimated benefit.\n\n</think>\n\n```json\n{\n  \"indexes\": [\n    {\n      \"target\": \"item\",\n      \"property\": \"i_item_sk\",\n      \"index_type\": \"B-tree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on item during store_sales join\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_item_sk\",\n      \"index_type\": \"B-tree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales during item join\"\n    },\n    {\n      \"target\": \"date_dim\",\n      \"property\": \"d_date_sk\",\n      \"index_type\": \"B-tree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on date_dim for date-based joins and WHERE clauses\"\n    },\n    {\n      \"target\": \"store\",\n      \"property\": \"s_store_sk\",\n      \"index_type\": \"B-tree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store during store_sales join\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The suggested indexes target the most frequently accessed columns and join conditions, reducing the likelihood of costly Seq Scans. The indexes on i_item_sk and ss_item_sk eliminate redundant scans during joins, while the date_dim index supports efficient date filtering and joining.\"\n}\n```",
+  "recommendations": [
+    {
+      "table": "item",
+      "column": "i_item_sk",
+      "index_type": "b-tree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.5,
+      "baseline_exec_ms": 4430.866,
+      "optimized_exec_ms": 4451.686,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368907.58,
+          "cost_with_index": 1368907.58,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118061.32,
+          "cost_with_index": 118061.32,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129314.2,
+          "cost_with_index": 129314.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938064.85,
+          "cost_with_index": 938064.85,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179122.08,
+          "cost_with_index": 179122.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81930.46,
+          "cost_with_index": 81930.46,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906077.19,
+          "cost_with_index": 906077.19,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_item_sk",
+      "index_type": "b-tree",
+      "estimated_benefit_pct": 0.3,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.6,
+      "baseline_exec_ms": 4447.117,
+      "optimized_exec_ms": 4419.115,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968908.67,
+          "cost_with_index": 2968950.94,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931616.71,
+          "cost_with_index": 1931659.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368907.58,
+          "cost_with_index": 1368937.5,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 809665.29,
+          "cost_with_index": 809729.29,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118061.32,
+          "cost_with_index": 118054.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21109936.22,
+          "cost_with_index": 21110463.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29035264.55,
+          "cost_with_index": 29037021.06,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129314.2,
+          "cost_with_index": 128975.69,
+          "benefit_pct": 0.3
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179122.08,
+          "cost_with_index": 179122.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81930.46,
+          "cost_with_index": 81930.82,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712152.06,
+          "cost_with_index": 3712192.1,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345227.41,
+          "cost_with_index": 1345256.1,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342642.66,
+          "cost_with_index": 1342671.47,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "date_dim",
+      "column": "d_date_sk",
+      "index_type": "b-tree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.6,
+      "baseline_exec_ms": 4416.694,
+      "optimized_exec_ms": 4441.612,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1430890.04,
+          "cost_with_index": 1430890.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2968950.94,
+          "cost_with_index": 2968950.94,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1931659.12,
+          "cost_with_index": 1931659.12,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368937.5,
+          "cost_with_index": 1368937.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q69.json",
+          "baseline_cost": 809729.29,
+          "cost_with_index": 809729.29,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118054.2,
+          "cost_with_index": 118054.2,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29037021.06,
+          "cost_with_index": 29037021.06,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 129367.69,
+          "cost_with_index": 129367.69,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1197615.31,
+          "cost_with_index": 1197615.31,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4106330.53,
+          "cost_with_index": 4106330.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938064.85,
+          "cost_with_index": 938064.85,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179122.08,
+          "cost_with_index": 179122.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81930.82,
+          "cost_with_index": 81930.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906077.19,
+          "cost_with_index": 906077.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712192.1,
+          "cost_with_index": 3712192.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.1,
+          "cost_with_index": 1345256.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91765.33,
+          "cost_with_index": 91765.33,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store",
+      "column": "s_store_sk",
+      "index_type": "b-tree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.9,
+      "baseline_exec_ms": 4444.674,
+      "optimized_exec_ms": 4403.557,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q1.json",
+          "baseline_cost": 1430890.04,
+          "cost_with_index": 1430890.04,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1368937.5,
+          "cost_with_index": 1368937.5,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179122.08,
+          "cost_with_index": 179122.08,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81930.82,
+          "cost_with_index": 81930.82,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712192.1,
+          "cost_with_index": 3712192.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 134871.05,
+          "cost_with_index": 134871.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345256.1,
+          "cost_with_index": 1345256.1,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342671.47,
+          "cost_with_index": 1342671.47,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

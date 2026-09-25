@@ -1,0 +1,223 @@
+{
+  "timestamp": "2026-09-16T14:24:17.023434",
+  "query_hash": "9bfc8af68b00",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "mysql",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 78516.8,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for their specific SQL query. Let me start by understanding the query and the schema.\n\nFirst, the query is selecting the minimum name from char_name and the minimum title from title, with several conditions. The main tables involved are cast_info, char_name, company_name, movie_companies, role_type, and title. \n\nLooking at the schema, the relevant tables and their indexes are provided. The user mentioned that the existing indexes are already listed, so I need to check which tables are being scanned fully and what columns are causing those scans.\n\nThe query has several JOIN conditions and WHERE clauses. Let me break down the WHERE conditions:\n\n1. ci.note LIKE '%(voice)%' and '%(uncredited)%' \u2013 These are text pattern searches on the ci.note column.\n2. cn.country_code = '[ru]' \u2013 This is a simple equality check on country_code in company_name.\n3. rt.role = 'actor' \u2013 Equality check on role in role_type.\n4. t.production_year > 2005 \u2013 Range condition on production_year in title.\n5. Various JOIN conditions linking the tables.\n\nNow, looking at the tables involved:\n\n- **cast_info**: Has indexes on movie_id, person_id, person_role_id, role_id. The query uses ci.note (no index), ci.movie_id (indexed), ci.person_role_id (indexed), and ci.role_id (indexed). But the note column is used in a LIKE condition, which might not be covered by existing indexes.\n  \n- **char_name**: No indexes. The query joins on chn.id = ci.person_role_id. Since chn.id is the primary key, maybe that's okay, but if there's a scan here, maybe an index on other columns? Wait, the query uses chn.id in the JOIN, which is the primary key, so that's probably indexed. But the query is selecting MIN(chn.name), which is a column in char_name. If there's a full table scan on char_name, that's a problem.\n\n- **company_name**: No indexes. The query filters on cn.country_code = '[ru]'. Since there's no index on country_code, this could be causing a full scan. Also, the JOIN condition is cn.id = mc.company_id, which is the primary key of company_name, so that's probably indexed.\n\n- **movie_companies**: Has indexes on company_id, company_type_id, movie_id. The query uses mc.movie_id (indexed), mc.company_id (indexed), and mc.company_type_id (indexed). The JOIN conditions are covered by existing indexes.\n\n- **role_type**: No indexes. The query has rt.role = 'actor', which is an equality check. Since role_type has no indexes, this might be causing a full scan.\n\n- **title**: Has an index on kind_id. The query uses t.id = mc.movie_id and t.id = ci.movie_id, which are primary keys, so those are indexed. The condition t.production_year > 2005 is a range condition on a column without an index. Also, the query selects MIN(t.title), which is a column in title. If there's a full scan on title due to the production_year filter, that's a problem.\n\nSo, the main tables causing full table scans are:\n\n1. **char_name**: No indexes. The query uses chn.id (primary key) in the JOIN, but the MIN(chn.name) might require scanning the entire table. However, since chn.id is the primary key, maybe the JOIN is efficient, but the MIN operation could still require a full scan.\n\n2. **company_name**: No indexes on country_code. The filter cn.country_code = '[ru]' would scan the entire table.\n\n3. **role_type**: No indexes on role. The filter rt.role = 'actor' would scan the entire table.\n\n4. **title**: The condition t.production_year > 2005 is a range condition on a column without an index. Also, the MIN(t.title) might require scanning the table.\n\nWait, but the title table's primary key is id, and the query joins on t.id, which is indexed. However, the production_year is not indexed. So, the filter on production_year would require a full table scan on title.\n\nSo, the tables that need indexes are:\n\n- **company_name** on country_code.\n- **role_type** on role.\n- **title** on production_year.\n- **char_name** might not need an index if the JOIN is on the primary key, but the MIN(chn.name) could still require a full scan. However, since the query is selecting MIN, maybe an index on name would help? But the user's schema says char_name has no indexes. So, if the query is scanning char_name, then an index on name could help.\n\nBut the user's instruction says to look for full table scans on large tables. Let me check the table sizes:\n\n- char_name has 3.1 million rows. That's a large table. If the query is scanning it, that's a problem.\n- company_name has 234k rows. Also a significant table.\n- role_type has 12 rows. Probably not a problem.\n- title has 2.5 million rows. Also a large table.\n\nSo, the main candidates for indexes are:\n\n1. **company_name** on country_code.\n2. **title** on production_year.\n3. **char_name** on name (to help with MIN).\n4. **role_type** on role.\n\nBut the user's query has a JOIN between company_name and movie_companies on cn.id = mc.company_id. Since cn.id is the primary key of company_name, that's already indexed. So the filter on country_code is the issue.\n\nSimilarly, for role_type, the JOIN is on rt.id = ci.role_id. Since rt.id is the primary key, that's indexed. But the filter rt.role = 'actor' is on a non-indexed column. So, the filter would require a full scan on role_type.\n\nFor title, the filter is on production_year, which is not indexed. So, the query would scan the entire title table for rows where production_year > 2005.\n\nFor char_name, the query joins on chn.id (primary key), but the MIN(chn.name) would require scanning all rows in char_name, which is 3.1 million rows. So, an index on name could help, but since the query is using MIN, maybe an index on name would allow the database to find the minimum quickly.\n\nBut the user's instruction says to look for full table scans on large tables. So, the main tables causing full scans are company_name (due to country_code filter), title (due to production_year filter), and char_name (due to MIN(name) and possibly other conditions).\n\nSo, the indexes needed would be:\n\n- On company_name (country_code)\n- On title (production_year)\n- On char_name (name)\n- On role_type (role)\n\nBut the user's schema says that company_name has no indexes, so adding an index on country_code would help. Similarly, title has no index on production_year, so adding that. Char_name has no indexes, so an index on name. Role_type has no indexes, so an index on role.\n\nBut the user's query has a JOIN between role_type and cast_info on rt.id = ci.role_id. Since rt.id is the primary key, that's already indexed. However, the filter rt.role = 'actor' is on a non-indexed column. So, the filter would require a full scan on role_type. Adding an index on role would help here.\n\nSo, the indexes to suggest are:\n\n1. company_name (country_code)\n2. title (production_year)\n3. char_name (name)\n4. role_type (role)\n\nBut the user's query may not be scanning all these tables. Let me check the query again.\n\nThe query joins char_name with cast_info via chn.id = ci.person_role_id. Since chn.id is the primary key, that's indexed. However, the MIN(chn.name) would require scanning all rows in char_name that are joined. But if the join is on the primary key, maybe the database can efficiently retrieve the necessary rows. However, if there's a full table scan on char_name, then an index on name would help.\n\nSimilarly, the company_name is joined on cn.id = mc.company_id (primary key), but the filter is on country_code. So, the filter would require a full scan on company_name unless there's an index on country_code.\n\nThe title table is joined on t.id (primary key), but the filter is on production_year. So, the filter would require a full scan on title unless there's an index on production_year.\n\nThe role_type is joined on rt.id (primary key), but the filter is on role. So, the filter would require a full scan on role_type unless there's an index on role.\n\nTherefore, the indexes needed are:\n\n- company_name (country_code)\n- title (production_year)\n- char_name (name)\n- role_type (role)\n\nBut the user's schema says that company_name has no indexes, so adding an index on country_code would help. Similarly for the others.\n\nNow, the user's instruction says to return the indexes in JSON format, specifying the target table, property (column), index type, prefix_length (if needed), partial_predicate (null), and estimated benefit.\n\nFor each of these columns:\n\n1. company_name.country_code: index on country_code. Since it's a VARCHAR, maybe a prefix length. But the user's schema shows country_code as VARCHAR(255), so setting prefix_length to 255. But the query uses an equality check, so a full index on country_code would be sufficient.\n\n2. title.production_year: index on production_year. Since it's an integer, no prefix length needed.\n\n3. char_name.name: index on name. Since it's a TEXT column, but the query uses MIN(name), which would benefit from an index on name. However, in MySQL, for TEXT columns, you need to specify a prefix length. But the user's schema shows name as TEXT. So, perhaps set prefix_length to 255.\n\n4. role_type.role: index on role. Since it's a VARCHAR, maybe set prefix_length to 255.\n\nBut the user's instruction says that for TEXT or BLOB columns, a prefix length is required. So, for char_name.name (TEXT), we need to set prefix_length. Similarly for role_type.role (VARCHAR, but if it's a TEXT column, but the schema says role is VARCHAR(32) in role_type. Wait, looking back at the schema:\n\nLooking at the schema for role_type:\n\nTable: role_type (rows: 12)\n    id  INTEGER  [PK, NOT NULL]\n    role  VARCHAR(32)  [NOT NULL]\n  Primary Key: (id)\n\nSo, role is VARCHAR(32). So, for the index on role, since it's a VARCHAR(32), the prefix_length can be 32. But in MySQL, when creating an index on a VARCHAR column, you can specify the prefix length. However, if the index is on the entire column, then the prefix_length is not needed. Wait, but for TEXT columns, you must specify a prefix length. For VARCHAR, you can, but it's optional. However, if the column is VARCHAR(32), then an index on the entire column is possible without a prefix length. But the user's instruction says that for TEXT or BLOB columns, a prefix length is required. Since role is VARCHAR(32), not TEXT, maybe no prefix length is needed. But the user's instruction says to set prefix_length to the appropriate value if it's TEXT or BLOB. So, for role_type.role, since it's VARCHAR(32), no prefix length is needed.\n\nSimilarly, for char_name.name, which is TEXT, we need to set a prefix length. Let's assume 255 as a common value.\n\nSo, the indexes would be:\n\n- company_name (country_code)\n- title (production_year)\n- char_name (name)\n- role_type (role)\n\nNow, the estimated benefit for each index would be the elimination of a full table scan on that table. For example, the company_name index on country_code would eliminate the full scan on company_name, which has 234k rows. Similarly for the others.\n\nSo, the JSON should list these indexes with their properties.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"company_name\",\n      \"property\": \"country_code\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on company_name (234,997 rows) for country_code = '[ru]' filter\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on title (2,528,312 rows) for production_year > 2005 filter\"\n    },\n    {\n      \"target\": \"char_name\",\n      \"property\": \"name\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": 255,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on char_name (3,140,339 rows) for MIN(name) calculation\"\n    },\n    {\n      \"target\": \"role_type\",\n      \"property\": \"role\",\n      \"index_type\": \"BTREE\",\n      \"prefix_length\": null,\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates full table scan on role_type (12 rows) for role = 'actor' filter\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target columns causing full table scans on large tables. The company_name.country_code filter requires an index for efficient lookup. The title.production_year range condition benefits from an index. The char_name.name column is used in MIN() operation, and role_type.role filter requires indexing to avoid full table scans.\"\n}",
+  "recommendations": [
+    {
+      "table": "company_name",
+      "column": "country_code",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.9,
+      "baseline_exec_ms": 96161.706,
+      "optimized_exec_ms": 95296.146,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -23.8,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 1123018.37,
+          "cost_with_index": 2177757.58,
+          "benefit_pct": -93.9
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 25491648.13,
+          "cost_with_index": 25468101.41,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7293.55,
+          "cost_with_index": 7325.5,
+          "benefit_pct": -0.4
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 735751.76,
+          "cost_with_index": 730197.07,
+          "benefit_pct": 0.8
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49935.44,
+          "cost_with_index": 51797.38,
+          "benefit_pct": -3.7
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 452270.37,
+          "cost_with_index": 435494.62,
+          "benefit_pct": 3.7
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2439217.54,
+          "cost_with_index": 5758030.42,
+          "benefit_pct": -136.1
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 4059405.17,
+          "cost_with_index": 2465571.12,
+          "benefit_pct": 39.3
+        }
+      ],
+      "workload_queries_improved": 3,
+      "workload_queries_regressed": 3,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": -2.9,
+      "validation": "executed",
+      "measured_read_benefit_pct": -76.5,
+      "baseline_exec_ms": 68432.781,
+      "optimized_exec_ms": 120790.125,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.1,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 1121900.72,
+          "cost_with_index": 1125968.13,
+          "benefit_pct": -0.4
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 25454910.3,
+          "cost_with_index": 25548749.76,
+          "benefit_pct": -0.4
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7264.58,
+          "cost_with_index": 7330.3,
+          "benefit_pct": -0.9
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 2060132.48,
+          "cost_with_index": 2062423.97,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 735594.13,
+          "cost_with_index": 750223.98,
+          "benefit_pct": -2.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 49916.82,
+          "cost_with_index": 60225.82,
+          "benefit_pct": -20.7
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17409.02,
+          "cost_with_index": 18464.7,
+          "benefit_pct": -6.1
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 451979.86,
+          "cost_with_index": 472583.27,
+          "benefit_pct": -4.6
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 737720.99,
+          "cost_with_index": 738220.67,
+          "benefit_pct": -0.1
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 19804.69,
+          "cost_with_index": 12786.72,
+          "benefit_pct": 35.4
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 2436889.11,
+          "cost_with_index": 2446698.54,
+          "benefit_pct": -0.4
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 4064432.88,
+          "cost_with_index": 4091376.64,
+          "benefit_pct": -0.7
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 6,
+      "status": null
+    },
+    {
+      "table": "char_name",
+      "column": "name",
+      "index_type": "btree",
+      "estimated_benefit_pct": -0.4,
+      "validation": "executed",
+      "measured_read_benefit_pct": 78.6,
+      "baseline_exec_ms": 74458.851,
+      "optimized_exec_ms": 15903.514,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": -0.2,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 7318.7,
+          "cost_with_index": 7341.23,
+          "benefit_pct": -0.3
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 17300.46,
+          "cost_with_index": 17335.06,
+          "benefit_pct": -0.2
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "role_type",
+      "column": "role",
+      "index_type": "btree",
+      "estimated_benefit_pct": 16.6,
+      "validation": "executed",
+      "measured_read_benefit_pct": -90.8,
+      "baseline_exec_ms": 34528.892,
+      "optimized_exec_ms": 65866.133,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 16.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 6739.14,
+          "cost_with_index": 5616.17,
+          "benefit_pct": 16.7
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "timestamp": "2026-09-03T10:56:14.757120",
+  "query_hash": "b1093534f0e1",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [
+    "Hint: the CTE on 'movie_info_filtered' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'movie_info_filtered' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'release_mi' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'release_mi' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'movie_info_hits' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'movie_info_hits' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'movie_info_matches' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'movie_info_matches' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table.",
+    "Hint: the CTE on 'matching_movie_info' materialized rows using a LIKE filter with a leading or trailing '%' \u2014 this pattern is non-sargable (no B-tree index covers it). The full table scan happens inside the CTE regardless of join order. Instead of pre-filtering with a CTE, arrive at 'matching_movie_info' late in the explicit JOIN chain and apply the LIKE condition in the ON clause \u2014 the join itself may filter more rows before reaching this table."
+  ],
+  "workload_aware": false,
+  "inference_ms": 61882.7,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. The database is PostgreSQL 15.18 with some extensions like hypopg and pg_trgm. \n\nFirst, I need to understand the query structure. The query is selecting the minimum kind and title from several tables, joining them with various conditions. The main goal is to find movies that meet specific criteria related to release dates and internet distribution, among other filters.\n\nLooking at the relevant tables and their existing indexes, I notice that some tables don't have indexes. The query involves several tables like movie_info, movie_keyword, movie_companies, etc. The existing indexes are on columns like movie_id, info_type_id, keyword_id, etc. \n\nThe key part of the query is the WHERE clause with conditions involving LIKE operators. For example, mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%'. These LIKE conditions with leading or trailing % are non-sargable, meaning they can't use standard B-tree indexes efficiently. The optimizer hints mention that these CTEs are causing full table scans, so the solution is to apply these conditions later in the join chain to allow filtering earlier.\n\nNow, looking for Seq Scans on large tables. The tables with the most rows are movie_info (14.8 million), movie_keyword (4.5 million), movie_companies (2.6 million), and title (2.5 million). These are likely the tables causing full scans. \n\nFor the movie_info table, the conditions are mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%'. Since these are non-sargable, but if we can create an index on the info column, maybe using a GIN or GiST index with pg_trgm extension for partial matches. However, the user mentioned that the LIKE patterns have leading or trailing %, which makes them non-sargable. But perhaps a partial index on info that includes the 'USA:% 199%' pattern could help. Wait, but the LIKE is using a wildcard at the start, so a B-tree index won't help. However, with pg_trgm, a GiST index might be useful for partial matches. But the user's hint says to avoid CTEs and apply the conditions in the ON clause, which might allow the join to filter rows earlier. \n\nAnother part is the movie_keyword table, which has a condition on mk.keyword_id. Since there's an index on keyword_id, maybe that's already covered. But the join with keyword table might be causing issues. \n\nThe movie_companies table has indexes on company_id, company_type_id, and movie_id. The condition here is cn.id = mc.company_id and ct.id = mc.company_type_id. Since those columns are already indexed, maybe that's okay. \n\nThe title table has an index on kind_id, which is used in the join with kind_type. \n\nThe main problem areas are the movie_info and movie_keyword tables because of the LIKE conditions. However, the existing indexes on movie_info's info_type_id and movie_id might not help with the LIKE conditions. \n\nWait, the query has mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%'. The note column is in movie_info, which has an index on movie_id. But the LIKE on note is non-sargable. Similarly, the info column in movie_info is being filtered with LIKE 'USA:% 199%'. \n\nSince the user's hints suggest that applying these conditions in the ON clause instead of CTEs might help, but the main issue is the full table scans on these tables. So, creating indexes on the columns involved in these LIKE conditions could help. However, since the LIKE patterns are non-sargable, maybe a partial index on info that includes the 'USA:%' patterns? But the user's query has OR between two LIKE conditions. \n\nAlternatively, maybe creating a GIN index on the info column using pg_trgm for the LIKE 'USA:% 199%' part. But the exact pattern is not clear. \n\nAnother angle: the movie_info table has a lot of rows, and the conditions on info and note are causing full scans. If we can create an index on info that allows filtering for 'USA:% 199%' and 'USA:% 200%', that might help. However, since the LIKE is on the start of the string, a B-tree index won't help, but a GiST index with pg_trgm might. \n\nSimilarly, the note column's LIKE '%internet%' is also non-sargable. But if we can create a GIN index on note with pg_trgm, that might help. \n\nBut the user's instructions say to avoid creating indexes that already exist. The existing indexes on movie_info are info_type_id and movie_id. So, the note and info columns don't have indexes. \n\nSo, the main candidates for indexes are:\n\n1. movie_info.info: to handle the LIKE 'USA:% 199%' and 'USA:% 200%' conditions. A GIN index with pg_trgm might help here.\n2. movie_info.note: for the LIKE '%internet%' condition. Another GIN index with pg_trgm could help.\n3. movie_keyword.keyword_id: already indexed, so maybe not needed.\n4. movie_companies.company_id: already indexed.\n5. movie_companies.movie_id: already indexed.\n\nBut the user's query has multiple conditions. Let me check the query again. The mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%' OR 'USA:% 200%'. These are two separate conditions. \n\nSince the user's hints mention that the CTEs are causing full scans, and the solution is to apply these conditions in the ON clause, perhaps the main issue is that the movie_info table is being scanned without any index on the info or note columns. \n\nTherefore, creating a GIN index on movie_info.info and movie_info.note using pg_trgm could help. However, the user's instructions say to use the installed extensions, which include pg_trgm. \n\nBut the problem is that the LIKE conditions are on the start of the string. For example, 'USA:% 199%' would match any string starting with 'USA: ' followed by 199. But with a GIN index, it might not be efficient. Alternatively, maybe a B-tree index on info that includes the 'USA:%' part. Wait, but the LIKE is on the start, so a B-tree index on info would not help. \n\nAlternatively, maybe the query can be restructured to use the existing indexes. For example, the movie_info table has an index on movie_id, so joining with other tables on movie_id might be efficient. But the problem is the filtering on info and note. \n\nGiven that, the main indexes to create would be on movie_info.info and movie_info.note using GIN with pg_trgm. However, the user's query has OR between the two LIKE conditions. \n\nBut the user's instructions say to not suggest indexes that already exist. Since the existing indexes are on info_type_id and movie_id, the info and note columns don't have indexes. \n\nSo, the top candidates are:\n\n- movie_info.info: GIN index for the LIKE 'USA:% 199%' and 'USA:% 200%' conditions.\n- movie_info.note: GIN index for the LIKE '%internet%' condition.\n\nBut the user's query has multiple conditions. However, the main tables causing full scans are movie_info and movie_keyword. \n\nWait, the movie_keyword table has a join with keyword, and the condition is k.id = mk.keyword_id. Since there's an index on keyword_id, that's already covered. \n\nSo, the main indexes needed are on movie_info.info and note. \n\nBut the user's query has a lot of joins, and the main issue is the full scans on movie_info. \n\nTherefore, the indexes to suggest would be:\n\n1. movie_info.info: GIN index with pg_trgm for the LIKE 'USA:% 199%' and 'USA:% 200%' conditions.\n2. movie_info.note: GIN index with pg_trgm for the LIKE '%internet%' condition.\n\nBut the user's query has OR between the two info conditions. However, the GIN index can handle multiple patterns. \n\nAlternatively, maybe a partial index on info that includes the 'USA:% 199%' and 'USA:% 200%' patterns. But the LIKE is using OR, so a partial index might not cover both. \n\nBut given the user's instructions, the main indexes to create are on movie_info.info and note. \n\nAnother point: the movie_companies table has a join with company_name and company_type. The conditions are cn.id = mc.company_id and ct.id = mc.company_type_id. Since those columns are already indexed, maybe that's okay. \n\nThe title table has an index on kind_id, which is used in the join with kind_type. \n\nSo, the main indexes to add are on movie_info.info and note. \n\nBut the user's query has a lot of joins, and the main problem is the full scans on movie_info. \n\nTherefore, the answer should suggest indexes on movie_info.info and note using GIN with pg_trgm. \n\nBut the user's instructions say to use the installed extensions, which include pg_trgm. So, GIN indexes are possible. \n\nSo, the JSON should list these two indexes. However, the user's query has multiple conditions, but the main ones are on info and note. \n\nWait, the query has mi.note LIKE '%internet%' and mi.info LIKE 'USA:% 199%' OR mi.info LIKE 'USA:% 200%'. So, two separate conditions on info. \n\nTherefore, creating a GIN index on movie_info.info would help with both of these conditions. \n\nSimilarly, the note column's LIKE '%internet%' would benefit from a GIN index. \n\nSo, the indexes would be:\n\n- movie_info.info with GIN (using pg_trgm)\n- movie_info.note with GIN (using pg_trgm)\n\nBut the user's query might have other tables causing full scans. For example, the movie_keyword table has a join with keyword, but the keyword_id is indexed. \n\nAnother possible candidate is the movie_companies table, but since it has indexes on company_id and movie_id, maybe not. \n\nSo, the main indexes to suggest are on movie_info.info and note. \n\nBut the user's query has a lot of joins, and the main issue is the full scans on movie_info. \n\nTherefore, the final answer should include indexes on movie_info.info and note.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"info\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"reduces full table scan on movie_info for 'USA:% 199%' and 'USA:% 200%' patterns\"\n    },\n    {\n      \"target\": \"movie_info\",\n      \"property\": \"note\",\n      \"index_type\": \"gin\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"reduces full table scan on movie_info for '%internet%' pattern\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's performance is bottlenecked by full table scans on movie_info due to non-sargable LIKE conditions. GIN indexes with pg_trgm support can accelerate pattern matching for the 'USA:% 199%'/'USA:% 200%' and '%internet%' filters. These indexes target the most expensive scan operations while leveraging the installed pg_trgm extension.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_info",
+      "column": "info",
+      "index_type": "gin",
+      "estimated_benefit_pct": 56.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": -93.5,
+      "baseline_exec_ms": 198.475,
+      "optimized_exec_ms": 384.045,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 19.1,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20752.13,
+          "cost_with_index": 20752.16,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55702.54,
+          "cost_with_index": 20463.71,
+          "benefit_pct": 63.3
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7500.19,
+          "cost_with_index": 7500.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9529.71,
+          "cost_with_index": 8260.46,
+          "benefit_pct": 13.3
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "movie_info",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 95.7,
+      "validation": "executed",
+      "measured_read_benefit_pct": 76.6,
+      "baseline_exec_ms": 222.599,
+      "optimized_exec_ms": 52.059,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20752.16,
+          "cost_with_index": 20752.16,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55702.54,
+          "cost_with_index": 55702.54,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7500.19,
+          "cost_with_index": 7500.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9529.71,
+          "cost_with_index": 9529.71,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-09-03T19:34:10.255812",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows",
+    "pre-filter a large table as a CTE before the join"
+  ],
+  "improvement_pct": 3.87,
+  "model": "llama+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 100615.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nFROM (\n    SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales,\n           RANK() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS rk\n    FROM (\n        SELECT it.i_category, it.i_class, it.i_brand, it.i_product_name,\n               fs.d_year, fs.d_qoy, fs.d_moy, st.s_store_id,\n               SUM(fs.sumsales) AS sumsales\n        FROM (\n            SELECT ss.ss_item_sk, ss.ss_store_sk, dd.d_year, dd.d_qoy, dd.d_moy,\n                   SUM(COALESCE(ss.ss_sales_price * ss.ss_quantity, 0)) AS sumsales\n            FROM store_sales ss\n            JOIN date_dim dd\n              ON ss.ss_sold_date_sk = dd.d_date_sk\n             AND dd.d_month_seq BETWEEN 1217 AND 1217 + 11\n            GROUP BY ss.ss_item_sk, ss.ss_store_sk, dd.d_year, dd.d_qoy, dd.d_moy\n        ) fs\n        JOIN item it ON fs.ss_item_sk = it.i_item_sk\n        JOIN store st ON fs.ss_store_sk = st.s_store_sk\n        GROUP BY ROLLUP(\n            it.i_category,\n            it.i_class,\n            it.i_brand,\n            it.i_product_name,\n            fs.d_year,\n            fs.d_qoy,\n            fs.d_moy,\n            st.s_store_id\n        )\n    ) dw1\n) dw2\nWHERE rk <= 100\nORDER BY i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nLIMIT 100",
+  "reached_sql": "SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nFROM (\n    SELECT i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales,\n           RANK() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS rk\n    FROM (\n        SELECT it.i_category, it.i_class, it.i_brand, it.i_product_name,\n               fs.d_year, fs.d_qoy, fs.d_moy, st.s_store_id,\n               SUM(fs.sumsales) AS sumsales\n        FROM (\n            SELECT ss.ss_item_sk, ss.ss_store_sk, dd.d_year, dd.d_qoy, dd.d_moy,\n                   SUM(COALESCE(ss.ss_sales_price * ss.ss_quantity, 0)) AS sumsales\n            FROM store_sales ss\n            JOIN date_dim dd\n              ON ss.ss_sold_date_sk = dd.d_date_sk\n             AND dd.d_month_seq BETWEEN 1217 AND 1217 + 11\n            GROUP BY ss.ss_item_sk, ss.ss_store_sk, dd.d_year, dd.d_qoy, dd.d_moy\n        ) fs\n        JOIN item it ON fs.ss_item_sk = it.i_item_sk\n        JOIN store st ON fs.ss_store_sk = st.s_store_sk\n        GROUP BY ROLLUP(\n            it.i_category,\n            it.i_class,\n            it.i_brand,\n            it.i_product_name,\n            fs.d_year,\n            fs.d_qoy,\n            fs.d_moy,\n            st.s_store_id\n        )\n    ) dw1\n) dw2\nWHERE rk <= 100\nORDER BY i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nLIMIT 100",
+  "reasoning_trace": "Here is an alternative optimization strategy:\n\n1. **Eliminate unnecessary columns** \u2014 TARGET: `select *` clause in the outer query \u2014 TRANSFORMATION: Only select the necessary columns to reduce the amount of data being transferred and processed.\n2. **Push down filters to earlier stages** \u2014 TARGET: `d_month_seq between 1217 and 1217+11` filter \u2014 TRANSFORMATION: Apply the date range filter directly in the `date_dim` join, rather than applying it after grouping.\n3. **Rewrite subquery as derived table** \u2014 TARGET: `dw1` subquery \u2014 TRANSFORMATION: Rewrite the innermost query as a derived table to avoid repeated evaluation of the same subquery.\n4. **Use efficient sorting and ranking** \u2014 TARGET: `rank()` function over partition by clause \u2014 TRANSFORMATION: Consider using a more efficient sorting and ranking algorithm, such as a top-N query or a window function with a smaller window size.\n5. **Apply rollup aggregation before grouping** \u2014 TARGET: Rollup aggregation in `dw1` subquery \u2014 TRANSFORMATION: Apply rollup aggregation before grouping, as it can reduce the number of groups and improve performance.\n6. **Use index on `ss_sold_date_sk` column** \u2014 TARGET: `store_sales` table's `ss_sold_date_sk` column \u2014 TRANSFORMATION: Ensure an index is created on the `ss_sold_date_sk` column to speed up date range filtering.\n7. **Limit subquery results before applying outer query filters** \u2014 TARGET: Outer query's `where` clause (`rk <= 100`) \u2014 TRANSFORMATION: Apply the filter on the rank column in the innermost query to limit the number of rows passed to the outer query, reducing the amount of data being sorted and ranked.\n8. **Use efficient sorting for final result set** \u2014 TARGET: Final `order by` clause \u2014 TRANSFORMATION: Consider using a more efficient sorting algorithm or indexing strategy to speed up the final sorting step.\n\nThis alternative approach focuses on eliminating unnecessary columns, pushing down filters, rewriting subqueries as derived tables, and applying rollup aggregation before grouping.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 29478.759,
+      "optimized_ms": 28336.709,
+      "delta_ms": 1142.05,
+      "improvement_pct": 3.87,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1369162.97,
+      "optimized": 1411874.03,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 79771.9,
+    "index_advisor_inference_ms": 13017.4,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 7826.6,
+    "total_inference_ms": 100615.9,
+    "writer_inference_ms": 1385211.3,
+    "writer_tokens_in": 8477,
+    "writer_tokens_out": 182811,
+    "writer_calls": 5
+  },
+  "errors": [],
+  "strategy": "Here is an alternative optimization strategy:\n\n1. **Eliminate unnecessary columns** \u2014 TARGET: `select *` clause in the outer query \u2014 TRANSFORMATION: Only select the necessary columns to reduce the amount of data being transferred and processed.\n2. **Push down filters to earlier stages** \u2014 TARGET: `d_month_seq between 1217 and 1217+11` filter \u2014 TRANSFORMATION: Apply the date range filter directly in the `date_dim` join, rather than applying it after grouping.\n3. **Rewrite subquery as derived table** \u2014 TARGET: `dw1` subquery \u2014 TRANSFORMATION: Rewrite the innermost query as a derived table to avoid repeated evaluation of the same subquery.\n4. **Use efficient sorting and ranking** \u2014 TARGET: `rank()` function over partition by clause \u2014 TRANSFORMATION: Consider using a more efficient sorting and ranking algorithm, such as a top-N query or a window function with a smaller window size.\n5. **Apply rollup aggregation before grouping** \u2014 TARGET: Rollup aggregation in `dw1` subquery \u2014 TRANSFORMATION: Apply rollup aggregation before grouping, as it can reduce the number of groups and improve performance.\n6. **Use index on `ss_sold_date_sk` column** \u2014 TARGET: `store_sales` table's `ss_sold_date_sk` column \u2014 TRANSFORMATION: Ensure an index is created on the `ss_sold_date_sk` column to speed up date range filtering.\n7. **Limit subquery results before applying outer query filters** \u2014 TARGET: Outer query's `where` clause (`rk <= 100`) \u2014 TRANSFORMATION: Apply the filter on the rank column in the innermost query to limit the number of rows passed to the outer query, reducing the amount of data being sorted and ranked.\n8. **Use efficient sorting for final result set** \u2014 TARGET: Final `order by` clause \u2014 TRANSFORMATION: Consider using a more efficient sorting algorithm or indexing strategy to speed up the final sorting step.\n\nThis alternative approach focuses on eliminating unnecessary columns, pushing down filters, rewriting subqueries as derived tables, and applying rollup aggregation before grouping.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT\n\nThe rewrite applies the strategy's main technique of rewriting subqueries as derived tables (technique #3 in the strategy), which is the primary transformation described. The original query "
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

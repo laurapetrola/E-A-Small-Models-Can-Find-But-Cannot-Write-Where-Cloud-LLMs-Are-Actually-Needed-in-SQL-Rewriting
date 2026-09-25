@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-08-27T02:34:41.612236",
+  "query_hash": "092369ddef36",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "convert an IN subquery to a semi-join",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": 47.42,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "unverified",
+  "used_fallback": true,
+  "inference_ms": 503277.1,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH date_ranges AS (\n    SELECT\n        (SELECT MIN(d_date_sk) FROM date_dim WHERE d_year = 1998) AS start_1998,\n        (SELECT MAX(d_date_sk) FROM date_dim WHERE d_year = 1998) AS end_1998,\n        (SELECT MIN(d_date_sk) FROM date_dim WHERE d_year = 1998 + 1) AS start_1999,\n        (SELECT MAX(d_date_sk) FROM date_dim WHERE d_year = 1998 + 1) AS end_1999\n),\nstore_totals AS (\n    SELECT\n        ss.ss_customer_sk,\n        's' AS sale_type,\n        SUM(CASE WHEN ss.ss_sold_date_sk BETWEEN dr.start_1998 AND dr.end_1998 THEN ss.ss_ext_list_price - ss.ss_ext_discount_amt END) AS store_1998,\n        SUM(CASE WHEN ss.ss_sold_date_sk BETWEEN dr.start_1999 AND dr.end_1999 THEN ss.ss_ext_list_price - ss.ss_ext_discount_amt END) AS store_1999\n    FROM store_sales ss\n    JOIN date_ranges dr\n      ON (ss.ss_sold_date_sk BETWEEN dr.start_1998 AND dr.end_1998)\n      OR (ss.ss_sold_date_sk BETWEEN dr.start_1999 AND dr.end_1999)\n    GROUP BY ss.ss_customer_sk\n),\nweb_totals AS (\n    SELECT\n        ws.ws_bill_customer_sk,\n        'w' AS sale_type,\n        SUM(CASE WHEN ws.ws_sold_date_sk BETWEEN dr.start_1998 AND dr.end_1998 THEN ws.ws_ext_list_price - ws.ws_ext_discount_amt END) AS web_1998,\n        SUM(CASE WHEN ws.ws_sold_date_sk BETWEEN dr.start_1999 AND dr.end_1999 THEN ws.ws_ext_list_price - ws.ws_ext_discount_amt END) AS web_1999\n    FROM web_sales ws\n    JOIN date_ranges dr\n      ON (ws.ws_sold_date_sk BETWEEN dr.start_1998 AND dr.end_1998)\n      OR (ws.ws_sold_date_sk BETWEEN dr.start_1999 AND dr.end_1999)\n    GROUP BY ws.ws_bill_customer_sk\n)\nSELECT\n    c.c_customer_id AS customer_id,\n    c.c_first_name AS customer_first_name,\n    c.c_last_name AS customer_last_name,\n    c.c_email_address AS customer_email_address\nFROM store_totals s\nJOIN web_totals w ON s.ss_customer_sk = w.ws_bill_customer_sk\nJOIN customer c ON c.c_customer_sk = s.ss_customer_sk\nWHERE s.sale_type = 's'\n  AND w.sale_type = 'w'\n  AND s.store_1998 > 0\n  AND w.web_1998 > 0\n  AND s.store_1999 IS NOT NULL\n  AND w.web_1999 IS NOT NULL\n  AND (w.web_1999 / w.web_1998) > (s.store_1999 / s.store_1998)\nORDER BY c.c_customer_id, c.c_first_name, c.c_last_name, c.c_email_address\nLIMIT 100",
+  "reasoning_trace": "1. PRECOMPUTE YEAR DATE_RANGES \u2014 TARGET: `date_dim` joins `ss_sold_date_sk = d_date_sk` / `ws_sold_date_sk = d_date_sk` with `d_year` filters \u2014 TRANSFORMATION: resolve `d_year=1998` and `d_year=1999` to their contiguous `d_date_sk` ranges once, then use direct `BETWEEN` predicates on `ss_sold_date_sk` / `ws_sold_date_sk` in the sales scans, eliminating the 73k-row `date_dim` hash join and discarding all other sales years before aggregation.\n\n2. SINGLE-PASS CONDITIONAL AGGREGATION \u2014 TARGET: the two `UNION ALL` branches inside `year_total` over `store_sales` and `web_sales` \u2014 TRANSFORMATION: scan each sales table once, grouping by the integer `ss_customer_sk` / `ws_bill_customer_sk`, and compute `store_1998`, `store_1999`, `web_1998`, `web_1999` using filtered sums restricted to the precomputed year ranges; this removes the all-years `GROUP BY` and avoids any separate per-year scan.\n\n3. PIVOTED EQUI-JOIN ON CUSTOMER_KEY \u2014 TARGET: final `FROM year_total t_s_firstyear, year_total t_s_secyear, year_total t_w_firstyear, year_total t_w_secyear` \u2014 TRANSFORMATION: replace the four-way CTE self-join with one inner equi-join of the two single-scan aggregate results on `ss_customer_sk = ws_bill_customer_sk`, keeping only rows where all four year-total columns are present, which satisfies the original four-CTE-row existence requirement without a cross product.\n\n4. LATE CUSTOMER ATTRIBUTE PROJECTION \u2014 TARGET: `customer` joined inside both `year_total` branches before aggregation \u2014 TRANSFORMATION: postpone the `customer` lookup until after the aggregate/join on `c_customer_sk`, then fetch only `c_customer_id`, `c_first_name`, `c_last_name`, `c_email_address` for the final `LIMIT 100` result; no `CHAR`/`VARCHAR` customer attributes are carried through the hash aggregation or pivoted join.\n\n5. GUARDED-RATIO SIMPLIFICATION \u2014 TARGET: final `case when ... then t_w_secyear.year_total / t_w_firstyear.year_total ...` comparison \u2014 TRANSFORMATION: after enforcing `store_1998 > 0`, `web_1998 > 0`, `store_1999 IS NOT NULL`, `web_1999 IS NOT NULL` on the pivoted row, compare the two year-total ratios directly without the `CASE` guards, since the first-year totals are already known positive.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 23661.572,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 47.42,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 29037387.03,
+      "optimized": 5191535.99,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": null
+    },
+    "inference_ms": 477546.1,
+    "index_advisor_inference_ms": 19370.4,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 6360.6,
+    "total_inference_ms": 503277.1,
+    "writer_inference_ms": 3225965.8,
+    "writer_tokens_in": 15100,
+    "writer_tokens_out": 251764,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Equivalence UNVERIFIED \u2014 the original query timed out, so its result set could not be hashed and the S=1 integrity check could not run. A rewrite is not approved unless it is verified to return the same rows as the original.",
+    "Data_Loss_Detected: filter 't_s_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_secyear.dyear = 1998 + 1' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.dyear = 1998' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_secyear.dyear = 1998 + 1' was removed or altered",
+    "Data_Loss_Detected: filter 't_s_firstyear.year_total > 0' was removed or altered",
+    "Data_Loss_Detected: filter 't_w_firstyear.year_total > 0' was removed or altered"
+  ],
+  "strategy": "1. PRECOMPUTE YEAR DATE_RANGES \u2014 TARGET: `date_dim` joins `ss_sold_date_sk = d_date_sk` / `ws_sold_date_sk = d_date_sk` with `d_year` filters \u2014 TRANSFORMATION: resolve `d_year=1998` and `d_year=1999` to their contiguous `d_date_sk` ranges once, then use direct `BETWEEN` predicates on `ss_sold_date_sk` / `ws_sold_date_sk` in the sales scans, eliminating the 73k-row `date_dim` hash join and discarding all other sales years before aggregation.\n\n2. SINGLE-PASS CONDITIONAL AGGREGATION \u2014 TARGET: the two `UNION ALL` branches inside `year_total` over `store_sales` and `web_sales` \u2014 TRANSFORMATION: scan each sales table once, grouping by the integer `ss_customer_sk` / `ws_bill_customer_sk`, and compute `store_1998`, `store_1999`, `web_1998`, `web_1999` using filtered sums restricted to the precomputed year ranges; this removes the all-years `GROUP BY` and avoids any separate per-year scan.\n\n3. PIVOTED EQUI-JOIN ON CUSTOMER_KEY \u2014 TARGET: final `FROM year_total t_s_firstyear, year_total t_s_secyear, year_total t_w_firstyear, year_total t_w_secyear` \u2014 TRANSFORMATION: replace the four-way CTE self-join with one inner equi-join of the two single-scan aggregate results on `ss_customer_sk = ws_bill_customer_sk`, keeping only rows where all four year-total columns are present, which satisfies the original four-CTE-row existence requirement without a cross product.\n\n4. LATE CUSTOMER ATTRIBUTE PROJECTION \u2014 TARGET: `customer` joined inside both `year_total` branches before aggregation \u2014 TRANSFORMATION: postpone the `customer` lookup until after the aggregate/join on `c_customer_sk`, then fetch only `c_customer_id`, `c_first_name`, `c_last_name`, `c_email_address` for the final `LIMIT 100` result; no `CHAR`/`VARCHAR` customer attributes are carried through the hash aggregation or pivoted join.\n\n5. GUARDED-RATIO SIMPLIFICATION \u2014 TARGET: final `case when ... then t_w_secyear.year_total / t_w_firstyear.year_total ...` comparison \u2014 TRANSFORMATION: after enforcing `store_1998 > 0`, `web_1998 > 0`, `store_1999 IS NOT NULL`, `web_1999 IS NOT NULL` on the pivoted row, compare the two year-total ratios directly without the `CASE` guards, since the first-year totals are already known positive.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was precomputing date ranges and using direct `BETWEEN` predicates to replace `date_dim` joins. The rewrite implements this by calculating date ranges once and"
+  },
+  "raw_sql": "with year_total as ( select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ss_ext_list_price-ss_ext_discount_amt) year_total ,'s' sale_type from customer ,store_sales ,date_dim where c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year union all select c_customer_id customer_id ,c_first_name customer_first_name ,c_last_name customer_last_name ,c_preferred_cust_flag customer_preferred_cust_flag ,c_birth_country customer_birth_country ,c_login customer_login ,c_email_address customer_email_address ,d_year dyear ,sum(ws_ext_list_price-ws_ext_discount_amt) year_total ,'w' sale_type from customer ,web_sales ,date_dim where c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk group by c_customer_id ,c_first_name ,c_last_name ,c_preferred_cust_flag ,c_birth_country ,c_login ,c_email_address ,d_year ) select t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address from year_total t_s_firstyear ,year_total t_s_secyear ,year_total t_w_firstyear ,year_total t_w_secyear where t_s_secyear.customer_id = t_s_firstyear.customer_id and t_s_firstyear.customer_id = t_w_secyear.customer_id and t_s_firstyear.customer_id = t_w_firstyear.customer_id and t_s_firstyear.sale_type = 's' and t_w_firstyear.sale_type = 'w' and t_s_secyear.sale_type = 's' and t_w_secyear.sale_type = 'w' and t_s_firstyear.dyear = 1998 and t_s_secyear.dyear = 1998+1 and t_w_firstyear.dyear = 1998 and t_w_secyear.dyear = 1998+1 and t_s_firstyear.year_total > 0 and t_w_firstyear.year_total > 0 and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else 0.0 end > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else 0.0 end order by t_s_secyear.customer_id ,t_s_secyear.customer_first_name ,t_s_secyear.customer_last_name ,t_s_secyear.customer_email_address limit 100"
+}

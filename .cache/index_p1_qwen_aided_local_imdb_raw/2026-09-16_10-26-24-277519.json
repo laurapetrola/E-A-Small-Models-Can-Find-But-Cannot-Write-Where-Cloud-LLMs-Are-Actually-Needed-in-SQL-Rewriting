@@ -1,0 +1,217 @@
+{
+  "timestamp": "2026-09-16T10:26:24.277494",
+  "query_hash": "73a7fb968cb6",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 69214.5,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the indexes that would most reduce the execution cost for the given SQL query. Let me start by understanding the query and the schema.\n\nFirst, looking at the query, it's a complex JOIN between multiple tables. The main goal is to find movies (titles) that meet certain criteria related to keywords, ratings, and cast information. The query uses several tables: title, kind_type, movie_keyword, keyword, movie_info_idx, info_type, complete_cast, comp_cast_type, cast_info, char_name, name.\n\nThe user mentioned that the existing indexes are listed, and I shouldn't suggest indexes that already exist. So I need to check which tables have existing indexes and which don't. From the schema provided, tables like cast_info, movie_info_idx, movie_keyword, and title have indexes. Others like char_name, comp_cast_type, info_type, kind_type, name don't have indexes.\n\nNow, looking at the execution plan, the user says there's an error with the plan hints, so I have to rely on the structure and schema. The main issue is likely Seq Scans on large tables. Let me check each table involved in the query for possible Seq Scans.\n\nStarting with the title table. The title table has an index on kind_id. The query joins title with kind_type on kind_id, and filters kt.kind = 'movie'. Since kind_type is small (7 rows), maybe the join is efficient. But the title table itself might be scanned sequentially if there's no index on production_year. Wait, the title table's index is on kind_id, but the WHERE clause has t.production_year > 2000. Since production_year isn't indexed, a Seq Scan on title would be needed here. That's a candidate for an index on production_year.\n\nNext, the movie_keyword table has indexes on movie_id and keyword_id. The query joins movie_keyword with keyword, and filters on keyword IN ('superhero', ...). Since keyword_id is indexed, maybe that's okay. But the keyword itself is in the WHERE clause. However, the keyword table has no indexes. Wait, the keyword table's columns are id and keyword. The query filters on k.keyword IN (...), so if there's an index on keyword.keyword, that could help. But the schema says keyword has no indexes. So adding an index on keyword.keyword might help.\n\nThen, the movie_info_idx table has indexes on info_type_id and movie_id. The query joins on mi_idx.movie_id = t.id and filters it2.info = 'rating'. Since info_type_id is indexed, but the filter is on info_type_id (it2.info = 'rating'), which is part of the join condition. Wait, the join is between mi_idx and info_type, and the filter is it2.info = 'rating'. Since info_type has no indexes, but the join is on info_type_id, which is indexed in movie_info_idx. So maybe that's okay. But the filter on info_type.info might require an index on info_type.info.\n\nLooking at the complete_cast table, which has an index on movie_id. The query joins on cc.movie_id = t.id, so that's covered by the existing index. But the other joins are on comp_cast_type, which has no indexes. The conditions are cct1.kind = 'cast' and cct2.kind LIKE '%complete%'. Since comp_cast_type has no indexes, these filters would require a Seq Scan on comp_cast_type. So adding indexes on kind for comp_cast_type would help.\n\nThe cast_info table has indexes on movie_id, person_id, etc. The query joins on ci.movie_id = t.id, which is covered. But the join with char_name is on ci.person_role_id = chn.id. Since char_name has no indexes, and the filter is on chn.name LIKE '%man%', that would require a Seq Scan on char_name. Adding an index on char_name.name would help here.\n\nAlso, the name table is joined with ci.person_id, and the query has a condition on chn.name (which comes from char_name) and possibly n.name? Wait, the query has a condition on chn.name LIKE '%man%' and joins name via ci.person_id. But the name table has no indexes. However, the query's WHERE clause has chn.name LIKE '%man%' which is on char_name, not name. So the name table's join might not be the bottleneck unless there's a filter on name.name. But the query's WHERE clause doesn't have a condition on name.name, so maybe the name table isn't the issue here.\n\nAnother point: the query has a condition on k.keyword IN (...), which is a list of 10 keywords. If the keyword table has an index on keyword, then the filter can be optimized. But since it doesn't, adding an index on keyword.keyword would help.\n\nAlso, the title table's production_year is filtered with t.production_year > 2000. Since there's no index on production_year, a Seq Scan on title would be needed. Adding an index on production_year would help.\n\nSo, the main candidates for indexes are:\n\n1. keyword.keyword (to filter the keywords in the WHERE clause)\n2. title.production_year (to filter the production year)\n3. comp_cast_type.kind (to filter the cct1.kind = 'cast' and cct2.kind LIKE '%complete%')\n4. char_name.name (to filter the chn.name LIKE '%man%' condition)\n\nLet me check the tables again. The keyword table has no indexes, so adding an index on keyword.keyword would help. The title table's index is on kind_id, but the production_year is not indexed. The comp_cast_type has no indexes, so adding indexes on kind for both cct1 and cct2. The char_name table has no indexes, so an index on name would help for the LIKE condition.\n\nBut the user's instructions say to look for Seq Scans on large tables. The title table has 2.5 million rows, so a Seq Scan there would be expensive. The movie_keyword table has 4.5 million rows, but the join with keyword is on keyword_id, which is indexed. The char_name table has 3.1 million rows, so a Seq Scan there would be costly if there's a filter on name.\n\nSo the most impactful indexes would be on title.production_year, keyword.keyword, comp_cast_type.kind, and char_name.name.\n\nBut the user's schema shows that the title table has an index on kind_id, which is used in the join with kind_type. The production_year is not indexed, so that's a candidate. The keyword table's keyword column is not indexed, so that's another. The comp_cast_type has no indexes, so adding indexes on kind for both cct1 and cct2. The char_name's name column is not indexed, so that's another.\n\nSo the indexes to suggest would be:\n\n- title(production_year)\n- keyword(keyword)\n- comp_cast_type(kind)\n- char_name(name)\n\nBut the user's instructions say to order by the number of rows scanned. The title table has 2.5 million rows, so the index on production_year would help reduce the scan there. The char_name has 3.1 million rows, so an index on name would help. The keyword table has 134k rows, so an index on keyword would help. The comp_cast_type has only 4 rows, so an index on kind would help, but since it's small, maybe the benefit is less. However, the query has two conditions on comp_cast_type: cct1.kind = 'cast' and cct2.kind LIKE '%complete%'. Since comp_cast_type has only 4 rows, the filter might be fast even without an index, but adding an index could still help.\n\nSo the top candidates are title.production_year, char_name.name, keyword.keyword, and comp_cast_type.kind.\n\nBut the user's query has a JOIN between complete_cast and comp_cast_type. The complete_cast table has an index on movie_id, which is used. The other joins are on comp_cast_type, which has no indexes. So the conditions cct1.kind = 'cast' and cct2.kind LIKE '%complete%' would require scanning the entire comp_cast_type table, which has 4 rows. So even though it's small, the query might be doing a Seq Scan here. Adding an index on comp_cast_type.kind would help.\n\nSimilarly, the char_name table is joined with cast_info on ci.person_role_id = chn.id, and the query has a condition on chn.name LIKE '%man%'. Since char_name has no indexes, a Seq Scan is needed here. Adding an index on char_name.name would help.\n\nThe keyword table's index on keyword would help with the IN clause.\n\nThe title's index on production_year would help with the WHERE clause.\n\nSo the indexes to suggest are:\n\n1. title(production_year)\n2. char_name(name)\n3. keyword(keyword)\n4. comp_cast_type(kind)\n\nBut the user's instructions say to order by the number of rows scanned. The title table has 2.5 million rows, so the index on production_year would reduce the scan there. The char_name has 3.1 million rows, so the index on name would help. The keyword table has 134k rows, so the index on keyword would help. The comp_cast_type has 4 rows, so the index on kind would help, but the benefit is smaller.\n\nSo the top three would be title.production_year, char_name.name, keyword.keyword. The comp_cast_type.kind is also a candidate but maybe lower priority.\n\nBut the user's query has a condition on cct1.kind = 'cast' and cct2.kind LIKE '%complete%'. Since comp_cast_type has only 4 rows, the filter might be fast even without an index. However, the query might be doing a Seq Scan on comp_cast_type, which is small but could be part of a larger plan. Adding an index on kind would help.\n\nSo the final answer would include indexes on title.production_year, char_name.name, keyword.keyword, and comp_cast_type.kind.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"title\",\n      \"property\": \"production_year\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on title (2.5M rows) via filter t.production_year > 2000\"\n    },\n    {\n      \"target\": \"char_name\",\n      \"property\": \"name\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on char_name (3.1M rows) via filter chn.name LIKE '%man%'\"\n    },\n    {\n      \"target\": \"keyword\",\n      \"property\": \"keyword\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on keyword (134K rows) via filter k.keyword IN (10 values)\"\n    },\n    {\n      \"target\": \"comp_cast_type\",\n      \"property\": \"kind\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on comp_cast_type (4 rows) via filters cct1.kind = 'cast' and cct2.kind LIKE '%complete%'\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"These indexes target the most expensive Seq Scans on large tables (title, char_name, keyword) and the small table comp_cast_type with complex filters. The title.production_year index enables efficient filtering of recent movies, while char_name.name and keyword.keyword indexes optimize the pattern-matching conditions. The comp_cast_type.kind index resolves the two filter conditions on this tiny table.\"\n}",
+  "recommendations": [
+    {
+      "table": "title",
+      "column": "production_year",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -0.0,
+      "baseline_exec_ms": 1155.812,
+      "optimized_exec_ms": 1155.972,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20794.89,
+          "cost_with_index": 20794.88,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4795.23,
+          "cost_with_index": 4795.23,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55685.8,
+          "cost_with_index": 42166.25,
+          "benefit_pct": 24.3
+        },
+        {
+          "source": "curated/JOB/1a.json",
+          "baseline_cost": 19510.42,
+          "cost_with_index": 19510.42,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7472.0,
+          "cost_with_index": 7472.0,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67160.98,
+          "cost_with_index": 67161.71,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 9522.71,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3821.91,
+          "cost_with_index": 3821.91,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9529.1,
+          "cost_with_index": 9529.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46664.4,
+          "cost_with_index": 46664.4,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.47,
+          "cost_with_index": 3814.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 3856.57,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "char_name",
+      "column": "name",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -4.2,
+      "baseline_exec_ms": 1142.887,
+      "optimized_exec_ms": 1190.516,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55686.76,
+          "cost_with_index": 55686.76,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46664.4,
+          "cost_with_index": 46664.4,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "keyword",
+      "column": "keyword",
+      "index_type": "btree",
+      "estimated_benefit_pct": 20.8,
+      "validation": "executed",
+      "measured_read_benefit_pct": -9.5,
+      "baseline_exec_ms": 1196.532,
+      "optimized_exec_ms": 1309.967,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 45.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4795.23,
+          "cost_with_index": 2177.54,
+          "benefit_pct": 54.6
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7472.0,
+          "cost_with_index": 4538.92,
+          "benefit_pct": 39.3
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67161.69,
+          "cost_with_index": 67161.69,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9522.71,
+          "cost_with_index": 8006.11,
+          "benefit_pct": 15.9
+        },
+        {
+          "source": "curated/JOB/32a.json",
+          "baseline_cost": 3821.91,
+          "cost_with_index": 1204.23,
+          "benefit_pct": 68.5
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3814.47,
+          "cost_with_index": 1196.79,
+          "benefit_pct": 68.6
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.57,
+          "cost_with_index": 1238.88,
+          "benefit_pct": 67.9
+        }
+      ],
+      "workload_queries_improved": 6,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "comp_cast_type",
+      "column": "kind",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.1,
+      "baseline_exec_ms": 1121.149,
+      "optimized_exec_ms": 1133.392,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 67161.69,
+          "cost_with_index": 67161.69,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}

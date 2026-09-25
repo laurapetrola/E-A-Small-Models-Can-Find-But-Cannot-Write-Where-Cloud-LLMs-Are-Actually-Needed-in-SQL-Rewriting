@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-08-26T16:12:09.237088",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "use CTE for date filtering and mapping",
+    "replace rollup with explicit grouping and filtering",
+    "use dense rank in subquery to filter early"
+  ],
+  "improvement_pct": -179.98,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 703702.9,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH months AS (\n    SELECT d_date_sk,\n           d_year,\n           d_qoy,\n           d_moy\n    FROM date_dim\n    WHERE d_month_seq BETWEEN 1217 AND 1217+11\n),\nfact AS (\n    SELECT ss.ss_item_sk,\n           ss.ss_store_sk,\n           ss.ss_sold_date_sk,\n           SUM(COALESCE(ss.ss_sales_price * ss.ss_quantity, 0)) AS sumsales\n    FROM store_sales ss\n    WHERE ss.ss_sold_date_sk IN (SELECT months.d_date_sk FROM months)\n    GROUP BY ss.ss_item_sk, ss.ss_store_sk, ss.ss_sold_date_sk\n),\ndw1 AS (\n    SELECT i.i_category,\n           i.i_class,\n           i.i_brand,\n           i.i_product_name,\n           m.d_year,\n           m.d_qoy,\n           m.d_moy,\n           st.s_store_id,\n           SUM(f.sumsales) AS sumsales\n    FROM fact f\n    JOIN item i ON f.ss_item_sk = i.i_item_sk\n    JOIN store st ON f.ss_store_sk = st.s_store_sk\n    JOIN months m ON f.ss_sold_date_sk = m.d_date_sk\n    GROUP BY ROLLUP(i.i_category, i.i_class, i.i_brand, i.i_product_name,\n                    m.d_year, m.d_qoy, m.d_moy, st.s_store_id)\n),\ndw1_filtered AS (\n    SELECT ranked_dw1.i_category,\n           ranked_dw1.i_class,\n           ranked_dw1.i_brand,\n           ranked_dw1.i_product_name,\n           ranked_dw1.d_year,\n           ranked_dw1.d_qoy,\n           ranked_dw1.d_moy,\n           ranked_dw1.s_store_id,\n           ranked_dw1.sumsales\n    FROM (\n        SELECT dw1.*,\n               DENSE_RANK() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS drk\n        FROM dw1\n    ) ranked_dw1\n    WHERE ranked_dw1.drk <= 100\n),\ndw2 AS (\n    SELECT i_category,\n           i_class,\n           i_brand,\n           i_product_name,\n           d_year,\n           d_qoy,\n           d_moy,\n           s_store_id,\n           sumsales,\n           RANK() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS rk\n    FROM dw1_filtered\n)\nSELECT i_category,\n       i_class,\n       i_brand,\n       i_product_name,\n       d_year,\n       d_qoy,\n       d_moy,\n       s_store_id,\n       sumsales,\n       rk\nFROM dw2\nWHERE rk <= 100\nORDER BY i_category,\n         i_class,\n         i_brand,\n         i_product_name,\n         d_year,\n         d_qoy,\n         d_moy,\n         s_store_id,\n         sumsales,\n         rk\nLIMIT 100",
+  "reasoning_trace": "1. COVERING INDEX-ONLY MONTH SCAN \u2014 TARGET: `store_sales` (`ss_sold_date_sk`, `ss_item_sk`, `ss_store_sk`, `ss_sales_price`, `ss_quantity`) \u2014 TRANSFORMATION: Create a covering index on `store_sales(ss_sold_date_sk) INCLUDE (ss_item_sk, ss_store_sk, ss_sales_price, ss_quantity)` and drive the `d_month_seq = 1217..1228` date window through that index, so the large fact-table access becomes an index-only range scan instead of a full heap scan.\n\n2. FACT-GRAIN PRE-AGGREGATION BEFORE DIMENSION JOINS \u2014 TARGET: the inner `store_sales` join to `item`, `store`, and `date_dim` feeding `GROUP BY ROLLUP` \u2014 TRANSFORMATION: On the already date-pruned `store_sales` rows, first aggregate by `(ss_item_sk, ss_store_sk, ss_sold_date_sk)` to compute `SUM(ss_sales_price*ss_quantity)`, then join this compacted result to `item`, `store`, and `date_dim`; this reduces the ROLLUP input from individual sales line-items to one row per item/store/date before the expensive multi-level grouping.\n\n3. TOP-100 SUMSALES THRESHOLD PRE-FILTER \u2014 TARGET: the `dw1` row set feeding `rank() OVER (PARTITION BY i_category ORDER BY sumsales DESC)` \u2014 TRANSFORMATION: Before applying the window, restrict `dw1` to rows whose `sumsales` is among the 100 largest distinct `sumsales` values for that `i_category` (keeping all rows when fewer than 100 distinct values exist); rows below that threshold cannot have `rk <= 100`, so the window sort and rank computation only process true candidate rows.\n\n4. COVERING DATE-DIMENSION INDEX \u2014 TARGET: `date_dim.d_month_seq`, `d_date_sk`, `d_year`, `d_qoy`, `d_moy` \u2014 TRANSFORMATION: Add a covering index on `date_dim(d_month_seq, d_date_sk)` including `d_year`, `d_qoy`, and `d_moy`, so resolving the 12-month predicate to exact date keys and later projecting the date attributes is a single index-only lookup, avoiding repeated small-dimension heap accesses at join time.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 29089.354,
+      "optimized_ms": 81445.235,
+      "delta_ms": -52355.881,
+      "improvement_pct": -179.98,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1368939.63,
+      "optimized": 3940941.72,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 672139.3,
+    "index_advisor_inference_ms": 23600.4,
+    "reflection_iterations": 2,
+    "labeler_inference_ms": 7963.2,
+    "total_inference_ms": 703702.9,
+    "writer_inference_ms": 3024323.5,
+    "writer_tokens_in": 10848,
+    "writer_tokens_out": 314045,
+    "writer_calls": 6
+  },
+  "errors": [
+    "Significant cost increase: original=1368939.63 \u2192 optimized=3940941.72 (+187.9%)",
+    "Execution time regression: 29089.354ms \u2192 81445.235ms"
+  ],
+  "strategy": "1. COVERING INDEX-ONLY MONTH SCAN \u2014 TARGET: `store_sales` (`ss_sold_date_sk`, `ss_item_sk`, `ss_store_sk`, `ss_sales_price`, `ss_quantity`) \u2014 TRANSFORMATION: Create a covering index on `store_sales(ss_sold_date_sk) INCLUDE (ss_item_sk, ss_store_sk, ss_sales_price, ss_quantity)` and drive the `d_month_seq = 1217..1228` date window through that index, so the large fact-table access becomes an index-only range scan instead of a full heap scan.\n\n2. FACT-GRAIN PRE-AGGREGATION BEFORE DIMENSION JOINS \u2014 TARGET: the inner `store_sales` join to `item`, `store`, and `date_dim` feeding `GROUP BY ROLLUP` \u2014 TRANSFORMATION: On the already date-pruned `store_sales` rows, first aggregate by `(ss_item_sk, ss_store_sk, ss_sold_date_sk)` to compute `SUM(ss_sales_price*ss_quantity)`, then join this compacted result to `item`, `store`, and `date_dim`; this reduces the ROLLUP input from individual sales line-items to one row per item/store/date before the expensive multi-level grouping.\n\n3. TOP-100 SUMSALES THRESHOLD PRE-FILTER \u2014 TARGET: the `dw1` row set feeding `rank() OVER (PARTITION BY i_category ORDER BY sumsales DESC)` \u2014 TRANSFORMATION: Before applying the window, restrict `dw1` to rows whose `sumsales` is among the 100 largest distinct `sumsales` values for that `i_category` (keeping all rows when fewer than 100 distinct values exist); rows below that threshold cannot have `rk <= 100`, so the window sort and rank computation only process true candidate rows.\n\n4. COVERING DATE-DIMENSION INDEX \u2014 TARGET: `date_dim.d_month_seq`, `d_date_sk`, `d_year`, `d_qoy`, `d_moy` \u2014 TRANSFORMATION: Add a covering index on `date_dim(d_month_seq, d_date_sk)` including `d_year`, `d_qoy`, and `d_moy`, so resolving the 12-month predicate to exact date keys and later projecting the date attributes is a single index-only lookup, avoiding repeated small-dimension heap accesses at join time.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was using a covering index on `date_dim` for index-only lookup, and the rewrite uses a `months` CTE to filter date keys, effectively achieving the same goal th"
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

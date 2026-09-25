@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-08-26T18:41:55.988786",
+  "query_hash": "7436b3a51256",
+  "suggestions": [
+    "split an OR predicate into UNION ALL branches",
+    "reorder joins to reduce intermediate rows",
+    "pre-filter a large table as a CTE before the join",
+    "use materialized CTEs for intermediate results"
+  ],
+  "improvement_pct": -36.13,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "no_gain",
+  "used_fallback": true,
+  "inference_ms": 797400.3,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH store_summary AS (\n    SELECT ss.ss_item_sk,\n           d.d_year AS d_year,\n           d.d_qoy AS d_qoy,\n           d.d_moy AS d_moy,\n           s.s_store_id AS s_store_id,\n           SUM(COALESCE(ss.ss_sales_price * ss.ss_quantity, 0)) AS sumsales\n    FROM store_sales AS ss\n    JOIN date_dim AS d ON ss.ss_sold_date_sk = d.d_date_sk\n    JOIN store AS s ON ss.ss_store_sk = s.s_store_sk\n    WHERE d.d_month_seq BETWEEN 1217 AND 1217 + 11\n    GROUP BY ss.ss_item_sk, d.d_year, d.d_qoy, d.d_moy, s.s_store_id\n),\nstore_free AS (\n    SELECT f.ss_item_sk,\n           f.d_year AS d_year,\n           f.d_qoy AS d_qoy,\n           f.d_moy AS d_moy,\n           SUM(f.sumsales) AS sumsales\n    FROM store_summary AS f\n    GROUP BY f.ss_item_sk, f.d_year, f.d_qoy, f.d_moy\n),\nfull_group AS (\n    SELECT i.i_category AS i_category,\n           i.i_class AS i_class,\n           i.i_brand AS i_brand,\n           i.i_product_name AS i_product_name,\n           f.d_year AS d_year,\n           f.d_qoy AS d_qoy,\n           f.d_moy AS d_moy,\n           f.s_store_id AS s_store_id,\n           SUM(f.sumsales) AS sumsales\n    FROM store_summary AS f\n    JOIN item AS i ON f.ss_item_sk = i.i_item_sk\n    GROUP BY i.i_category, i.i_class, i.i_brand, i.i_product_name,\n             f.d_year, f.d_qoy, f.d_moy, f.s_store_id\n)\nSELECT i_category, i_class, i_brand, i_product_name,\n       d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nFROM (\n    SELECT i_category, i_class, i_brand, i_product_name,\n           d_year, d_qoy, d_moy, s_store_id, sumsales,\n           rank() OVER (PARTITION BY i_category ORDER BY sumsales DESC) AS rk\n    FROM (\n        SELECT i_category, i_class, i_brand, i_product_name,\n               d_year, d_qoy, d_moy, s_store_id, sumsales\n        FROM full_group\n        UNION ALL\n        SELECT i.i_category AS i_category,\n               i.i_class AS i_class,\n               i.i_brand AS i_brand,\n               i.i_product_name AS i_product_name,\n               f.d_year AS d_year,\n               f.d_qoy AS d_qoy,\n               f.d_moy AS d_moy,\n               NULL AS s_store_id,\n               SUM(f.sumsales) AS sumsales\n        FROM store_free AS f\n        JOIN item AS i ON f.ss_item_sk = i.i_item_sk\n        GROUP BY ROLLUP(i.i_category, i.i_class, i.i_brand, i.i_product_name,\n                        f.d_year, f.d_qoy, f.d_moy)\n    ) AS merged\n) AS ranked\nWHERE rk <= 100\nORDER BY i_category, i_class, i_brand, i_product_name,\n         d_year, d_qoy, d_moy, s_store_id, sumsales, rk\nLIMIT 100",
+  "reasoning_trace": "1. FACT PRE-AGGREGATION AT STORE LEVEL \u2014 TARGET: `store_sales` + `date_dim`/`store` joins in `dw1` \u2014 TRANSFORMATION: Restrict by `d_month_seq`, join the small `date_dim`/`store` dimensions, and aggregate once by `ss_item_sk`, `d_year`, `d_qoy`, `d_moy`, `s_store_id` before involving `item`, producing one compact store-level summary reused by all later branches.\n\n2. STORE-FREE SUMMARY DERIVATION \u2014 TARGET: the compact store-level summary from step 1 \u2014 TRANSFORMATION: Re-aggregate it by `ss_item_sk`, `d_year`, `d_qoy`, `d_moy` (omitting `s_store_id`) to create a much smaller item/month summary for every rollup level that does not contain `s_store_id`.\n\n3. ROLLUP DECOMPOSITION BY STORE KEY \u2014 TARGET: the eight-column `GROUP BY ROLLUP(..., s_store_id)` in `dw1` \u2014 TRANSFORMATION: Split it into a plain eight-column GROUP BY over the store-level summary (the only grouping set that needs `s_store_id`) plus a seven-column ROLLUP over the store-free summary with `s_store_id` forced to NULL, then combine both branches; this avoids re-sorting item\u00d7month\u00d7store data for the eight non-store rollup levels.\n\n4. DEFER ITEM ATTRIBUTE JOIN \u2014 TARGET: `item.i_category`, `item.i_class`, `item.i_brand`, `item.i_product_name` \u2014 TRANSFORMATION: Join `item` only after both the store-level and store-free reductions, so the four product attributes decorate compact summaries instead of being carried through the large `store_sales` aggregation.\n\n5. RANK/FILTER AFTER ROLLUP MERGE \u2014 TARGET: `rank() OVER (PARTITION BY i_category ORDER BY sumsales DESC)` and `WHERE rk <= 100` in `dw2` \u2014 TRANSFORMATION: Compute the window rank, the `rk <= 100` predicate, the final ORDER BY, and `LIMIT 100` only after the two rollup branches have been merged, so the window sort operates on the minimal final row set.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 31647.058,
+      "optimized_ms": 43080.572,
+      "delta_ms": -11433.514,
+      "improvement_pct": -36.13,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 1368937.52,
+      "optimized": 1527650.53,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 757318.4,
+    "index_advisor_inference_ms": 30777.9,
+    "reflection_iterations": 1,
+    "labeler_inference_ms": 9304.0,
+    "total_inference_ms": 797400.3,
+    "writer_inference_ms": 3871945.2,
+    "writer_tokens_in": 9548,
+    "writer_tokens_out": 270323,
+    "writer_calls": 5
+  },
+  "errors": [
+    "Significant cost increase: original=1368937.52 \u2192 optimized=1527650.53 (+11.6%)",
+    "Execution time regression: 31647.058ms \u2192 43080.572ms"
+  ],
+  "strategy": "1. FACT PRE-AGGREGATION AT STORE LEVEL \u2014 TARGET: `store_sales` + `date_dim`/`store` joins in `dw1` \u2014 TRANSFORMATION: Restrict by `d_month_seq`, join the small `date_dim`/`store` dimensions, and aggregate once by `ss_item_sk`, `d_year`, `d_qoy`, `d_moy`, `s_store_id` before involving `item`, producing one compact store-level summary reused by all later branches.\n\n2. STORE-FREE SUMMARY DERIVATION \u2014 TARGET: the compact store-level summary from step 1 \u2014 TRANSFORMATION: Re-aggregate it by `ss_item_sk`, `d_year`, `d_qoy`, `d_moy` (omitting `s_store_id`) to create a much smaller item/month summary for every rollup level that does not contain `s_store_id`.\n\n3. ROLLUP DECOMPOSITION BY STORE KEY \u2014 TARGET: the eight-column `GROUP BY ROLLUP(..., s_store_id)` in `dw1` \u2014 TRANSFORMATION: Split it into a plain eight-column GROUP BY over the store-level summary (the only grouping set that needs `s_store_id`) plus a seven-column ROLLUP over the store-free summary with `s_store_id` forced to NULL, then combine both branches; this avoids re-sorting item\u00d7month\u00d7store data for the eight non-store rollup levels.\n\n4. DEFER ITEM ATTRIBUTE JOIN \u2014 TARGET: `item.i_category`, `item.i_class`, `item.i_brand`, `item.i_product_name` \u2014 TRANSFORMATION: Join `item` only after both the store-level and store-free reductions, so the four product attributes decorate compact summaries instead of being carried through the large `store_sales` aggregation.\n\n5. RANK/FILTER AFTER ROLLUP MERGE \u2014 TARGET: `rank() OVER (PARTITION BY i_category ORDER BY sumsales DESC)` and `WHERE rk <= 100` in `dw2` \u2014 TRANSFORMATION: Compute the window rank, the `rk <= 100` predicate, the final ORDER BY, and `LIMIT 100` only after the two rollup branches have been merged, so the window sort operates on the minimal final row set.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique is ROLLUP DECOMPOSITION BY STORE KEY, and the rewrite splits the eight-column GROUP BY ROLLUP into two branches (with and without s_store_id) and combines them"
+  },
+  "raw_sql": "select * from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rank() over (partition by i_category order by sumsales desc) rk from (select i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sum(coalesce(ss_sales_price*ss_quantity,0)) sumsales from store_sales ,date_dim ,store ,item where ss_sold_date_sk=d_date_sk and ss_item_sk=i_item_sk and ss_store_sk = s_store_sk and d_month_seq between 1217 and 1217+11 group by rollup(i_category, i_class, i_brand, i_product_name, d_year, d_qoy, d_moy,s_store_id))dw1) dw2 where rk <= 100 order by i_category ,i_class ,i_brand ,i_product_name ,d_year ,d_qoy ,d_moy ,s_store_id ,sumsales ,rk limit 100"
+}

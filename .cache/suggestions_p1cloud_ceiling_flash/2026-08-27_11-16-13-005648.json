@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-08-27T11:16:13.005628",
+  "query_hash": "1aaf0913f8ef",
+  "suggestions": [
+    "materialize CTE to avoid recomputation",
+    "reorder joins to reduce intermediate rows",
+    "convert an IN subquery to a semi-join",
+    "pre-filter a large table as a CTE before the join"
+  ],
+  "improvement_pct": 97.37,
+  "model": "qwen-reasoning+nothink+nohw+noplan+cloudfind",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 137684.2,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": true,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT cr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(cr_return_amt_inc_tax) AS ctr_total_return\n    FROM date_dim\n    JOIN catalog_returns ON d_date_sk = cr_returned_date_sk\n    JOIN customer_address ON cr_returning_addr_sk = ca_address_sk\n    WHERE d_year = 2001\n    GROUP BY cr_returning_customer_sk, ca_state\n),\nstate_avg AS (\n    SELECT ctr_state,\n           avg(ctr_total_return) * 1.2 AS threshold\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c.c_customer_id,\n       c.c_salutation,\n       c.c_first_name,\n       c.c_last_name,\n       ca.ca_street_number,\n       ca.ca_street_name,\n       ca.ca_street_type,\n       ca.ca_suite_number,\n       ca.ca_city,\n       ca.ca_county,\n       ca.ca_state,\n       ca.ca_zip,\n       ca.ca_country,\n       ca.ca_gmt_offset,\n       ca.ca_location_type,\n       ctr1.ctr_total_return\nFROM customer_address ca\nJOIN customer c ON ca.ca_address_sk = c.c_current_addr_sk\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN state_avg sa ON ctr1.ctr_state = sa.ctr_state\nWHERE ca.ca_state = 'TN'\n  AND ctr1.ctr_total_return > sa.threshold\nORDER BY c.c_customer_id,\n         c.c_salutation,\n         c.c_first_name,\n         c.c_last_name,\n         ca.ca_street_number,\n         ca.ca_street_name,\n         ca.ca_street_type,\n         ca.ca_suite_number,\n         ca.ca_city,\n         ca.ca_county,\n         ca.ca_state,\n         ca.ca_zip,\n         ca.ca_country,\n         ca.ca_gmt_offset,\n         ca.ca_location_type,\n         ctr1.ctr_total_return\nLIMIT 100",
+  "reached_sql": "WITH customer_total_return AS MATERIALIZED (\n    SELECT cr_returning_customer_sk AS ctr_customer_sk,\n           ca_state AS ctr_state,\n           SUM(cr_return_amt_inc_tax) AS ctr_total_return\n    FROM date_dim\n    JOIN catalog_returns ON d_date_sk = cr_returned_date_sk\n    JOIN customer_address ON cr_returning_addr_sk = ca_address_sk\n    WHERE d_year = 2001\n    GROUP BY cr_returning_customer_sk, ca_state\n),\nstate_avg AS (\n    SELECT ctr_state,\n           avg(ctr_total_return) * 1.2 AS threshold\n    FROM customer_total_return\n    GROUP BY ctr_state\n)\nSELECT c.c_customer_id,\n       c.c_salutation,\n       c.c_first_name,\n       c.c_last_name,\n       ca.ca_street_number,\n       ca.ca_street_name,\n       ca.ca_street_type,\n       ca.ca_suite_number,\n       ca.ca_city,\n       ca.ca_county,\n       ca.ca_state,\n       ca.ca_zip,\n       ca.ca_country,\n       ca.ca_gmt_offset,\n       ca.ca_location_type,\n       ctr1.ctr_total_return\nFROM customer_address ca\nJOIN customer c ON ca.ca_address_sk = c.c_current_addr_sk\nJOIN customer_total_return ctr1 ON ctr1.ctr_customer_sk = c.c_customer_sk\nJOIN state_avg sa ON ctr1.ctr_state = sa.ctr_state\nWHERE ca.ca_state = 'TN'\n  AND ctr1.ctr_total_return > sa.threshold\nORDER BY c.c_customer_id,\n         c.c_salutation,\n         c.c_first_name,\n         c.c_last_name,\n         ca.ca_street_number,\n         ca.ca_street_name,\n         ca.ca_street_type,\n         ca.ca_suite_number,\n         ca.ca_city,\n         ca.ca_county,\n         ca.ca_state,\n         ca.ca_zip,\n         ca.ca_country,\n         ca.ca_gmt_offset,\n         ca.ca_location_type,\n         ctr1.ctr_total_return\nLIMIT 100",
+  "reasoning_trace": "1. DECORRELATE \u2014 TARGET: correlated subquery `(select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state)` \u2014 TRANSFORMATION: compute per-state `avg(ctr_total_return)` once and join/compare `ctr1.ctr_total_return > that_avg*1.2`, eliminating per-row re-execution.\n\n2. MATERIALIZE \u2014 TARGET: CTE `customer_total_return` (grouped scan of `catalog_returns` joined to `date_dim` and `customer_address`) \u2014 TRANSFORMATION: force it to be built once into an indexed temp/materialized relation (indexes on `ctr_state` and `ctr_customer_sk`) so the 2001 aggregation is reused by both the state-average computation and the final `ctr1` probe.\n\n3. INDEX/SCAN REDUCTION \u2014 TARGET: `catalog_returns.cr_returned_date_sk` \u2014 TRANSFORMATION: use a covering index on `cr_returned_date_sk` (including `cr_returning_customer_sk`, `cr_returning_addr_sk`, `cr_return_amt_inc_tax`) so only 2001 returns feed the CTE aggregation instead of the full `catalog_returns` table.\n\n4. DRIVE FROM TINY FILTER \u2014 TARGET: final join among `customer_address`, `customer`, and `ctr1` \u2014 TRANSFORMATION: start from `customer_address` filtered to `ca_state='TN'`, join to `customer` on `c_current_addr_sk`, then probe the materialized `customer_total_return` on `ctr_customer_sk = c_customer_sk`.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": null,
+      "optimized_ms": 1184.08,
+      "delta_ms": null,
+      "improvement_pct": null,
+      "original_floor_ms": 45000.0,
+      "improvement_lower_bound_pct": 97.37,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 4028800.76,
+      "optimized": 95001.02,
+      "reduced": true
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 133133.6,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 4550.6,
+    "total_inference_ms": 137684.2,
+    "writer_inference_ms": 356573.1,
+    "writer_tokens_in": 1050,
+    "writer_tokens_out": 42564,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "1. DECORRELATE \u2014 TARGET: correlated subquery `(select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state)` \u2014 TRANSFORMATION: compute per-state `avg(ctr_total_return)` once and join/compare `ctr1.ctr_total_return > that_avg*1.2`, eliminating per-row re-execution.\n\n2. MATERIALIZE \u2014 TARGET: CTE `customer_total_return` (grouped scan of `catalog_returns` joined to `date_dim` and `customer_address`) \u2014 TRANSFORMATION: force it to be built once into an indexed temp/materialized relation (indexes on `ctr_state` and `ctr_customer_sk`) so the 2001 aggregation is reused by both the state-average computation and the final `ctr1` probe.\n\n3. INDEX/SCAN REDUCTION \u2014 TARGET: `catalog_returns.cr_returned_date_sk` \u2014 TRANSFORMATION: use a covering index on `cr_returned_date_sk` (including `cr_returning_customer_sk`, `cr_returning_addr_sk`, `cr_return_amt_inc_tax`) so only 2001 returns feed the CTE aggregation instead of the full `catalog_returns` table.\n\n4. DRIVE FROM TINY FILTER \u2014 TARGET: final join among `customer_address`, `customer`, and `ctr1` \u2014 TRANSFORMATION: start from `customer_address` filtered to `ca_state='TN'`, join to `customer` on `c_current_addr_sk`, then probe the materialized `customer_total_return` on `ctr_customer_sk = c_customer_sk`.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was to decorrelate the subquery and materialize the CTE. The rewrite decorrelates by using a state_avg CTE and joins to it, and materializes the customer_total"
+  },
+  "raw_sql": "with customer_total_return as (select cr_returning_customer_sk as ctr_customer_sk ,ca_state as ctr_state, sum(cr_return_amt_inc_tax) as ctr_total_return from catalog_returns ,date_dim ,customer_address where cr_returned_date_sk = d_date_sk and d_year =2001 and cr_returning_addr_sk = ca_address_sk group by cr_returning_customer_sk ,ca_state ) select c_customer_id,c_salutation,c_first_name,c_last_name,ca_street_number,ca_street_name ,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset ,ca_location_type,ctr_total_return from customer_total_return ctr1 ,customer_address ,customer where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2 where ctr1.ctr_state = ctr2.ctr_state) and ca_address_sk = c_current_addr_sk and ca_state = 'TN' and ctr1.ctr_customer_sk = c_customer_sk order by c_customer_id,c_salutation,c_first_name,c_last_name,ca_street_number,ca_street_name ,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset ,ca_location_type,ctr_total_return limit 100"
+}

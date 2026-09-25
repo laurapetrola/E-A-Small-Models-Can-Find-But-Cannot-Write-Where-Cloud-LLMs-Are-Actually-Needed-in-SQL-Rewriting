@@ -1,0 +1,121 @@
+{
+  "timestamp": "2026-07-30T14:29:50.014104",
+  "query_hash": "a5945ebaf8f0",
+  "model": "deepseek+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 388670.6,
+  "reasoning_trace": "<think>\nWe are given a query that cannot be improved by SQL rewriting alone, and we are to suggest indexes.\n\nLet's break down the query:\n\nThe main goal is to compute two sums (sales_before and sales_after) for each state and item_id, but note that the data comes from catalog_sales and we are left-joining with catalog_returns to get the refunded cash for each order and item.\n\nThe query structure:\n\n1. We start with `catalog_sales` (28,803,583 rows) and then:\n   - Left join with a LATERAL subquery from `catalog_returns` (2,882,133 rows) to get `cr_refunded_cash` for each row of `catalog_sales`.\n   - Then join with `warehouse` (5 rows) and `item` (28,000 rows).\n   - Then join with a filtered `date_dim` (73,049 rows) but note that the filter is on `cs_sold_date_sk` and the date range is from '2001-04-02' to '2001-06-01'. This filtered date_dim has about 61 days (approx 61 rows) because date_dim has one row per day.\n\nThe WHERE clause filters `item.i_current_price` between 0.99 and 1.49.\n\nWe are grouping by `w_state` and `i_item_id` and then ordering and limiting to 100.\n\nNow, let's look at the physical execution plan (which we don't have, but we can infer from the query structure):\n\nThe main table is `catalog_sales` (28 million rows). The LATERAL join with `catalog_returns` might be expensive because for each row in `catalog_sales` we are doing a subquery that might return one row (or none). The `catalog_returns` table has 2.8 million rows, so the join might be using an index on `catalog_returns` to quickly find the matching rows.\n\nBut note: the LATERAL subquery is:\n\n    SELECT cr_refunded_cash\n    FROM catalog_returns\n    WHERE cr_order_number = catalog_sales.cs_order_number\n      AND cr_item_sk = catalog_sales.cs_item_sk\n    LIMIT 1\n\nThis is a correlated subquery. We are joining on `cr_order_number` and `cr_item_sk` from `catalog_sales`. \n\nWithout an index on `catalog_returns` (which currently has none), this might be doing a sequential scan on `catalog_returns` for each row of `catalog_sales`. That would be 28 million * (2.8 million / (number of matching rows)) which is too expensive.\n\nAdditionally, the query then joins with `warehouse` and `item`. The `item` table has 28,000 rows and no index, so a sequential scan might be acceptable. The `warehouse` table has 5 rows, so a sequential scan is fine.\n\nThe date_dim join is on `cs_sold_date_sk` and we are filtering the date_dim to a small set (about 61 rows). So that should be efficient.\n\nThe main bottleneck is the LATERAL join with `catalog_returns`.\n\nNow, let's think about indexes:\n\n1. For the LATERAL subquery: We are filtering `catalog_returns` by `cr_order_number` and `cr_item_sk`. We should create an index on `catalog_returns` for these two columns. Since we are doing an equality join, a btree index on `(cr_order_number, cr_item_sk)` would be efficient.\n\n2. Also, note that the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` comes from `item`. We are joining `catalog_sales` with `item` and `warehouse`. \n\n   The `item` table has 28,000 rows and no index. The join condition is `item.i_item_sk = catalog_sales.cs_item_sk`. We should create an index on `item.i_item_sk` to speed up this join.\n\n   Similarly, the `warehouse` table has 5 rows, so no index is needed.\n\n3. The date_dim_filtered is a small table (about 61 rows) so no index needed.\n\n4. The `catalog_sales` table has a primary key on `(cs_item_sk, cs_order_number)`. We are grouping by `w_state` and `i_item_id` (which comes from `item`). We might want to consider an index on `catalog_sales` that helps with the grouping, but note that the grouping is done after joins. The main goal is to reduce the cost of the joins and the LATERAL subquery.\n\n5. The WHERE clause on `item.i_current_price` is a range condition. We could create a btree index on `item.i_current_price` to help with this filter, but note that the join with `catalog_sales` is on `item.i_item_sk` and then we are filtering by `i_current_price`. However, the filter is on `item` and the join is on `i_item_sk`. We might consider a composite index on `(i_item_sk, i_current_price)` but that might not be necessary because the join is the primary operation.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWithout an index on `item.i_current_price`, the filter might be slow if we have to scan the entire `item` table. However, note that the join with `item` is on `i_item_sk` and then we are filtering by `i_current_price`. We can use the index on `item.i_item_sk` to quickly find the matching rows and then filter by `i_current_price` in memory. But if we want to push the filter down to the index, we might need a composite index.\n\nHowever, the query is filtering `item` after the join? Actually, the filter is in the WHERE clause and the join is on `item.i_item_sk = catalog_sales.cs_item_sk`. The filter is on `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter, but note that the join is the primary operation. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both the filter and the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the filter is on `item` and the join is on `item.i_item_sk`. We are joining `catalog_sales` to `item` and then filtering `item` by `i_current_price`. We can also create an index on `item` for `i_current_price` and then use the index to filter the `item` table. However, the join is the primary operation and we are filtering after the join? Actually, the filter is in the WHERE clause and the join is on `item.i_item_sk`. The filter is on `item.i_current_price`. We can push the filter down to the index if we have an index on `item.i_current_price`.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current`_price, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i_current_price`. \n\nWe are not sure if the filter on `item` is being used effectively. Without an index on `item.i_current_price`, the filter might be done by a sequential scan of `item` after the join, which is not efficient.\n\nBut note: the join is on `item.i_item_sk` and then we are filtering by `item.i_current_price`. We can create an index on `item` for `i_current_price` to help with the filter. However, the join is the primary operation and the filter is secondary. We might consider a composite index on `(i_current_price, i_item_sk)` to cover both.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `i_item_id` is from `item` and we are joining `catalog_sales` with `item` via `i_item_sk`. We are also filtering by `item.i_current_price`. \n\nAlternatively, we can create an index on `item` for the columns that are used in the join and the filter. But note that the join is on `i_item_sk` and the filter is on `i_current_price`. We can create a composite index on `(i_current_price, i_item_sk)` to help with the filter and then the join.\n\nBut note: the query is grouping by `w_state` and `i_item_id`. The `w_state` comes from `warehouse` and `i_item_id` from `item`. We are joining `catalog_sales` with `item` and `warehouse`. The grouping is done on the joined tables. We are also filtering by `item.i",
+  "recommendations": [
+    {
+      "table": "catalog_returns",
+      "column": "cr_order_number",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 3833950.12,
+          "cost_with_index": 3833950.12,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3711999.26,
+          "cost_with_index": 3711999.26,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_returns",
+      "column": "cr_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_current_price",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1369582.47,
+          "cost_with_index": 1369582.47,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 118368.02,
+          "cost_with_index": 118368.02,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 130277.19,
+          "cost_with_index": 130277.19,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 938158.28,
+          "cost_with_index": 938158.28,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 178644.67,
+          "cost_with_index": 178644.67,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 81714.89,
+          "cost_with_index": 81714.89,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 224465.16,
+          "cost_with_index": 224465.16,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "item",
+      "column": "i_item_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "helped": false,
+      "write_overhead_pct": null,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

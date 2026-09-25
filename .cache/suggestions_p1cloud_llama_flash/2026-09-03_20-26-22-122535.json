@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-03T20:26:22.122512",
+  "query_hash": "4d51a0b2a8bc",
+  "suggestions": [
+    "convert an IN subquery to a semi-join",
+    "split an OR predicate into UNION ALL branches"
+  ],
+  "improvement_pct": 94.26,
+  "model": "llama+nothink+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 23487.8,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH store_customers AS (\n    SELECT DISTINCT ss_customer_sk\n    FROM store_sales\n    JOIN date_dim ON ss_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\nweb_customers AS (\n    SELECT DISTINCT ws_bill_customer_sk\n    FROM web_sales\n    JOIN date_dim ON ws_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\ncatalog_customers AS (\n    SELECT DISTINCT cs_ship_customer_sk\n    FROM catalog_sales\n    JOIN date_dim ON cs_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\ngrouped AS (\n    SELECT cd_gender,\n           cd_marital_status,\n           cd_education_status,\n           cd_purchase_estimate,\n           cd_credit_rating,\n           count(*) AS cnt1\n    FROM customer_address ca\n    JOIN customer c\n      ON c.c_current_addr_sk = ca.ca_address_sk\n     AND ca.ca_state IN ('IL','TX','ME')\n    JOIN customer_demographics\n      ON c.c_current_cdemo_sk = customer_demographics.cd_demo_sk\n    JOIN store_customers\n      ON c.c_customer_sk = store_customers.ss_customer_sk\n    LEFT JOIN web_customers\n      ON c.c_customer_sk = web_customers.ws_bill_customer_sk\n    LEFT JOIN catalog_customers\n      ON c.c_customer_sk = catalog_customers.cs_ship_customer_sk\n    WHERE web_customers.ws_bill_customer_sk IS NULL\n      AND catalog_customers.cs_ship_customer_sk IS NULL\n    GROUP BY cd_gender, cd_marital_status, cd_education_status,\n             cd_purchase_estimate, cd_credit_rating\n)\nSELECT grouped.cd_gender AS cd_gender,\n       grouped.cd_marital_status AS cd_marital_status,\n       grouped.cd_education_status AS cd_education_status,\n       grouped.cnt1 AS cnt1,\n       grouped.cd_purchase_estimate AS cd_purchase_estimate,\n       grouped.cnt1 AS cnt2,\n       grouped.cd_credit_rating AS cd_credit_rating,\n       grouped.cnt1 AS cnt3\nFROM grouped\nORDER BY grouped.cd_gender, grouped.cd_marital_status,\n         grouped.cd_education_status, grouped.cd_purchase_estimate,\n         grouped.cd_credit_rating\nLIMIT 100",
+  "reached_sql": "WITH store_customers AS (\n    SELECT DISTINCT ss_customer_sk\n    FROM store_sales\n    JOIN date_dim ON ss_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\nweb_customers AS (\n    SELECT DISTINCT ws_bill_customer_sk\n    FROM web_sales\n    JOIN date_dim ON ws_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\ncatalog_customers AS (\n    SELECT DISTINCT cs_ship_customer_sk\n    FROM catalog_sales\n    JOIN date_dim ON cs_sold_date_sk = d_date_sk\n    WHERE d_year = 2002 AND d_moy BETWEEN 1 AND 1+2\n),\ngrouped AS (\n    SELECT cd_gender,\n           cd_marital_status,\n           cd_education_status,\n           cd_purchase_estimate,\n           cd_credit_rating,\n           count(*) AS cnt1\n    FROM customer_address ca\n    JOIN customer c\n      ON c.c_current_addr_sk = ca.ca_address_sk\n     AND ca.ca_state IN ('IL','TX','ME')\n    JOIN customer_demographics\n      ON c.c_current_cdemo_sk = customer_demographics.cd_demo_sk\n    JOIN store_customers\n      ON c.c_customer_sk = store_customers.ss_customer_sk\n    LEFT JOIN web_customers\n      ON c.c_customer_sk = web_customers.ws_bill_customer_sk\n    LEFT JOIN catalog_customers\n      ON c.c_customer_sk = catalog_customers.cs_ship_customer_sk\n    WHERE web_customers.ws_bill_customer_sk IS NULL\n      AND catalog_customers.cs_ship_customer_sk IS NULL\n    GROUP BY cd_gender, cd_marital_status, cd_education_status,\n             cd_purchase_estimate, cd_credit_rating\n)\nSELECT grouped.cd_gender AS cd_gender,\n       grouped.cd_marital_status AS cd_marital_status,\n       grouped.cd_education_status AS cd_education_status,\n       grouped.cnt1 AS cnt1,\n       grouped.cd_purchase_estimate AS cd_purchase_estimate,\n       grouped.cnt1 AS cnt2,\n       grouped.cd_credit_rating AS cd_credit_rating,\n       grouped.cnt1 AS cnt3\nFROM grouped\nORDER BY grouped.cd_gender, grouped.cd_marital_status,\n         grouped.cd_education_status, grouped.cd_purchase_estimate,\n         grouped.cd_credit_rating\nLIMIT 100",
+  "reasoning_trace": "Here is the optimization strategy:\n\n1. **Rewrite subqueries as joins** \u2014 TARGET: `exists (select * from store_sales,date_dim ...)` and `not exists (select * from web_sales,date_dim ...)` and `not exists (select * from catalog_sales,date_dim ...)` \u2014 TRANSFORMATION: Rewrite these subqueries as joins with the main query, using the conditions in the subquery to filter the joined tables.\n\n2. **Push filters down** \u2014 TARGET: `ca_state in ('IL','TX','ME')` \u2014 TRANSFORMATION: Move this filter down into the join with `customer_address`, so that only rows from `customer_address` where `ca_state` is one of these three states are joined with the rest of the query.\n\n3. **Use indexes on filtered columns** \u2014 TARGET: `c.c_current_addr_sk = ca.ca_address_sk` and `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: Ensure that there are indexes on these columns, so that the join can use them to quickly locate matching rows.\n\n4. **Avoid repeated scans of the same table** \u2014 TARGET: The multiple joins with `customer`, which is already joined with other tables and filtered by conditions in subqueries \u2014 TRANSFORMATION: Use a Common Table Expression (CTE) or a derived table to pre-filter the `customer` table before joining it with other tables.\n\n5. **Use efficient join order** \u2014 TARGET: The sequence of joins, particularly between `customer`, `customer_address`, and `customer_demographics` \u2014 TRANSFORMATION: Analyze the query plan and reorder the joins to minimize the number of rows being joined at each step.\n\n6. **Limit intermediate results** \u2014 TARGET: The subqueries in the `exists` and `not exists` clauses, which are evaluated repeatedly for each row in the main query \u2014 TRANSFORMATION: Use a CTE or derived table to pre-compute these subqueries, so that their results can be joined with the rest of the query without repeated evaluation.\n\n7. **Use efficient aggregation** \u2014 TARGET: The multiple `count(*)` aggregations on different columns \u2014 TRANSFORMATION: Consider using a single aggregation with a conditional expression to compute all the counts at once, rather than repeating the aggregation for each column.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 73309.922,
+      "optimized_ms": 4204.862,
+      "delta_ms": 69105.06,
+      "improvement_pct": 94.26,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 811535.56,
+      "optimized": 2738531.92,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 22196.8,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 1291.0,
+    "total_inference_ms": 23487.8,
+    "writer_inference_ms": 249158.7,
+    "writer_tokens_in": 1163,
+    "writer_tokens_out": 36373,
+    "writer_calls": 1
+  },
+  "errors": [],
+  "strategy": "Here is the optimization strategy:\n\n1. **Rewrite subqueries as joins** \u2014 TARGET: `exists (select * from store_sales,date_dim ...)` and `not exists (select * from web_sales,date_dim ...)` and `not exists (select * from catalog_sales,date_dim ...)` \u2014 TRANSFORMATION: Rewrite these subqueries as joins with the main query, using the conditions in the subquery to filter the joined tables.\n\n2. **Push filters down** \u2014 TARGET: `ca_state in ('IL','TX','ME')` \u2014 TRANSFORMATION: Move this filter down into the join with `customer_address`, so that only rows from `customer_address` where `ca_state` is one of these three states are joined with the rest of the query.\n\n3. **Use indexes on filtered columns** \u2014 TARGET: `c.c_current_addr_sk = ca.ca_address_sk` and `cd_demo_sk = c.c_current_cdemo_sk` \u2014 TRANSFORMATION: Ensure that there are indexes on these columns, so that the join can use them to quickly locate matching rows.\n\n4. **Avoid repeated scans of the same table** \u2014 TARGET: The multiple joins with `customer`, which is already joined with other tables and filtered by conditions in subqueries \u2014 TRANSFORMATION: Use a Common Table Expression (CTE) or a derived table to pre-filter the `customer` table before joining it with other tables.\n\n5. **Use efficient join order** \u2014 TARGET: The sequence of joins, particularly between `customer`, `customer_address`, and `customer_demographics` \u2014 TRANSFORMATION: Analyze the query plan and reorder the joins to minimize the number of rows being joined at each step.\n\n6. **Limit intermediate results** \u2014 TARGET: The subqueries in the `exists` and `not exists` clauses, which are evaluated repeatedly for each row in the main query \u2014 TRANSFORMATION: Use a CTE or derived table to pre-compute these subqueries, so that their results can be joined with the rest of the query without repeated evaluation.\n\n7. **Use efficient aggregation** \u2014 TARGET: The multiple `count(*)` aggregations on different columns \u2014 TRANSFORMATION: Consider using a single aggregation with a conditional expression to compute all the counts at once, rather than repeating the aggregation for each column.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 1,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT\n\nThe rewrite applies the strategy's main technique of rewriting subqueries as joins. The original query contains several subqueries that are rewritten as joins in the rewritten query using Co"
+  },
+  "raw_sql": "select cd_gender, cd_marital_status, cd_education_status, count(*) cnt1, cd_purchase_estimate, count(*) cnt2, cd_credit_rating, count(*) cnt3 from customer c,customer_address ca,customer_demographics where c.c_current_addr_sk = ca.ca_address_sk and ca_state in ('IL','TX','ME') and cd_demo_sk = c.c_current_cdemo_sk and exists (select * from store_sales,date_dim where c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and (not exists (select * from web_sales,date_dim where c.c_customer_sk = ws_bill_customer_sk and ws_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2) and not exists (select * from catalog_sales,date_dim where c.c_customer_sk = cs_ship_customer_sk and cs_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2)) group by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating order by cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating limit 100"
+}

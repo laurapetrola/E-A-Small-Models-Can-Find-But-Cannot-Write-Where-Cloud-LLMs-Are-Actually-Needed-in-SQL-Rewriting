@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-07T00:57:42.060398",
+  "query_hash": "c8682bd86de3",
+  "suggestions": [
+    "pre-filter a large table as a CTE before the join",
+    "reorder joins to reduce intermediate rows"
+  ],
+  "improvement_pct": -152.84,
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "outcome": "equivalence_failed_semantic",
+  "used_fallback": true,
+  "inference_ms": 783957.5,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "postgres",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form",
+  "corrector_rescued": false,
+  "optimized_sql": null,
+  "reached_sql": "WITH filtered_date_dim AS (\n    SELECT * FROM date_dim WHERE d_year = 2001 AND d_moy = 8\n), store_sales_returns AS (\n    SELECT ss.ss_store_sk, sr.sr_customer_sk, \n           CASE WHEN ((d2.d_date_sk - d1.d_date_sk) <= 30) THEN 1 ELSE 0 END AS \"30 days\",\n           CASE WHEN (((d2.d_date_sk - d1.d_date_sk) > 30) AND ((d2.d_date_sk - d1.d_date_sk) <= 60)) THEN 1 ELSE 0 END AS \"31-60 days\",\n           CASE WHEN (((d2.d_date_sk - d1.d_date_sk) > 60) AND ((d2.d_date_sk - d1.d_date_sk) <= 90)) THEN 1 ELSE 0 END AS \"61-90 days\",\n           CASE WHEN (((d2.d_date_sk - d1.d_date_sk) > 90) AND ((d2.d_date_sk - d1.d_date_sk) <= 120)) THEN 1 ELSE 0 END AS \"91-120 days\",\n           CASE WHEN ((d2.d_date_sk - d1.d_date_sk) > 120) THEN 1 ELSE 0 END AS \">120 days\"\n    FROM store_sales ss JOIN store_returns sr ON (ss.ss_ticket_number = sr.sr_ticket_number AND ss.ss_item_sk = sr.sr_item_sk)\n        JOIN filtered_date_dim d1 ON (d1.d_date_sk = ss.ss_sold_date_sk) \n        JOIN filtered_date_dim d2 ON (d2.d_date_sk = sr.sr_returned_date_sk)\n    WHERE ss.ss_store_sk = sr.sr_store_sk \n), store_sales_returns_joined AS (\n    SELECT * FROM store_sales_returns JOIN store ON (store_sales_returns.ss_store_sk = store.s_store_sk)\n)\nSELECT store.s_store_name, store.s_company_id, store.s_street_number, store.s_street_name, \n       store.s_street_type, store.s_suite_number, store.s_city, store.s_county, store.s_state, \n       store.s_zip, \"30 days\", \"31-60 days\", \"61-90 days\", \"91-120 days\", \">120 days\"\nFROM store_sales_returns_joined JOIN store ON (store.s_store_sk = store_sales_returns_joined.ss_store_sk)\nGROUP BY store.s_store_name, store.s_company_id, store.s_street_number, store.s_street_name, \n         store.s_street_type, store.s_suite_number, store.s_city, store.s_county, store.s_state, \n         store.s_zip, \"30 days\", \"31-60 days\", \"61-90 days\", \"91-120 days\", \">120 days\"\nORDER BY store.s_store_name, store.s_company_id, store.s_street_number, \n         store.s_street_name, store.s_street_type, store.s_suite_number, store.s_city, \n         store.s_county, store.s_state, store.s_zip LIMIT 100",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization. First, I need to understand the original query. The user is joining store_sales, store_returns, store, and two instances of date_dim. The main goal is to calculate the number of returns within different time frames relative to the sale date. \n\nLooking at the query structure, there are several joins and aggregations. The main tables involved are store_sales (ss), store_returns (sr), store (s), and date_dim (d1 and d2). The date_dim is used twice, once for the sold date (d1) and once for the return date (d2). The where clause filters d2 to 2001, August (d_moy=8). \n\nFirst, I notice that the date_dim tables are joined on the date_sk fields. Since d2 is filtered to a specific year and month, maybe we can pre-filter d2 to reduce the number of rows early. That could save some joins later. \n\nNext, the joins between store_sales and store_returns are on ss_ticket_number and ss_item_sk. These are primary keys in store_sales, so joining on them should be efficient. However, if there are many rows in store_returns, this could be a large join. \n\nThe date_dim joins are on ss_sold_date_sk and sr_returned_date_sk. Since d1 and d2 are used for date calculations, maybe we can compute the date differences in the WHERE clause or use indexes on those date_sk columns. \n\nThe aggregation is grouping by multiple store fields and calculating counts based on the date difference. The date difference calculation (sr_returned_date_sk - ss_sold_date_sk) is done in the CASE statements. Since these are integer timestamps, subtracting them gives the number of days. \n\nPotential optimizations: \n\n1. **Pre-filter date_dim (d2)**: Since d2 is filtered to 2001 and August, we can restrict the date_dim rows early. This reduces the number of rows in d2, which is joined with store_returns. \n\n2. **Index on date_dim.d_date_sk**: If the date_dim tables are being joined, having indexes on d_date_sk could speed up the joins. \n\n3. **Materialize the date_dim filters**: Since d2 is filtered, maybe creating a subquery or CTE for d2 could help the optimizer. \n\n4. **Avoid redundant joins**: The store_sales and store_returns are joined on ticket and item, which are primary keys. But if there are many rows in store_returns, this could be expensive. \n\n5. **Use of indexes on store_sales and store_returns**: Indexes on ss_ticket_number, ss_item_sk, and sr_ticket_number, sr_item_sk could speed up the joins. \n\n6. **Reorganize the query to filter early**: Applying the d2 filter first might reduce the number of rows processed in subsequent joins. \n\n7. **Consider using a window function or precomputed date differences**: But since the query is using CASE statements, maybe precomputing the date difference as a column could help, but that's more of a data model change. \n\nAnother thing to note is that the GROUP BY includes all the store fields, which are from the store table. Since store_sales is joined with store via ss_store_sk, maybe the store fields can be pulled directly from the store table, reducing the need to group by them. \n\nWait, the query is joining store_sales with store via ss_store_sk. So the store fields are from the store table. The GROUP BY includes all those store fields, which are already in the SELECT list. That's redundant, but the query is structured that way. \n\nSo, the main cost drivers are likely the joins with date_dim, especially since date_dim has 73k rows. Filtering d2 early would help. Also, the date difference calculation in the CASE statements might be expensive if done for every row. \n\nAnother thought: the date difference is calculated as sr_returned_date_sk - ss_sold_date_sk. Since these are date_sk values from date_dim, which are integers representing dates, subtracting them gives the number of days between the dates. Maybe precomputing this difference as a column could help, but that's not possible here. \n\nSo, the optimization steps would focus on reducing the number of rows processed in the joins, especially with date_dim, and ensuring that the joins are done efficiently. Also, checking if the date_dim tables can be filtered earlier to reduce the join size.\n\n</think>\n\n1. **Pre-filter date_dim (d2)** \u2014 TARGET: `date_dim d2` \u2014 TRANSFORMATION: Restrict `d2` to the filtered year/month (`d_year = 2001 AND d_moy = 8`) early in the query to reduce join size  \n2. **Index on date_dim.d_date_sk** \u2014 TARGET: `date_dim.d_date_sk` \u2014 TRANSFORMATION: Ensure indexes on `d_date_sk` for both `date_dim` tables to accelerate joins  \n3. **Materialize store_returns join** \u2014 TARGET: `store_returns` \u2014 TRANSFORMATION: Pre-filter `store_returns` using `sr_returned_date_sk = d2.d_date_sk` and `ss_sold_date_sk = d1.d_date_sk` to reduce join cardinality  \n4. **Avoid redundant grouping** \u2014 TARGET: `GROUP BY` clause \u2014 TRANSFORMATION: Replace redundant grouping on store fields with a subquery that pre-aggregates store details from the `store` table  \n5. **Optimize date difference calculation** \u2014 TARGET: `sr_returned_date_sk - ss_sold_date_sk` \u2014 TRANSFORMATION: Precompute date differences using `date_dim` joins to avoid repeated arithmetic operations in CASE statements  \n6. **Index on store_sales join keys** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Add indexes on `ss_ticket_number`, `ss_item_sk`, and `ss_store_sk` to accelerate joins with `store_returns` and `store`  \n7. **Limit early in the query** \u2014 TARGET: Final `LIMIT 100` \u2014 TRANSFORMATION: Apply `LIMIT 100` after grouping to reduce the number of rows processed in subsequent stages",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 538.042,
+      "optimized_ms": 1360.408,
+      "delta_ms": -822.366,
+      "improvement_pct": -152.84,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 134867.94,
+      "optimized": 649910.54,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": false
+    },
+    "inference_ms": 714295.2,
+    "index_advisor_inference_ms": 64112.4,
+    "reflection_iterations": 3,
+    "labeler_inference_ms": 5549.9,
+    "total_inference_ms": 783957.5,
+    "writer_inference_ms": 196478.9,
+    "writer_tokens_in": 29382,
+    "writer_tokens_out": 6193,
+    "writer_calls": 8
+  },
+  "errors": [
+    "Integrity check failed: result hashes differ (S\u22601) \u2014 your rewrite returns different rows than the original. Common causes: converting IN/EXISTS to a plain JOIN without DISTINCT multiplies rows; changing the driving table in FROM alters the result set. Fix: use EXISTS or add DISTINCT when flattening subqueries into JOINs.",
+    "Significant cost increase: original=134867.94 \u2192 optimized=649910.54 (+381.9%)",
+    "Execution time regression: 538.042ms \u2192 1360.408ms"
+  ],
+  "strategy": "1. **Pre-filter date_dim (d2)** \u2014 TARGET: `date_dim d2` \u2014 TRANSFORMATION: Restrict `d2` to the filtered year/month (`d_year = 2001 AND d_moy = 8`) early in the query to reduce join size  \n2. **Index on date_dim.d_date_sk** \u2014 TARGET: `date_dim.d_date_sk` \u2014 TRANSFORMATION: Ensure indexes on `d_date_sk` for both `date_dim` tables to accelerate joins  \n3. **Materialize store_returns join** \u2014 TARGET: `store_returns` \u2014 TRANSFORMATION: Pre-filter `store_returns` using `sr_returned_date_sk = d2.d_date_sk` and `ss_sold_date_sk = d1.d_date_sk` to reduce join cardinality  \n4. **Avoid redundant grouping** \u2014 TARGET: `GROUP BY` clause \u2014 TRANSFORMATION: Replace redundant grouping on store fields with a subquery that pre-aggregates store details from the `store` table  \n5. **Optimize date difference calculation** \u2014 TARGET: `sr_returned_date_sk - ss_sold_date_sk` \u2014 TRANSFORMATION: Precompute date differences using `date_dim` joins to avoid repeated arithmetic operations in CASE statements  \n6. **Index on store_sales join keys** \u2014 TARGET: `store_sales` \u2014 TRANSFORMATION: Add indexes on `ss_ticket_number`, `ss_item_sk`, and `ss_store_sk` to accelerate joins with `store_returns` and `store`  \n7. **Limit early in the query** \u2014 TARGET: Final `LIMIT 100` \u2014 TRANSFORMATION: Apply `LIMIT 100` after grouping to reduce the number of rows processed in subsequent stages",
+  "writer": "local:deepseek-coder:6.7b",
+  "strategy_attempts": 3,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was pre-filtering date_dim early to reduce join size, and the rewrite applies this by creating a CTE with filtered date_dim (filtered_date_dim) and joining it "
+  },
+  "raw_sql": "select s_store_name ,s_company_id ,s_street_number ,s_street_name ,s_street_type ,s_suite_number ,s_city ,s_county ,s_state ,s_zip ,sum(case when (sr_returned_date_sk - ss_sold_date_sk <= 30 ) then 1 else 0 end) as \"30 days\" ,sum(case when (sr_returned_date_sk - ss_sold_date_sk > 30) and (sr_returned_date_sk - ss_sold_date_sk <= 60) then 1 else 0 end ) as \"31-60 days\" ,sum(case when (sr_returned_date_sk - ss_sold_date_sk > 60) and (sr_returned_date_sk - ss_sold_date_sk <= 90) then 1 else 0 end) as \"61-90 days\" ,sum(case when (sr_returned_date_sk - ss_sold_date_sk > 90) and (sr_returned_date_sk - ss_sold_date_sk <= 120) then 1 else 0 end) as \"91-120 days\" ,sum(case when (sr_returned_date_sk - ss_sold_date_sk > 120) then 1 else 0 end) as \">120 days\" from store_sales ,store_returns ,store ,date_dim d1 ,date_dim d2 where d2.d_year = 2001 and d2.d_moy = 8 and ss_ticket_number = sr_ticket_number and ss_item_sk = sr_item_sk and ss_sold_date_sk = d1.d_date_sk and sr_returned_date_sk = d2.d_date_sk and ss_customer_sk = sr_customer_sk and ss_store_sk = s_store_sk group by s_store_name ,s_company_id ,s_street_number ,s_street_name ,s_street_type ,s_suite_number ,s_city ,s_county ,s_state ,s_zip order by s_store_name ,s_company_id ,s_street_number ,s_street_name ,s_street_type ,s_suite_number ,s_city ,s_county ,s_state ,s_zip limit 100"
+}

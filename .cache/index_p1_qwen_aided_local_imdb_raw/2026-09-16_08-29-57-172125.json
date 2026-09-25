@@ -1,0 +1,162 @@
+{
+  "timestamp": "2026-09-16T08:29:57.172108",
+  "query_hash": "fef1783ef8c8",
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "raw",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 78993.3,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the right indexes to reduce the execution cost of their SQL query. Let me start by understanding the query and the schema.\n\nThe query is selecting MIN values from several tables: company_type, info_type, movie_companies, movie_info_idx, and title. The main goal is to find the production note, movie title, and production year based on certain conditions. \n\nLooking at the tables involved, the main large tables are movie_companies (2.6 million rows), movie_info_idx (1.38 million rows), and title (2.5 million rows). The existing indexes are on movie_companies for company_type_id, movie_id, and company_id. For movie_info_idx, there are indexes on info_type_id and movie_id. The title table has an index on kind_id, but that's not directly used in the query.\n\nThe query has several conditions. Let's break down the WHERE clause:\n\n1. ct.kind = 'production companies' \u2013 This filters the company_type table. Since company_type has only 4 rows, this is likely a fast filter, but maybe an index on kind would help if there are more rows, but the table is small.\n2. it.info = 'top 250 rank' \u2013 Similarly, info_type has 113 rows. An index on info might speed this up.\n3. mc.note NOT LIKE '%(as Metro-Goldwyn-Mayer Pictures)%' \u2013 This is a full-text search on mc.note. Since it's a NOT LIKE with a pattern, an index on mc.note might help, but full-text search might be better. However, the user has pg_trgm extension, which could be useful for text pattern matching.\n4. mc.note LIKE '%(co-production)%' OR mc.note LIKE '%(presents)%' \u2013 Again, text pattern matching on mc.note. So, an index on mc.note could help here.\n5. ct.id = mc.company_type_id \u2013 This is a join condition between company_type and movie_companies. Since company_type is small, maybe the join is fast, but if there's an index on company_type_id in movie_companies, which there is (as per the existing indexes), that's already covered.\n6. t.id = mc.movie_id \u2013 Join between title and movie_companies. The title table's index is on kind_id, which isn't used here. So, if there's an index on movie_id in title, that would help. But the title table's existing index is on kind_id, so maybe adding an index on movie_id would be beneficial here.\n7. t.id = mi_idx.movie_id \u2013 Join between title and movie_info_idx. Again, if title has an index on movie_id, that would help.\n8. mc.movie_id = mi_idx.movie_id \u2013 Join between movie_companies and movie_info_idx. The existing indexes on movie_id in movie_info_idx are already there.\n9. it.id = mi_idx.info_type_id \u2013 Join between info_type and movie_info_idx. The existing index on info_type_id in movie_info_idx is already present.\n\nNow, looking at the execution plan, the user mentioned that there's an error with the plan hints, so I need to rely on the structure and schema. The main issue is likely the Seq Scans on large tables. Let's check which tables are being scanned sequentially.\n\nThe query involves movie_companies, movie_info_idx, and title. The existing indexes on movie_companies are company_type_id, movie_id, and company_id. For movie_info_idx, indexes on info_type_id and movie_id. Title has an index on kind_id, which isn't used here.\n\nThe conditions that might cause full scans are:\n\n- The mc.note NOT LIKE and LIKE conditions. Since these are text patterns, an index on mc.note could help. But the existing indexes on movie_companies are on company_type_id, movie_id, and company_id. There's no index on note, so a Seq Scan on movie_companies is happening here. That's a big table, so an index on note would help.\n\n- The joins between movie_companies and movie_info_idx on movie_id. Since movie_info_idx has an index on movie_id, but if the join is causing a lot of rows to be scanned, maybe adding an index on movie_id in title would help, but title's existing index is on kind_id. Wait, the join is between title and movie_companies on t.id = mc.movie_id. If title has an index on movie_id, that would speed up the join. But the existing index is on kind_id. So, adding an index on movie_id in title would help.\n\nAnother point is the info_type.info = 'top 250 rank'. Since info_type has 113 rows, but the query is joining it with movie_info_idx on it.id = mi_idx.info_type_id. The existing index on info_type_id in movie_info_idx is there, but if the info_type table doesn't have an index on info, then the query might be doing a Seq Scan on info_type. So adding an index on info in info_type would help.\n\nSimilarly, the company_type.kind = 'production companies' is a filter on a small table, but if there's an index on kind, that would speed it up. However, the company_type table has only 4 rows, so maybe it's not necessary. But if the query is doing a Seq Scan on company_type, an index on kind would help.\n\nSo, the main candidates for indexes are:\n\n1. On info_type(info) to speed up the filter it.info = 'top 250 rank'.\n2. On movie_companies(note) to handle the LIKE conditions on mc.note.\n3. On title(movie_id) to speed up the join between title and movie_companies and movie_info_idx.\n\nLet me check the existing indexes again. The info_type table has no indexes. The movie_companies has no index on note. The title table has an index on kind_id, not movie_id. So adding indexes on these columns would help.\n\nThe user's query has a JOIN between movie_companies and movie_info_idx on movie_id, and between title and movie_companies on movie_id. If title has an index on movie_id, that would make the join faster. Similarly, if movie_companies has an index on note, the LIKE conditions would be faster.\n\nSo, the indexes to suggest are:\n\n- info_type(info) for the filter on it.info.\n- movie_companies(note) for the LIKE conditions.\n- title(movie_id) for the joins involving title.\n\nBut wait, the user's query has a JOIN between movie_companies and movie_info_idx on movie_id. Since movie_info_idx has an index on movie_id, but if the movie_companies table is being scanned sequentially, maybe the index on movie_companies.movie_id is already there. Wait, the existing indexes on movie_companies are company_type_id, movie_id, and company_id. So, the movie_id is already indexed. So the join between movie_companies and movie_info_idx on movie_id would use the existing index. However, the problem might be the filtering on mc.note, which is not indexed. So the main issue is the Seq Scan on movie_companies due to the note conditions.\n\nTherefore, the primary index to add is on movie_companies(note) to handle the LIKE conditions. Also, the info_type(info) index would help with the filter. And the title(movie_id) index would help with the joins.\n\nBut the user's query has a JOIN between title and movie_companies on t.id = mc.movie_id. If title has an index on movie_id, that would speed up that join. Since the existing index on title is kind_id, adding an index on movie_id would be beneficial.\n\nSo, the three indexes would be:\n\n1. info_type(info) \u2013 to speed up the filter on it.info.\n2. movie_companies(note) \u2013 to handle the LIKE conditions on mc.note.\n3. title(movie_id) \u2013 to speed up the joins involving title.\n\nBut the user's query also has a JOIN between movie_companies and movie_info_idx on movie_id, which is already covered by the existing index on movie_id in movie_info_idx. However, the movie_companies table's movie_id is already indexed, so that join should be efficient.\n\nAnother point: the mc.note NOT LIKE and LIKE conditions. Since these are pattern matches, using a trigram index (with pg_trgm) on mc.note could be more efficient than a regular B-tree index. But the user has the pg_trgm extension, so a GIN index on mc.note might be better for these LIKE conditions. However, the user's query uses LIKE with %, which is a full-text search. But the existing indexes are B-tree. So, a GIN index on mc.note could help with the pattern matching.\n\nBut the user's instructions mention to use the installed extensions. Since pg_trgm is available, a GIN index on mc.note might be better. However, the user's query uses LIKE with %, which is a full-text search. But the existing indexes are B-tree. So, a GIN index on mc.note could help with the pattern matching. However, the user's query has both NOT LIKE and LIKE conditions. So, a GIN index might be more efficient for these text pattern searches.\n\nBut the user's instructions say to decide the appropriate index type. Since the query uses LIKE with %, which is a full-text search, and the user has pg_trgm, a GIN index on mc.note would be suitable. However, the existing indexes on movie_companies are B-tree. So, adding a GIN index on note would be beneficial.\n\nBut the user's query has multiple conditions on mc.note: NOT LIKE and two LIKE conditions. So, an index on mc.note would help. However, the exact type depends on the query. Since the query uses LIKE with %, which is a full-text search, a GIN index with pg_trgm would be better. But the user's existing indexes are B-tree. So, the index_type should be GIN for mc.note.\n\nBut the user's instructions say to use the installed extensions. Since pg_trgm is available, a GIN index on mc.note would be appropriate.\n\nSo, the indexes to suggest are:\n\n1. info_type(info) \u2013 B-tree index on info to speed up the filter.\n2. movie_companies(note) \u2013 GIN index on note for the LIKE conditions.\n3. title(movie_id) \u2013 B-tree index on movie_id for the joins.\n\nBut the user's query has a JOIN between title and movie_companies on t.id = mc.movie_id. If title has an index on movie_id, that would speed up the join. Since the existing index on title is kind_id, adding an index on movie_id would help.\n\nSo, the three indexes would be the ones mentioned. However, the user's query may have other Seq Scans. Let me check again.\n\nThe main tables involved are movie_companies (2.6M rows), movie_info_idx (1.38M rows), and title (2.5M rows). The existing indexes on movie_companies are company_type_id, movie_id, company_id. The existing indexes on movie_info_idx are info_type_id and movie_id. Title has an index on kind_id.\n\nThe query's WHERE conditions on mc.note are causing a full scan on movie_companies. So, adding an index on mc.note would help. Also, the info_type.info filter is on a table with 113 rows, but if there's no index on info, that could be a Seq Scan. So, adding an index on info_type.info would help. Similarly, the title table's join on movie_id would benefit from an index on movie_id.\n\nTherefore, the three indexes are the ones mentioned. However, the user's query may have other parts. Let me check the query again.\n\nThe query has a JOIN between movie_companies and movie_info_idx on movie_id, which is already covered by the existing indexes. The JOIN between title and movie_companies on movie_id would benefit from an index on title.movie_id. The JOIN between info_type and movie_info_idx on info_type_id is already covered by the existing index on movie_info_idx.info_type_id.\n\nSo, the main candidates are the indexes on info_type.info, movie_companies.note, and title.movie_id.\n\nBut the user's query has a condition on mc.note NOT LIKE and LIKE, which are text patterns. Using a GIN index on mc.note with pg_trgm would be more efficient for these pattern matches. So, the index_type for movie_companies.note would be GIN.\n\nSo, the final indexes would be:\n\n- info_type(info) with B-tree.\n- movie_companies(note) with GIN.\n- title(movie_id) with B-tree.\n\nThese indexes would eliminate the Seq Scans on info_type, movie_companies, and title, respectively. The estimated benefit would be the rows scanned in each of these tables. Since movie_companies is the largest, the GIN index on note would have the most benefit. Then, the info_type.info index would help with the 113 rows, and the title.movie_id index would help with the 2.5M rows.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"movie_companies\",\n      \"property\": \"note\",\n      \"index_type\": \"GIN\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on movie_companies (2.6M rows) for mc.note LIKE/NOT LIKE patterns\"\n    },\n    {\n      \"target\": \"info_type\",\n      \"property\": \"info\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on info_type (113 rows) for it.info = 'top 250 rank'\"\n    },\n    {\n      \"target\": \"title\",\n      \"property\": \"movie_id\",\n      \"index_type\": \"BTREE\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on title (2.5M rows) for t.id = mc.movie_id and t.id = mi_idx.movie_id\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's performance bottleneck lies in full table scans on movie_companies (due to note pattern matching), info_type (due to info filter), and title (due to join conditions). GIN index on movie_companies.note handles text pattern matching efficiently with pg_trgm, while BTREE indexes on info_type.info and title.movie_id accelerate filtering and joins.\"\n}",
+  "recommendations": [
+    {
+      "table": "movie_companies",
+      "column": "note",
+      "index_type": "gin",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.2,
+      "baseline_exec_ms": 48.046,
+      "optimized_exec_ms": 47.937,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.7,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20698.41,
+          "cost_with_index": 20698.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/17f.json",
+          "baseline_cost": 4644.05,
+          "cost_with_index": 4644.05,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55680.51,
+          "cost_with_index": 55680.51,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7485.87,
+          "cost_with_index": 7485.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66394.55,
+          "cost_with_index": 66394.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9521.57,
+          "cost_with_index": 8091.3,
+          "benefit_pct": 15.0
+        },
+        {
+          "source": "heldout/JOB/10a.json",
+          "baseline_cost": 46770.41,
+          "cost_with_index": 46770.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/16a.json",
+          "baseline_cost": 3810.12,
+          "cost_with_index": 3810.12,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/JOB/2a.json",
+          "baseline_cost": 3856.09,
+          "cost_with_index": 3856.09,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "info_type",
+      "column": "info",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": 4.8,
+      "baseline_exec_ms": 50.745,
+      "optimized_exec_ms": 48.298,
+      "helped": true,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/JOB/13d.json",
+          "baseline_cost": 20698.41,
+          "cost_with_index": 20698.41,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/19b.json",
+          "baseline_cost": 55680.51,
+          "cost_with_index": 55680.51,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/22a.json",
+          "baseline_cost": 7485.87,
+          "cost_with_index": 7485.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/23c.json",
+          "baseline_cost": 66394.55,
+          "cost_with_index": 66394.55,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/29c.json",
+          "baseline_cost": 10962.59,
+          "cost_with_index": 10962.59,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/31b.json",
+          "baseline_cost": 9521.57,
+          "cost_with_index": 9521.57,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "curated/JOB/7b.json",
+          "baseline_cost": 9442.54,
+          "cost_with_index": 9442.54,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "title",
+      "column": "movie_id",
+      "index_type": "btree",
+      "estimated_benefit_pct": null,
+      "validation": "estimated",
+      "measured_read_benefit_pct": null,
+      "baseline_exec_ms": null,
+      "optimized_exec_ms": null,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": null,
+      "workload_per_query": null,
+      "workload_queries_improved": null,
+      "workload_queries_regressed": null,
+      "status": null
+    }
+  ]
+}

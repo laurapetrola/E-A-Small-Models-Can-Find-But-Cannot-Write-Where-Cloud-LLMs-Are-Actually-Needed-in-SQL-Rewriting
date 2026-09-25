@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-04T21:57:30.647851",
+  "query_hash": "c21559dad617",
+  "suggestions": [
+    "introduce CTE for filtering keywords",
+    "introduce CTE for precomputed links",
+    "split title joins into separate CTEs for first and second movie",
+    "pre-filter a large table as a CTE before the join"
+  ],
+  "improvement_pct": 3.54,
+  "model": "qwen-reasoning+think+nohw+noplan",
+  "arm": "aided",
+  "outcome": "rewrite_correct",
+  "used_fallback": true,
+  "inference_ms": 119519.6,
+  "rules_in_prompt": [],
+  "apply_mode": false,
+  "db_type": "mysql",
+  "scale_divergence": false,
+  "float_sensitive_sf1_only": false,
+  "production_path": "free_form_corrected:cloud",
+  "corrector_rescued": true,
+  "optimized_sql": "WITH matching_movies AS (\n    SELECT mk.movie_id\n    FROM keyword AS k\n    JOIN movie_keyword AS mk ON mk.keyword_id = k.id\n    WHERE k.keyword = '10,000-mile-club'\n),\nprecomputed_links AS (\n    SELECT ml.movie_id, ml.link_type_id, ml.linked_movie_id\n    FROM movie_link AS ml\n    JOIN matching_movies AS mm ON ml.movie_id = mm.movie_id\n)\nSELECT MIN(lt.link) AS link_type,\n       MIN(t1.title) AS first_movie,\n       MIN(t2.title) AS second_movie\nFROM precomputed_links AS pl\nJOIN link_type AS lt ON lt.id = pl.link_type_id\nJOIN (\n    SELECT tt.id, tt.title\n    FROM title AS tt\n    WHERE tt.id IN (SELECT pl2.movie_id FROM precomputed_links AS pl2)\n) AS t1 ON t1.id = pl.movie_id\nJOIN (\n    SELECT tt.id, tt.title\n    FROM title AS tt\n    WHERE tt.id IN (SELECT pl2.linked_movie_id FROM precomputed_links AS pl2)\n) AS t2 ON t2.id = pl.linked_movie_id",
+  "reached_sql": "WITH matching_movies AS (\n    SELECT mk.movie_id\n    FROM keyword AS k\n    JOIN movie_keyword AS mk ON mk.keyword_id = k.id\n    WHERE k.keyword = '10,000-mile-club'\n),\nprecomputed_links AS (\n    SELECT ml.movie_id, ml.link_type_id, ml.linked_movie_id\n    FROM movie_link AS ml\n    JOIN matching_movies AS mm ON ml.movie_id = mm.movie_id\n)\nSELECT MIN(lt.link) AS link_type,\n       MIN(t1.title) AS first_movie,\n       MIN(t2.title) AS second_movie\nFROM precomputed_links AS pl\nJOIN link_type AS lt ON lt.id = pl.link_type_id\nJOIN (\n    SELECT tt.id, tt.title\n    FROM title AS tt\n    WHERE tt.id IN (SELECT pl2.movie_id FROM precomputed_links AS pl2)\n) AS t1 ON t1.id = pl.movie_id\nJOIN (\n    SELECT tt.id, tt.title\n    FROM title AS tt\n    WHERE tt.id IN (SELECT pl2.linked_movie_id FROM precomputed_links AS pl2)\n) AS t2 ON t2.id = pl.linked_movie_id",
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user has already tried some strategies, and now I need to come up with a different approach. Let me start by understanding the original query and the previous attempts.\n\nThe original query is selecting the minimum link type and two movie titles based on certain joins and filters. The main filter is on the keyword '10,000-mile-club'. The previous strategies focused on filtering early, join order, index usage, avoiding redundant joins, and aggregating early. Now, I need to think of another technique.\n\nLooking at the query structure, there are multiple joins: keyword \u2192 movie_keyword \u2192 movie_link \u2192 title (t1 and t2). The main filter is on the keyword. The user might be joining too many tables, leading to a large intermediate result set. Maybe there's a way to reduce the number of rows earlier in the process.\n\nWait, the user mentioned that the previous strategy of filtering early on the keyword didn't work. But maybe there's another way to filter or join. Let me check the tables involved. The keyword table is joined with movie_keyword via keyword_id = k.id. Since the keyword is fixed, perhaps we can precompute the movie_ids that have this keyword and then use those in subsequent joins. That way, we reduce the number of rows in movie_keyword early on.\n\nAnother thought: the movie_link table connects t1 and t2. Maybe we can find a way to limit the number of rows in movie_link by using the filtered movie_ids from the keyword. For example, if we first get the movie_ids from movie_keyword where keyword is '10,000-mile-club', then use those to filter the movie_link table. This would reduce the number of rows in movie_link that need to be joined with titles.\n\nAlso, the titles t1 and t2 are being joined via movie_link. Since we're using MIN on their titles, maybe we can find the earliest titles in each movie and then join, but that might not be straightforward. Alternatively, ensuring that the joins with title are optimized by using indexes on the relevant columns.\n\nWait, the user already tried index utilization on movie_link's movie_id and linked_movie_id. Maybe another index on the link_type_id in movie_link? Or perhaps the join between movie_link and link_type is causing some overhead. But the previous strategy already mentioned that.\n\nAnother angle: the query is using MIN on multiple columns. Maybe we can split the query into subqueries to compute the minimums separately, but that might not be possible due to the joins required. Alternatively, using window functions to get the minimums after filtering, but again, the joins need to be optimized first.\n\nWait, the main issue might be the Cartesian product between t1 and t2 via movie_link. If there are many movies linked, this could create a lot of rows. Maybe we can limit the number of t1 and t2 by ensuring that each movie is only considered once. For example, if we can get the earliest or latest titles, but the query is about the first movie and second movie, which might be related to the order in the data.\n\nAlternatively, maybe the movie_link table has a lot of rows, so filtering it early by the movie_ids from the keyword would reduce the number of rows. Let me think: the keyword filter gives us a set of movie_ids. Then, using those to filter movie_link's movie_id and linked_movie_id would reduce the rows in movie_link. Then, joining with title for t1 and t2 would be on fewer rows.\n\nSo, the strategy could be to first get the movie_ids from movie_keyword where keyword is '10,000-mile-club', then use those to filter movie_link, and then proceed with the joins. This would reduce the number of rows in movie_link and titles involved, leading to fewer joins and better performance.\n\nAnother possibility is that the join between movie_keyword and movie_link is causing a lot of rows. If we can precompute the movie_ids from movie_keyword, then join with movie_link, that might help. Also, ensuring that the joins are done in an order that minimizes the intermediate data.\n\nSo, the optimization strategy could involve restructuring the query to first filter the movie_ids from movie_keyword, then use those to filter movie_link, and then proceed with the joins. This would reduce the number of rows processed in subsequent joins, leading to better performance.\n\n</think>\n\n1. **Precompute Movie IDs** \u2014 TARGET: `movie_keyword.keyword_id` and `keyword.id` \u2014 TRANSFORMATION: Restructure the query to first compute the set of `movie_id`s from `movie_keyword` where `keyword.keyword = '10,000-mile-club'`, then use this filtered list to restrict subsequent joins with `movie_link` and `title`, reducing the dataset size early.  \n2. **Join Order Optimization** \u2014 TARGET: `movie_link` and `title` \u2014 TRANSFORMATION: Prioritize joining `movie_link` with the precomputed `movie_id`s first, then join with `title` tables to minimize intermediate row counts and avoid Cartesian products between `t1` and `t2`.  \n3. **Index Utilization** \u2014 TARGET: `movie_keyword.movie_id` and `movie_link.movie_id` \u2014 TRANSFORMATION: Ensure joins between `movie_keyword` and `movie_link` leverage indexes on `movie_id` to accelerate filtering and reduce scan overhead.  \n4. **Avoid Redundant Joins** \u2014 TARGET: `title` (t1 and t2) \u2014 TRANSFORMATION: Use subqueries to isolate `t1` and `t2` selections, ensuring each title join is scoped to the precomputed `movie_id`s from `movie_keyword` to eliminate unnecessary row expansions.  \n5. **Aggregate Early** \u2014 TARGET: `MIN(lt.link)` and `MIN(t1.title)` \u2014 TRANSFORMATION: Apply aggregate functions after filtering and joining to the precomputed dataset, ensuring minimal rows are processed during aggregation.",
+  "metrics": {
+    "execution_time": {
+      "original_ms": 537.0,
+      "optimized_ms": 518.0,
+      "delta_ms": 19.0,
+      "improvement_pct": 3.54,
+      "original_floor_ms": null,
+      "improvement_lower_bound_pct": null,
+      "perf_scale": null
+    },
+    "planner_cost": {
+      "original": 698394.68,
+      "optimized": 1507892.62,
+      "reduced": false
+    },
+    "integrity": {
+      "hash_match": true
+    },
+    "inference_ms": 109113.3,
+    "index_advisor_inference_ms": null,
+    "reflection_iterations": 0,
+    "labeler_inference_ms": 10406.3,
+    "total_inference_ms": 119519.6,
+    "writer_inference_ms": 871533.3,
+    "writer_tokens_in": 2704,
+    "writer_tokens_out": 113928,
+    "writer_calls": 3
+  },
+  "errors": [],
+  "strategy": "1. **Precompute Movie IDs** \u2014 TARGET: `movie_keyword.keyword_id` and `keyword.id` \u2014 TRANSFORMATION: Restructure the query to first compute the set of `movie_id`s from `movie_keyword` where `keyword.keyword = '10,000-mile-club'`, then use this filtered list to restrict subsequent joins with `movie_link` and `title`, reducing the dataset size early.  \n2. **Join Order Optimization** \u2014 TARGET: `movie_link` and `title` \u2014 TRANSFORMATION: Prioritize joining `movie_link` with the precomputed `movie_id`s first, then join with `title` tables to minimize intermediate row counts and avoid Cartesian products between `t1` and `t2`.  \n3. **Index Utilization** \u2014 TARGET: `movie_keyword.movie_id` and `movie_link.movie_id` \u2014 TRANSFORMATION: Ensure joins between `movie_keyword` and `movie_link` leverage indexes on `movie_id` to accelerate filtering and reduce scan overhead.  \n4. **Avoid Redundant Joins** \u2014 TARGET: `title` (t1 and t2) \u2014 TRANSFORMATION: Use subqueries to isolate `t1` and `t2` selections, ensuring each title join is scoped to the precomputed `movie_id`s from `movie_keyword` to eliminate unnecessary row expansions.  \n5. **Aggregate Early** \u2014 TARGET: `MIN(lt.link)` and `MIN(t1.title)` \u2014 TRANSFORMATION: Apply aggregate functions after filtering and joining to the precomputed dataset, ensuring minimal rows are processed during aggregation.",
+  "writer": "cloud:deepseek-v4-flash",
+  "strategy_attempts": 2,
+  "adherence": {
+    "verdict": "adherent",
+    "judge_note": "ADHERENT  \nThe strategy's main technique was precomputing movie IDs and joining them early, which the rewrite achieves via the `matching_movies` CTE and subsequent joins. The rewrite also follows the "
+  },
+  "raw_sql": "SELECT MIN(lt.link) AS link_type, MIN(t1.title) AS first_movie, MIN(t2.title) AS second_movie FROM keyword AS k, link_type AS lt, movie_keyword AS mk, movie_link AS ml, title AS t1, title AS t2 WHERE k.keyword = '10,000-mile-club' AND mk.keyword_id = k.id AND t1.id = mk.movie_id AND ml.movie_id = t1.id AND ml.linked_movie_id = t2.id AND lt.id = ml.link_type_id AND mk.movie_id = t1.id"
+}

@@ -1,0 +1,253 @@
+{
+  "timestamp": "2026-09-06T04:45:19.940671",
+  "query_hash": "4d51a0b2a8bc",
+  "model": "qwen-reasoning+think+nohw+noplan+schemalink",
+  "arm": "aided",
+  "db_type": "postgres",
+  "rewrite_hints": [],
+  "workload_aware": false,
+  "inference_ms": 98959.3,
+  "reasoning_trace": "<think>\nOkay, let's tackle this query optimization problem. The user wants me to identify the best indexes to reduce the execution cost of their SQL query. The query is a bit complex with multiple joins and EXISTS/NOT EXISTS subqueries. Let me break it down step by step.\n\nFirst, I need to understand the query structure. The main query is selecting from customer, customer_address, and customer_demographics. It has conditions on ca_state being 'IL', 'TX', or 'ME', and joins via c_current_addr_sk and cd_demo_sk. Then there are three EXISTS/NOT EXISTS subqueries checking for store_sales, web_sales, and catalog_sales entries related to the customer, filtered by date_dim for the year 2002 and months 1-3.\n\nThe user mentioned that there are no existing indexes on the relevant tables. So, my job is to figure out which indexes would help eliminate seq scans on large tables, especially in the subqueries.\n\nLooking at the tables involved in the subqueries: store_sales, web_sales, catalog_sales, and date_dim. The main issue here is that these tables are large (store_sales has 57 million rows, etc.), and the subqueries are doing full table scans unless indexed properly.\n\nLet's look at the EXISTS subqueries first. For the store_sales subquery, the condition is c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk with d_year=2002 and d_moy between 1 and 3. Similarly for web_sales and catalog_sales. The problem here is that without indexes, these subqueries are scanning the entire table, which is expensive.\n\nFor the store_sales subquery, the join condition is on c.c_customer_sk = ss_customer_sk. If we have an index on ss_customer_sk, that could help quickly find the relevant rows. Also, the date condition is on ss_sold_date_sk = d_date_sk, but since d_date_sk is from date_dim, which is a separate table, maybe the date filter is applied via the date_dim table. Wait, the subquery joins store_sales with date_dim on ss_sold_date_sk = d_date_sk, and filters d_year=2002 and d_moy between 1 and 3. So, the date_dim table is being used to filter the dates. But the date_dim table is small (73k rows), so maybe that's not the bottleneck. The main issue is the store_sales table.\n\nSo, for the store_sales subquery, the key is to index the columns involved in the join and the date filter. The join is on ss_customer_sk, and the date is on ss_sold_date_sk. However, since the date is filtered via the date_dim table, maybe the date filter is applied to the date_dim table, and then the store_sales is filtered by the date_sk. Wait, the subquery is:\n\nselect * from store_sales, date_dim where c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2\n\nSo, the date_dim is joined on ss_sold_date_sk = d_date_sk, and then filtered by d_year and d_moy. Since date_dim is small, maybe the date filter is handled there, but the store_sales table is still being scanned. So, if we can index store_sales on ss_customer_sk and ss_sold_date_sk, that might help. But since the date is filtered via the date_dim, perhaps the date_sk is already known, and the store_sales can be filtered by that date_sk. However, without an index on ss_sold_date_sk, the database would have to scan the entire store_sales table for each date_sk.\n\nAlternatively, maybe the date_dim is used to get the d_date_sk values for 2002, and then the store_sales is filtered by those dates. But if there's no index on store_sales's ss_sold_date_sk, it's a full scan. So, creating an index on ss_sold_date_sk would allow the database to quickly find the rows that match the date_sk from date_dim.\n\nSimilarly, for the web_sales and catalog_sales subqueries, the same logic applies. The join is on the customer_sk and the date_sk. So, indexes on the date_sk columns in those tables would help.\n\nAdditionally, the main query has a join between customer and customer_address on c_current_addr_sk = ca_address_sk, and ca_state in ('IL','TX','ME'). Since customer_address has no indexes, a Seq Scan is happening here. Creating an index on ca_state would allow filtering the customer_address table quickly, reducing the number of rows scanned.\n\nAnother part is the join between customer and customer_demographics on cd_demo_sk = c_current_cdemo_sk. If customer_demographics has no indexes, this could be a bottleneck. An index on cd_demo_sk would help here.\n\nBut the user mentioned that the existing indexes are none, so all these tables need indexes.\n\nSo, the main candidates for indexes are:\n\n1. customer_address.ca_state: to filter the states quickly.\n2. customer.c_current_addr_sk: to join with customer_address.\n3. customer.c_current_cdemo_sk: to join with customer_demographics.\n4. store_sales.ss_customer_sk and ss_sold_date_sk: to handle the EXISTS subquery.\n5. web_sales.ws_bill_customer_sk and ws_sold_date_sk: similar to above.\n6. catalog_sales.cs_ship_customer_sk and cs_sold_date_sk: same as above.\n\nBut the user's query has three EXISTS/NOT EXISTS subqueries. Each of these subqueries is checking for the existence of rows in store_sales, web_sales, and catalog_sales. For each of these, the join condition is on the customer_sk (or similar) and the date_sk. So, for each of these tables, an index on the customer_sk and date_sk would help.\n\nHowever, since the date is filtered via the date_dim table, maybe the date_sk is known, and the store_sales can be filtered by that date_sk. So, for example, if the date_dim is queried to get the d_date_sk values for 2002, then the store_sales can be filtered by those dates. But without an index on ss_sold_date_sk, it's a full scan. So, an index on ss_sold_date_sk would allow the database to quickly find the rows that match the date_sk.\n\nBut the subquery is correlated, meaning it's checking for each customer whether there exists a row in store_sales that meets the conditions. So, for each customer, the subquery would scan the store_sales table. If there's an index on ss_customer_sk and ss_sold_date_sk, that could help.\n\nAlternatively, maybe the date filter can be applied first. For example, if we can get the list of d_date_sk values for 2002 and months 1-3, then the store_sales can be filtered by those dates. But without an index on ss_sold_date_sk, that's a full scan.\n\nSo, the main idea is that the EXISTS subqueries are causing full table scans on the large tables (store_sales, web_sales, catalog_sales). Creating indexes on the columns involved in the join and the date filter would reduce the scan time.\n\nTherefore, the indexes to suggest would be:\n\n- On customer_address(ca_state) to filter the states.\n- On customer(c_current_addr_sk) to join with customer_address.\n- On customer(c_current_cdemo_sk) to join with customer_demographics.\n- On store_sales(ss_customer_sk, ss_sold_date_sk) to handle the store_sales subquery.\n- On web_sales(ws_bill_customer_sk, ws_sold_date_sk) for the web_sales subquery.\n- On catalog_sales(cs_ship_customer_sk, cs_sold_date_sk) for the catalog_sales subquery.\n\nBut the user's query has three NOT EXISTS conditions. Each of these would require indexes on the respective tables. However, the user might not have enough space to create all these indexes, but the question is to identify the most impactful ones.\n\nThe main bottleneck is likely the subqueries in the EXISTS/NOT EXISTS clauses. For each of these, the join condition is on the customer_sk (or similar) and the date_sk. So, for each of these tables, an index on the customer_sk and date_sk would help.\n\nBut since the date is filtered via the date_dim, maybe the date_sk is known, and the index on the date_sk would allow quick lookup. However, the customer_sk is part of the join condition. So, a composite index on (ss_customer_sk, ss_sold_date_sk) would allow the database to quickly find rows where ss_customer_sk matches the customer and ss_sold_date_sk is in the filtered dates.\n\nBut the date filter is applied via the date_dim table. Let me think again. The subquery for store_sales is:\n\nselect * from store_sales, date_dim where c.c_customer_sk = ss_customer_sk and ss_sold_date_sk = d_date_sk and d_year = 2002 and d_moy between 1 and 1+2\n\nSo, the date_dim is joined on ss_sold_date_sk = d_date_sk, and then filtered by d_year and d_moy. The date_dim is small, so the database can quickly get the d_date_sk values for 2002 and months 1-3. Then, the store_sales table is scanned for rows where ss_sold_date_sk is in those d_date_sk values. Without an index on ss_sold_date_sk, this is a full scan. So, an index on ss_sold_date_sk would allow the database to quickly find those rows.\n\nBut the join condition is also on ss_customer_sk = c.c_customer_sk. So, if the customer_sk is part of the index, that could help. However, since the customer_sk is from the outer query, which is the customer table, the subquery is correlated. So, for each customer, the subquery checks if there's a row in store_sales where ss_customer_sk equals that customer's c_customer_sk and ss_sold_date_sk is in the filtered dates.\n\nTherefore, an index on store_sales(ss_customer_sk, ss_sold_date_sk) would allow the database to quickly find the relevant rows for each customer. Similarly for the other tables.\n\nSo, the indexes to create would be:\n\n1. customer_address(ca_state) to filter the states.\n2. customer(c_current_addr_sk) to join with customer_address.\n3. customer(c_current_cdemo_sk) to join with customer_demographics.\n4. store_sales(ss_customer_sk, ss_sold_date_sk) for the store_sales subquery.\n5. web_sales(ws_bill_customer_sk, ws_sold_date_sk) for the web_sales subquery.\n6. catalog_sales(cs_ship_customer_sk, cs_sold_date_sk) for the catalog_sales subquery.\n\nBut the user's query has three NOT EXISTS conditions. Each of these would require indexes on the respective tables. However, the user might not have enough space, but the question is to identify the most impactful ones.\n\nThe main issue is the subqueries in the EXISTS/NOT EXISTS clauses. Each of these is causing a full scan on the large tables. So, the indexes on the columns involved in the join and date filter would help.\n\nTherefore, the top priority indexes would be on the store_sales, web_sales, and catalog_sales tables for their respective customer_sk and date_sk columns. Also, the customer_address's ca_state and the customer's c_current_addr_sk and c_current_cdemo_sk.\n\nBut the user's query has three NOT EXISTS conditions. Each of these would require indexes on the respective tables. However, the user might not have enough space, but the question is to identify the most impactful ones.\n\nIn the execution plan, the main seq scans are on the large tables involved in the subqueries. So, the indexes on those tables would be the most beneficial.\n\nSo, the indexes to suggest are:\n\n- For customer_address.ca_state: to filter the states quickly.\n- For customer.c_current_addr_sk: to join with customer_address.\n- For customer.c_current_cdemo_sk: to join with customer_demographics.\n- For store_sales.ss_customer_sk and ss_sold_date_sk: to handle the store_sales subquery.\n- For web_sales.ws_bill_customer_sk and ws_sold_date_sk: to handle the web_sales subquery.\n- For catalog_sales.cs_ship_customer_sk and cs_sold_date_sk: to handle the catalog_sales subquery.\n\nBut the user's query has three NOT EXISTS conditions. Each of these would require indexes on the respective tables. However, the user might not have enough space, but the question is to identify the most impactful ones.\n\nIn the absence of existing indexes, the main candidates are the ones that eliminate the seq scans on the large tables. So, the indexes on the store_sales, web_sales, and catalog_sales tables for their respective customer_sk and date_sk columns would be the most impactful.\n\nTherefore, the JSON should list these indexes. The user's query has three NOT EXISTS conditions, so each of those subqueries would benefit from indexes on their respective tables. However, the user might not have enough space, but the question is to identify the most impactful ones.\n\nSo, the final answer would include indexes on the customer_address.ca_state, customer.c_current_addr_sk, customer.c_current_cdemo_sk, and the three subquery tables' relevant columns.\n\n</think>\n\n{\n  \"indexes\": [\n    {\n      \"target\": \"customer_address\",\n      \"property\": \"ca_state\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on customer_address for ca_state filter on 133,000 rows\"\n    },\n    {\n      \"target\": \"store_sales\",\n      \"property\": \"ss_customer_sk, ss_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on store_sales for 57,598,932 rows with customer/date filters\"\n    },\n    {\n      \"target\": \"web_sales\",\n      \"property\": \"ws_bill_customer_sk, ws_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on web_sales for 14,396,103 rows with customer/date filters\"\n    },\n    {\n      \"target\": \"catalog_sales\",\n      \"property\": \"cs_ship_customer_sk, cs_sold_date_sk\",\n      \"index_type\": \"btree\",\n      \"partial_predicate\": null,\n      \"estimated_benefit\": \"Eliminates Seq Scan on catalog_sales for 28,803,583 rows with customer/date filters\"\n    }\n  ],\n  \"no_index_possible\": false,\n  \"explanation\": \"The query's primary bottlenecks are the correlated subqueries on large tables (store_sales, web_sales, catalog_sales) and the customer_address filter. Indexes on ca_state, and the customer/date columns in the subquery tables will eliminate full table scans by enabling efficient filtering and join lookups.\"\n}",
+  "recommendations": [
+    {
+      "table": "customer_address",
+      "column": "ca_state",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": 0.7,
+      "baseline_exec_ms": 80730.898,
+      "optimized_exec_ms": 80193.973,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.2,
+      "workload_per_query": [
+        {
+          "source": "heldout/TPCDS/q30.json",
+          "baseline_cost": 1217053.87,
+          "cost_with_index": 1217053.87,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q81.json",
+          "baseline_cost": 4014853.91,
+          "cost_with_index": 4014107.53,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937831.31,
+          "cost_with_index": 936954.98,
+          "benefit_pct": 0.1
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91481.26,
+          "cost_with_index": 90761.49,
+          "benefit_pct": 0.8
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "store_sales",
+      "column": "ss_customer_sk, ss_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 1.1,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.3,
+      "baseline_exec_ms": 80238.314,
+      "optimized_exec_ms": 81276.574,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 1.2,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2952177.85,
+          "cost_with_index": 2462298.72,
+          "benefit_pct": 16.6
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955654.89,
+          "cost_with_index": 1955675.79,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q67.json",
+          "baseline_cost": 1372295.64,
+          "cost_with_index": 1372311.12,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q7.json",
+          "baseline_cost": 117278.74,
+          "cost_with_index": 117279.09,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "curated/TPCDS/q9.json",
+          "baseline_cost": 21110139.15,
+          "cost_with_index": 21110409.62,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29018984.04,
+          "cost_with_index": 29019887.31,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "heldout/TPCDS/q3.json",
+          "baseline_cost": 128240.36,
+          "cost_with_index": 128240.37,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179493.26,
+          "cost_with_index": 179493.26,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q27.json",
+          "baseline_cost": 80887.02,
+          "cost_with_index": 80887.19,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712311.08,
+          "cost_with_index": 3712331.61,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q50.json",
+          "baseline_cost": 135054.35,
+          "cost_with_index": 135054.35,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q63.json",
+          "baseline_cost": 220827.76,
+          "cost_with_index": 220827.77,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q73.json",
+          "baseline_cost": 1345241.4,
+          "cost_with_index": 1345256.11,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q96.json",
+          "baseline_cost": 1342669.12,
+          "cost_with_index": 1342683.9,
+          "benefit_pct": -0.0
+        }
+      ],
+      "workload_queries_improved": 1,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "web_sales",
+      "column": "ws_bill_customer_sk, ws_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 0.5,
+      "validation": "executed",
+      "measured_read_benefit_pct": -2.9,
+      "baseline_exec_ms": 85669.301,
+      "optimized_exec_ms": 88169.873,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 2.1,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2952195.62,
+          "cost_with_index": 2710678.85,
+          "benefit_pct": 8.2
+        },
+        {
+          "source": "curated/TPCDS/q51.json",
+          "baseline_cost": 1955675.79,
+          "cost_with_index": 1955650.13,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "heldout/TPCDS/q11.json",
+          "baseline_cost": 29019887.31,
+          "cost_with_index": 28405165.88,
+          "benefit_pct": 2.1
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712331.61,
+          "cost_with_index": 3712292.33,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q85.json",
+          "baseline_cost": 91481.26,
+          "cost_with_index": 91481.26,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 2,
+      "workload_queries_regressed": 0,
+      "status": null
+    },
+    {
+      "table": "catalog_sales",
+      "column": "cs_ship_customer_sk, cs_sold_date_sk",
+      "index_type": "btree",
+      "estimated_benefit_pct": 1.0,
+      "validation": "executed",
+      "measured_read_benefit_pct": -1.0,
+      "baseline_exec_ms": 86900.549,
+      "optimized_exec_ms": 87797.832,
+      "helped": false,
+      "write_overhead_pct": 0.0,
+      "workload_aggregate_benefit_pct": 0.0,
+      "workload_per_query": [
+        {
+          "source": "curated/TPCDS/q38.json",
+          "baseline_cost": 2952181.91,
+          "cost_with_index": 2952138.83,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q18.json",
+          "baseline_cost": 937831.31,
+          "cost_with_index": 937832.98,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q25.json",
+          "baseline_cost": 179493.26,
+          "cost_with_index": 179493.26,
+          "benefit_pct": 0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q40.json",
+          "baseline_cost": 906089.33,
+          "cost_with_index": 906091.01,
+          "benefit_pct": -0.0
+        },
+        {
+          "source": "non-curated/TPCDS/q5.json",
+          "baseline_cost": 3712251.33,
+          "cost_with_index": 3712219.7,
+          "benefit_pct": 0.0
+        }
+      ],
+      "workload_queries_improved": 0,
+      "workload_queries_regressed": 0,
+      "status": null
+    }
+  ]
+}
